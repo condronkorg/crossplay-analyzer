@@ -3,172 +3,302 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
+<script src="datadog-rum.js"></script>
+<link rel="stylesheet" href="custom-move.css">
+<script src="custom-move.js"></script>
 <meta name="description" content="Review completed NYT Crossplay games, replay turns, and compare plays with Quackle. Analyze screenshots or enter a board manually.">
+<meta name="referrer" content="no-referrer">
 <title>Crossplay Board Analyzer — Game Review</title>
 <style>
+  :root { color-scheme: light; --ink: #20332d; --muted: #64736c; --line: #dfe6df; --green: #237653; --paper: #f5f7f3; }
   * { box-sizing: border-box; }
-  body { margin: 0; min-height: 100vh; padding: 22px; background: #1a1a2e; color: #e0e0e0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; }
-  button, input { font: inherit; }
-  button { border: 0; border-radius: 6px; padding: 9px 13px; background: #30466f; color: #fff; font-weight: 600; cursor: pointer; }
-  button:hover:not(:disabled) { background: #405a87; }
-  button:disabled { opacity: .48; cursor: not-allowed; }
-  a { color: #9dbce0; }
-  .container { max-width: 1280px; margin: 0 auto; }
-  .site-nav { margin-bottom: 13px; color: #888; font-size: .86rem; }
-  .site-nav a { text-decoration: none; }
+  body { margin: 0; min-height: 100vh; background: var(--paper); color: var(--ink); font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; font-size: 14px; line-height: 1.5; }
+  button, input, select { font: inherit; }
+  button { border: 1px solid var(--line); border-radius: 8px; padding: 9px 13px; background: #fff; color: var(--ink); font-weight: 600; cursor: pointer; transition: background .15s, border-color .15s; }
+  button:hover:not(:disabled) { background: #edf3ec; border-color: #99b5a0; }
+  button:disabled { opacity: .45; cursor: not-allowed; }
+  :focus-visible { outline: 3px solid #358563; outline-offset: 3px; }
+  a { color: var(--green); }
+  h1, h2, h3, h4, p { margin: 0; }
+  h1 { font-size: 27px; line-height: 1.25; letter-spacing: -.9px; }
+  h2 { font-size: 21px; line-height: 1.3; letter-spacing: -.5px; }
+  h3 { font-size: 15px; letter-spacing: -.2px; }
+  .container { max-width: 1460px; margin: 0 auto; padding: 0 32px 40px; }
+  .masthead { display: flex; align-items: center; justify-content: space-between; gap: 20px; min-height: 86px; border-bottom: 1px solid var(--line); margin-bottom: 25px; }
+  .brand { display: flex; align-items: center; gap: 10px; font-size: 19px; font-weight: 750; letter-spacing: -.7px; }
+  .brand-mark { display: grid; place-items: center; width: 32px; height: 34px; border: 1px solid #b5c8af; border-bottom: 3px solid #aec19f; border-radius: 6px; background: #e4eddc; font-size: 21px; }
+  .brand-tag { margin-left: 3px; padding-left: 13px; border-left: 1px solid #b9c5ba; color: var(--muted); font-size: 12px; font-weight: 400; letter-spacing: 0; }
+  .site-nav { display: flex; gap: 21px; align-items: center; font-size: 12px; }
+  .site-nav a { color: var(--muted); text-decoration: none; }
+  .site-nav span { color: var(--green); font-weight: 650; }
   .site-nav a:hover { text-decoration: underline; }
-  h1 { margin: 0 0 5px; color: #fff; font-size: 1.65rem; }
-  h2 { margin: 0; color: #fff; font-size: 1.2rem; }
-  h3 { margin: 0 0 10px; color: #fff; font-size: 1rem; }
-  .subtitle { margin: 0 0 18px; color: #999; }
-  .panel { border: 1px solid #333; border-radius: 9px; background: #16213e; padding: 15px; }
-  .account { margin-bottom: 18px; }
+  .page-intro { margin-bottom: 19px; }
+  .eyebrow { color: var(--muted); font-size: 10px; font-weight: 750; letter-spacing: 1.6px; text-transform: uppercase; }
+  .page-intro .eyebrow { margin-bottom: 7px; }
+  .subtitle { margin-top: 7px; color: var(--muted); font-size: 13px; }
+  .panel { border: 1px solid var(--line); border-radius: 12px; background: #fff; padding: 20px; }
+  .account { margin-bottom: 24px; padding: 13px 17px; }
   .account-top, .section-heading, .review-heading, .turn-controls { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
   .account-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-  .account-state { color: #b9c8db; font-size: .9rem; }
-  .account-state.connected { color: #75d39a; }
-  .account-state.error { color: #f08080; }
+  .account-actions button { padding: 5px 10px; font-size: 11px; }
+  .account-state { color: var(--muted); font-size: 12px; }
+  .account-state.connected { color: var(--green); }
+  .account-state.connected::before { content: ''; display: inline-block; width: 7px; height: 7px; margin-right: 8px; border-radius: 50%; background: #398461; }
+  .account-state.error { color: #ad4242; }
   .account-form { display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap; }
-  .account-form input { flex: 1; min-width: 220px; padding: 10px 12px; border: 1px solid #3a4760; border-radius: 6px; background: #101a32; color: #fff; }
-  .remember-cookie { display: flex; flex: 0 0 100%; align-items: center; gap: 7px; color: #aab4c3; font-size: .8rem; }
-  .remember-cookie input { flex: 0 0 auto; min-width: 0; margin: 0; accent-color: #7e43a4; }
-  .account-form input:focus { outline: 2px solid #4a6fa5; }
-  .account-help, .muted { color: #8c96a7; font-size: .82rem; line-height: 1.45; }
-  .account-help { margin: 9px 0 0; }
-  .danger-button { background: #563a48; }
-  .danger-button:hover:not(:disabled) { background: #744556; }
-  .workspace { display: grid; grid-template-columns: minmax(260px, 340px) minmax(0, 1fr); gap: 18px; align-items: start; }
-  .games-panel { min-height: 330px; }
-  .section-heading { margin-bottom: 12px; }
-  .game-count { color: #8792a6; font-size: .78rem; }
-  .game-list { display: grid; gap: 8px; max-height: 70vh; overflow: auto; }
-  .game-card { width: 100%; padding: 11px 12px; border: 1px solid #2c3a56; background: #1c2b49; text-align: left; }
-  .game-card:hover:not(:disabled), .game-card.selected { border-color: #5f86ba; background: #24395d; }
-  .game-card:disabled { opacity: .8; }
-  .game-card-top, .game-card-bottom { display: flex; justify-content: space-between; gap: 8px; }
-  .game-card-top { color: #fff; font-weight: 650; }
-  .game-card-bottom { margin-top: 5px; color: #9aa7bb; font-size: .8rem; font-weight: 400; }
-  .empty-state { padding: 16px 4px; color: #929bad; font-size: .9rem; line-height: 1.5; }
-  .review { min-width: 0; }
-  .review-placeholder { min-height: 230px; display: grid; place-items: center; text-align: center; color: #8f99aa; line-height: 1.5; }
-  .review-heading { align-items: flex-start; margin-bottom: 12px; }
-  .opponent-label { margin-top: 4px; color: #9ba6b7; }
-  .scoreline { padding: 9px 12px; border-radius: 7px; background: #101a32; color: #fff; white-space: nowrap; font-size: 1.05rem; font-weight: 700; }
-  .review-body { display: grid; grid-template-columns: minmax(0, 1fr) minmax(220px, 270px); gap: 14px; align-items: start; }
-  .turn-panel { min-width: 0; }
-  .turn-controls { justify-content: flex-start; flex-wrap: wrap; margin-bottom: 12px; }
-  .turn-controls select { max-width: 100%; padding: 8px 10px; border: 1px solid #3a4760; border-radius: 6px; background: #101a32; color: #fff; }
-  .board-view-button { padding: 8px 10px; background: #34435e; font-size: .82rem; }
-  .turn-meta { margin: 0 0 12px; padding: 11px 12px; border-radius: 7px; background: #101a32; }
-  .turn-action { color: #fff; font-weight: 700; font-family: 'SFMono-Regular', Consolas, monospace; }
-  .turn-subtitle { margin-top: 5px; color: #aab4c3; font-size: .84rem; line-height: 1.5; }
-  .board-scroll { overflow: auto; padding-bottom: 5px; }
-  table.board { border-collapse: collapse; table-layout: fixed; font-family: 'SFMono-Regular', Consolas, monospace; font-size: 12px; }
-  table.board th, table.board td { width: 30px; min-width: 30px; height: 30px; padding: 0; border: 1px solid #34415a; text-align: center; }
-  table.board th { background: #101a32; color: #8490a4; font-size: 10px; font-weight: 500; }
-  table.board td.empty { background: #1e2d4a; color: #59677e; }
-  table.board td.premium-3l { background: #31452d; color: #a8c38b; font-weight: 700; }
-  table.board td.premium-2l { background: #4a4027; color: #ddc682; font-weight: 700; }
-  table.board td.premium-2w { background: #293d59; color: #9dbce0; font-weight: 700; }
-  table.board td.premium-3w { background: #472c51; color: #d08adb; font-weight: 700; }
-  table.board td.tile { background: #2980b9; color: #fff; font-size: 14px; font-weight: 700; }
-  table.board td.blank-tile { color: #f0d060; font-style: italic; }
-  table.board td.last-play { outline: 2px solid #f1c75b; outline-offset: -3px; }
-  .board-legend { margin-top: 7px; color: #8994a5; font-size: .75rem; }
-  .turn-list-panel { max-height: 650px; overflow: auto; }
-  .turn-list { display: grid; gap: 5px; }
-  .turn-row { display: flex; width: 100%; align-items: center; justify-content: space-between; gap: 8px; padding: 8px 9px; border: 1px solid transparent; background: transparent; text-align: left; font-size: .8rem; }
-  .turn-row:hover:not(:disabled), .turn-row.selected { border-color: #3d5d88; background: #1e2e4c; }
-  .turn-row.mine .turn-player { color: #9dc5f5; }
-  .turn-row .turn-player { color: #c4ccd8; }
-  .turn-row .turn-score { color: #9ca9bb; white-space: nowrap; }
-  .analysis-panel { margin-top: 14px; }
-  .analysis-panel p { margin: 8px 0; }
-  .analysis-button { background: #7e43a4; }
-  .analysis-button:hover:not(:disabled) { background: #9253b8; }
-  .analysis-status { min-height: 20px; color: #aeb8c8; font-size: .82rem; line-height: 1.45; }
-  .moves-table { width: 100%; margin-top: 10px; border-collapse: collapse; font-size: .82rem; }
-  .moves-table th, .moves-table td { padding: 6px 5px; border-bottom: 1px solid #29354d; text-align: left; }
-  .moves-table th { color: #8e9aad; font-weight: 500; }
-  .moves-table tr:first-child td { color: #75d39a; font-weight: 700; }
-  .analysis-note { color: #8c96a7; font-size: .76rem; line-height: 1.4; }
-  .trend-panel { margin: 14px 0; }
-  .trend-controls { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
-  .trend-status { min-height: 20px; margin: 8px 0; color: #aeb8c8; font-size: .82rem; }
-  .trend-chart { width: 100%; min-height: 230px; overflow: hidden; }
-  .trend-chart svg { display: block; width: 100%; height: auto; }
-  .trend-legend { display: flex; gap: 16px; flex-wrap: wrap; color: #b8c3d2; font-size: .8rem; }
-  .trend-legend span { display: inline-flex; align-items: center; gap: 6px; }
-  .trend-swatch { display: inline-block; width: 15px; height: 3px; border-radius: 2px; }
-  .commonness-panel { margin-top: 12px; padding: 11px; border-radius: 7px; background: #101a32; }
-  .commonness-panel h4 { margin: 0 0 7px; color: #fff; font-size: .9rem; }
-  .commonness-list { display: grid; gap: 6px; padding-left: 20px; }
-  .commonness-list li { color: #c4ccd8; font-size: .8rem; line-height: 1.4; }
-  .commonness-tag { color: #b6c5da; }
-  .commonness-common { color: #75d39a; }
-  .commonness-uncommon { color: #e8c77a; }
-  .commonness-missing { color: #9ba6b7; }
-  .analysis-note a { color: #9dbce0; }
-  .dashboard { display: grid; gap: 12px; margin: 12px 0 16px; }
-  .dashboard-stats { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
-  .dashboard-stat { min-width: 0; padding: 12px; border: 1px solid #2c3a56; border-radius: 8px; background: #101a32; }
-  .dashboard-stat-label { color: #8c96a7; font-size: .72rem; text-transform: uppercase; letter-spacing: .07em; }
-  .dashboard-stat-value { margin-top: 5px; color: #fff; font-size: 1.15rem; font-weight: 700; }
-  .dashboard-charts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; align-items: start; }
+  .account-form input { flex: 1; min-width: 180px; padding: 10px 12px; border: 1px solid #bdcdbf; border-radius: 7px; background: var(--paper); color: var(--ink); }
+  .account.connected:not(.expanded) .account-form, .account.connected:not(.expanded) .account-help { display: none; }
+  .remember-cookie { display: flex; flex: 0 0 100%; align-items: center; gap: 7px; color: var(--muted); font-size: 12px; }
+  .remember-cookie input { flex: 0 0 auto; min-width: 0; margin: 0; accent-color: var(--green); }
+  .account-help, .muted { color: var(--muted); font-size: 12px; line-height: 1.6; }
+  .account-help { margin-top: 10px; }
+  .danger-button { color: #975547; }
+  .workspace { display: grid; grid-template-columns: 235px minmax(0, 1fr); gap: 26px; align-items: start; }
+  .games-panel { padding: 17px 0; background: transparent; border: 0; }
+  .games-panel .section-heading { padding: 0 8px; }
+  .games-panel h2 { font-size: 15px; letter-spacing: -.2px; }
+  .games-panel .section-heading button { padding: 5px 9px; font-size: 11px; }
+  .section-heading { margin-bottom: 15px; }
+  .game-count { margin-top: 5px; color: var(--muted); font-size: 10px; }
+  .game-list { display: grid; gap: 9px; max-height: 75vh; overflow: auto; padding: 3px; }
+  .game-card { width: 100%; padding: 15px 12px; border: 1px solid transparent; border-radius: 10px; background: transparent; text-align: left; }
+  .game-card:hover:not(:disabled) { background: #eaf0e6; }
+  .game-card.selected { border-color: #a3b99c; background: #e9f0e3; box-shadow: inset 3px 0 #3c7651; }
+  .game-card-top, .game-card-bottom { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+  .game-card-top { font-size: 12px; font-weight: 650; }
+  .game-card-bottom { margin-top: 10px; color: var(--muted); font-size: 10px; font-weight: 400; }
+  .game-result { padding: 2px 6px; border-radius: 4px; font-size: 9px; font-weight: 750; letter-spacing: .6px; text-transform: uppercase; }
+  .result-win { color: #226444; background: #dbead7; }
+  .result-loss { color: #9c5548; background: #f6e6df; }
+  .result-draw, .result-complete { color: #62695d; background: #e7e9e1; }
+  .game-card-score { margin-top: 9px; display: flex; gap: 7px; align-items: baseline; font-size: 20px; font-variant-numeric: tabular-nums; }
+  .game-card-score small { margin-left: auto; color: var(--muted); font-size: 10px; font-weight: 400; }
+  .empty-state { padding: 20px 8px; color: var(--muted); font-size: 12px; }
+  .review { min-width: 0; padding: 0; border: 0; background: transparent; }
+  .review-placeholder { min-height: 300px; display: grid; place-items: center; padding: 30px; border: 1px dashed #bacabb; border-radius: 14px; text-align: center; color: var(--muted); }
+  .review-heading { padding: 24px 26px; border: 1px solid #d3dfcb; border-radius: 13px; background: #eaf1e3; }
+  .review-heading.result-loss { border-color: #e7dcd2; background: #f4eee7; }
+  .review-heading.result-draw, .review-heading.result-complete { background: #ecefe8; }
+  .review-heading .eyebrow { margin-bottom: 9px; color: #53704c; }
+  .review-heading.result-loss .eyebrow { color: #8a6253; }
+  .review-heading h2 { font-size: 24px; }
+  .opponent-label { margin-top: 7px; color: var(--muted); font-size: 11px; }
+  .scoreline { display: flex; align-items: center; gap: 23px; color: var(--ink); text-align: center; }
+  .score-value { display: block; font-size: 39px; font-weight: 720; line-height: 1.2; letter-spacing: -1.5px; font-variant-numeric: tabular-nums; }
+  .score-person { display: block; margin-top: 4px; color: var(--muted); font-size: 11px; max-width: 140px; overflow-wrap: anywhere; }
+  .score-divider { color: #a6b59d; font-size: 23px; font-weight: 300; }
+  .share-details { margin: 11px 0 20px; color: var(--muted); font-size: 11px; }
+  summary { cursor: pointer; width: fit-content; }
+  .share-tools { display: flex; gap: 8px; flex-wrap: wrap; margin: 9px 0 5px; }
+  .share-url { flex: 1; min-width: 0; padding: 8px; border: 1px solid var(--line); border-radius: 7px; background: #fff; color: var(--ink); }
+  .share-note { font-size: 11px; }
+  .shared-game .account, .shared-game .games-panel { display: none; }
+  .shared-game .workspace { grid-template-columns: minmax(0, 1fr); }
+  .shared-game .review { max-width: 1120px; width: 100%; margin: auto; }
+  .shared-banner { margin-bottom: 18px; color: var(--muted); font-size: 12px; }
+  .shared-banner a { margin-left: 8px; }
+  .dashboard { display: grid; gap: 18px; margin-bottom: 22px; }
+  .dashboard-stats { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
+  .dashboard-stat { min-width: 0; padding: 17px; border: 1px solid var(--line); border-radius: 10px; background: #fff; }
+  .dashboard-stat-label { color: var(--muted); font-size: 10px; }
+  .dashboard-stat-value { margin-top: 7px; color: var(--ink); font-size: 25px; font-weight: 700; letter-spacing: -.7px; overflow-wrap: anywhere; }
+  .dashboard-stat-note { margin-top: 4px; color: var(--muted); font-size: 10px; }
+  .dashboard-charts { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; align-items: start; }
   .dashboard-charts .panel { min-width: 0; margin: 0; }
-  .quality-summary { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0 4px; }
-  .quality-count, .quality-chip { display: inline-flex; align-items: center; gap: 5px; padding: 3px 7px; border-radius: 999px; font-size: .72rem; font-weight: 650; white-space: nowrap; }
-  .quality-best { color: #9be4b4; background: #203d35; }
-  .quality-inaccuracy { color: #f0d184; background: #443a23; }
-  .quality-mistake { color: #ffc17c; background: #4a3424; }
-  .quality-blunder { color: #ff9b9b; background: #4a2d36; }
-  .quality-unrated { color: #c1c9d5; background: #2d3749; }
-  .quality-legend { display: flex; flex-wrap: wrap; gap: 8px 12px; margin-top: 4px; }
-  .quality-legend span { display: inline-flex; align-items: center; gap: 5px; color: #b8c3d2; font-size: .72rem; }
+  .panel-subtitle { margin: 4px 0 12px; color: var(--muted); font-size: 11px; }
+  .trend-controls { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .trend-status, .analysis-status { min-height: 18px; margin: 9px 0; color: var(--muted); font-size: 11px; }
+  .trend-chart { width: 100%; overflow: hidden; }
+  .trend-chart svg { display: block; width: 100%; height: auto; }
+  .trend-legend { display: flex; gap: 17px; flex-wrap: wrap; color: var(--muted); font-size: 10px; }
+  .trend-legend span { display: inline-flex; align-items: center; gap: 6px; }
+  .trend-swatch { display: inline-block; width: 14px; height: 3px; border-radius: 2px; }
+  .estimate-details { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--line); color: var(--muted); font-size: 11px; }
+  .estimate-details .trend-panel { padding: 12px 0 0; border: 0; border-radius: 0; }
+  .quality-summary { display: flex; flex-wrap: wrap; gap: 6px; margin: 10px 0; }
+  .quality-count, .quality-chip { display: inline-flex; align-items: center; gap: 5px; padding: 3px 7px; border-radius: 5px; font-size: 10px; font-weight: 650; white-space: nowrap; }
+  .quality-best { color: #246947; background: #e2efdf; }
+  .quality-inaccuracy { color: #866619; background: #f8efce; }
+  .quality-mistake { color: #9a581f; background: #f9e8d7; }
+  .quality-blunder { color: #aa4046; background: #f9e2e1; }
+  .quality-unrated { color: #67716b; background: #edf0eb; }
+  .quality-legend { display: flex; flex-wrap: wrap; gap: 8px 12px; margin-top: 7px; }
+  .quality-legend span { display: inline-flex; align-items: center; gap: 5px; color: var(--muted); font-size: 9px; }
   .quality-dot { width: 8px; height: 8px; border-radius: 50%; }
-  .quality-point { cursor: pointer; }
-  .quality-point:focus { outline: none; }
-  .quality-point:focus rect { stroke: #fff; stroke-width: 2; }
-  .turn-quality { margin-top: 6px; }
-  .turn-row { min-width: 0; }
-  .turn-row .turn-player { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .turn-row .quality-chip { margin-left: auto; flex: 0 0 auto; }
+  .quality-dot.quality-best { background: #3d8057; }
+  .quality-dot.quality-inaccuracy { background: #b39236; }
+  .quality-dot.quality-mistake { background: #cb8a4c; }
+  .quality-dot.quality-blunder { background: #bd5d60; }
+  .quality-dot.quality-unrated { background: #8b978b; }
+  .quality-point, .score-point { cursor: pointer; }
+  .quality-point:focus, .score-point:focus { outline: none; }
+  .quality-point:focus rect, .score-point:focus circle { stroke: var(--ink); stroke-width: 3; }
+  .quality-empty { display: grid; justify-items: center; text-align: center; padding: 18px 10px 15px; margin: 14px 0 8px; background: #f6f8f3; border: 1px dashed #d3dfcb; border-radius: 9px; }
+  .quality-empty-icon { display: grid; place-items: center; width: 36px; height: 36px; margin-bottom: 10px; border-radius: 10px; background: #e4eddb; color: var(--green); font-size: 20px; }
+  .quality-empty p { max-width: 270px; margin: 5px 0 13px; color: var(--muted); font-size: 11px; }
+  .analysis-button { color: #fff; background: #2b714f; border-color: #2b714f; font-size: 12px; }
+  .analysis-button:hover:not(:disabled) { color: #fff; background: #205b3e; border-color: #205b3e; }
+  .analysis-note { margin-top: 9px; color: var(--muted); font-size: 10px; line-height: 1.6; }
+  .luck-stats { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+  .luck-stat { min-width: 0; padding: 12px; border-radius: 8px; background: #f5f7f1; }
+  .luck-stat strong { display: block; margin: 5px 0; font-size: 24px; letter-spacing: -.6px; }
+  .luck-stat small { display: block; color: var(--muted); font-size: 10px; }
+  .luck-table { width: 100%; margin-top: 12px; border-collapse: collapse; font-size: 11px; }
+  .luck-table th, .luck-table td { text-align: left; padding: 8px 4px; border-bottom: 1px solid var(--line); }
+  .luck-table th { color: var(--muted); font-size: 10px; font-weight: 500; }
+  .luck-table button { padding: 4px 7px; font-size: 11px; }
+  .luck-rack { font-family: 'SFMono-Regular', Consolas, monospace; overflow-wrap: anywhere; }
+  .luck-word { display: block; color: var(--muted); font-size: 10px; }
+  .insights-panel { padding: 19px 20px; }
+  .insight-list { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; margin-top: 12px; }
+  .insight { display: flex; align-items: center; justify-content: space-between; gap: 10px; width: 100%; padding: 12px; text-align: left; background: #fafbf8; }
+  .insight strong { display: block; font-size: 12px; }
+  .insight small { display: block; margin-top: 4px; color: var(--muted); font-size: 10px; font-weight: 400; }
+  .insight-loss { color: #a75a39; font-size: 13px; white-space: nowrap; }
+  .replay-heading { display: flex; justify-content: space-between; align-items: center; margin: 26px 0 14px; }
+  .replay-heading h2 { font-size: 18px; }
+  .replay-heading span { color: var(--muted); font-size: 11px; }
+  .review-body { display: grid; grid-template-columns: minmax(0, 1fr) minmax(230px, .7fr); gap: 18px; align-items: start; }
+  .walkthrough-sidebar { display: grid; gap: 18px; min-width: 0; }
+  .walkthrough-sidebar .turn-coach { margin-bottom: 0; }
+  .review-body > .analysis-panel { grid-column: 1 / -1; margin-top: 0; padding: 18px; border: 1px solid var(--line); border-radius: 12px; }
+  .turn-panel { min-width: 0; padding: 18px; border: 1px solid var(--line); border-radius: 12px; background: #fff; }
+  .turn-controls { justify-content: flex-start; flex-wrap: wrap; margin-bottom: 15px; gap: 6px; }
+  .turn-controls button, .turn-controls select { padding: 6px 8px; font-size: 10px; }
+  .turn-controls select { max-width: 100%; min-width: 0; padding-right: 4px; border: 1px solid var(--line); border-radius: 7px; background: #fff; color: var(--ink); }
+  .turn-meta { margin-bottom: 14px; padding: 12px; border: 1px solid var(--line); border-radius: 8px; background: #f6f8f3; }
+  .turn-action { font-size: 12px; font-weight: 700; }
+  .turn-subtitle { margin-top: 5px; color: var(--muted); font-size: 10px; overflow-wrap: anywhere; }
+  .turn-quality { margin-top: 7px; }
+  .walkthrough-tools { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 14px; }
+  .walkthrough-progress { margin-right: auto; color: var(--muted); font-size: 11px; }
+  .walkthrough-tools button { padding: 7px 10px; font-size: 11px; }
+  .walkthrough-start { margin-top: 12px; }
+  .turn-coach { margin-bottom: 14px; padding: 14px; border: 1px solid var(--line); border-left: 4px solid #8b978b; border-radius: 8px; background: #fafbf8; }
+  .turn-coach.coach-best { border-left-color: #3d8057; }
+  .turn-coach.coach-inaccuracy { border-left-color: #b39236; }
+  .turn-coach.coach-mistake { border-left-color: #cb8a4c; }
+  .turn-coach.coach-blunder { border-left-color: #bd5d60; }
+  .turn-coach h3 { font-size: 13px; }
+  .turn-coach p { margin: 7px 0; font-size: 11px; line-height: 1.6; }
+  .move-comparison { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin: 10px 0; }
+  .comparison-move { min-width: 0; padding: 10px; border: 1px solid var(--line); border-radius: 7px; background: #fff; }
+  .comparison-move span, .comparison-move small { display: block; color: var(--muted); font-size: 10px; }
+  .comparison-move strong { display: block; margin: 5px 0; font-size: 12px; overflow-wrap: anywhere; }
+  .turn-coach button { padding: 7px 10px; font-size: 11px; }
+  .turn-list-filter { display: flex; gap: 6px; align-items: center; margin: 0 4px 12px; color: var(--muted); font-size: 11px; }
+  .turn-list-empty { padding: 12px 4px; color: var(--muted); font-size: 11px; }
+  .board-preview-note { color: #286e4d; font-weight: 650; }
+  .board-scroll { overflow: auto; }
+  table.board { width: 100%; border-collapse: separate; border-spacing: 2px; table-layout: fixed; font-family: 'SFMono-Regular', Consolas, monospace; font-size: 9px; }
+  table.board th, table.board td { padding: 0; height: 27px; text-align: center; border-radius: 2px; }
+  table.board th { color: #6b7e6a; font-size: 9px; font-weight: 500; }
+  table.board td.empty { background: #eef0e9; color: #64735e; }
+  table.board td.premium-3l { background: #caddc2; color: #3e633c; }
+  table.board td.premium-2l { background: #f2e6bf; color: #7b642d; }
+  table.board td.premium-2w { background: #cedfe5; color: #496e79; }
+  table.board td.premium-3w { background: #e2d5e8; color: #775985; }
+  table.board td.tile { background: #eee0bb; color: #493c25; font-size: 13px; font-weight: 750; box-shadow: inset 0 -2px #d5c59e; }
+  table.board td.blank-tile { color: #6f5532; font-style: italic; }
+  table.board td.last-play { outline: 2px solid #34805a; outline-offset: -2px; background: #dce8c9; }
+  .board-legend { margin-top: 9px; color: var(--muted); font-size: 9px; }
+  .turn-list-panel { max-height: 690px; overflow: auto; padding: 16px 12px; }
+  .turn-list-panel h3 { margin: 0 0 12px 4px; }
+  .turn-list { display: grid; gap: 4px; }
+  .turn-row { display: flex; width: 100%; align-items: center; justify-content: space-between; gap: 6px; min-width: 0; padding: 10px 8px; border: 1px solid transparent; background: transparent; text-align: left; font-size: 10px; }
+  .turn-row:hover:not(:disabled), .turn-row.selected { border-color: #c2d4b7; background: #eef4e7; }
+  .turn-row .turn-player { min-width: 0; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .turn-row.mine .turn-player { color: #286e4d; }
+  .turn-row .turn-score { color: var(--ink); white-space: nowrap; font-weight: 650; }
+  .turn-row .quality-chip { margin-left: auto; flex: 0 0 auto; font-size: 8px; padding: 2px 4px; }
+  .analysis-panel { margin-top: 17px; padding: 16px 0 0; border: 0; border-top: 1px solid var(--line); border-radius: 0; }
+  .analysis-panel h3 { margin-bottom: 10px; font-size: 13px; }
+  .moves-table { width: 100%; margin-top: 10px; border-collapse: collapse; font-size: 10px; }
+  .moves-table th, .moves-table td { padding: 7px 3px; border-bottom: 1px solid var(--line); text-align: left; overflow-wrap: anywhere; }
+  .moves-table th { color: var(--muted); font-weight: 500; }
+  .moves-table tr:first-child td { color: #237653; font-weight: 700; }
+  .commonness-panel { margin-top: 12px; padding: 12px; border-radius: 8px; background: #f5f7f1; }
+  .commonness-panel h4 { margin-bottom: 6px; font-size: 12px; }
+  .commonness-list { display: grid; gap: 6px; padding-left: 18px; }
+  .commonness-list li { font-size: 10px; }
+  .commonness-common { color: #237653; }
+  .commonness-uncommon { color: #89651d; }
+  .commonness-missing { color: var(--muted); }
+  .site-footer { display: flex; justify-content: space-between; gap: 15px; margin-top: 35px; padding-top: 18px; border-top: 1px solid var(--line); color: var(--muted); font-size: 10px; }
+  .site-footer a { margin-left: 12px; color: var(--muted); text-decoration: none; }
   .hidden { display: none !important; }
-  @media (max-width: 900px) {
-    body { padding: 14px; }
-    .workspace { grid-template-columns: 1fr; }
-    .game-list { max-height: 290px; }
-    .review-body { grid-template-columns: minmax(0, 1fr) minmax(200px, 260px); }
+  @media (min-width: 1500px) { .container { padding: 0 42px 40px; } }
+  @media (max-width: 1100px) {
+    .container { padding: 0 22px 30px; }
+    .workspace { grid-template-columns: 195px minmax(0, 1fr); gap: 18px; }
+    .review-heading { padding: 20px; }
+    .scoreline { gap: 14px; }
+    .score-value { font-size: 32px; }
+    .dashboard-stats { gap: 8px; }
+    .dashboard-stat { padding: 13px; }
+    .review-body { grid-template-columns: minmax(0, 1fr); }
+    .turn-list-panel { max-height: 300px; }
+    table.board th, table.board td { height: 32px; }
+    .insight-list { grid-template-columns: 1fr; }
   }
-  @media (max-width: 650px) {
-    .review-heading { flex-direction: column; }
-    .dashboard-stats { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; }
-    .dashboard-stat { padding: 9px; }
-    .dashboard-stat-value { font-size: 1rem; }
-    .dashboard-charts { grid-template-columns: 1fr; }
-    .review-body { grid-template-columns: 1fr; }
-    .turn-list-panel { max-height: 270px; }
-    .scoreline { white-space: normal; }
-    table.board th, table.board td { width: 27px; min-width: 27px; height: 27px; }
+  @media (max-width: 760px) {
+    .luck-stats { grid-template-columns: 1fr; gap: 8px; }
+    .container { padding: 0 16px 24px; }
+    .masthead { min-height: 74px; flex-wrap: wrap; gap: 12px; padding: 15px 0; margin-bottom: 21px; }
+    .brand { font-size: 18px; }
+    .site-nav { gap: 16px; font-size: 11px; }
+    .workspace { grid-template-columns: minmax(0, 1fr); gap: 12px; }
+    .games-panel { padding: 0; min-width: 0; }
+    .game-list { display: flex; max-height: 180px; overflow: auto; padding-bottom: 8px; }
+    .game-card { min-width: 205px; }
+    .game-count { font-size: 10px; }
+    .review-heading h2 { font-size: 21px; }
+    .dashboard-charts { grid-template-columns: 1fr; gap: 14px; }
+    .trend-chart svg text { font-size: 17px; }
+    .dashboard-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+    .dashboard-stat { padding: 15px; }
+    .review-heading { padding: 19px; flex-wrap: wrap; gap: 21px; }
+    .scoreline { gap: 22px; }
+    .review-body { gap: 14px; }
+    .insight-list { grid-template-columns: 1fr; }
+    .turn-panel { padding: 12px; }
+    table.board { border-spacing: 1px; }
+    table.board th, table.board td { height: clamp(16px, 5.1vw, 32px); }
+    table.board td.tile { font-size: 11px; }
+    table.board td { font-size: 8px; }
+    .replay-heading span { font-size: 10px; }
+    .account { margin-bottom: 20px; }
+    .account-top { align-items: flex-start; }
+    .account-state { font-size: 11px; }
+    .account-form input { min-width: 150px; }
+    .site-footer { font-size: 9px; }
   }
+  @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
 </style>
 </head>
 <body>
 <main class="container">
-  <nav class="site-nav"><span>Game Review</span> · <a href="screenshot.html">Screenshot Analyzer</a> · <a href="manual.html">Manual Board</a> · <a href="privacy.html">Privacy</a> · <a href="terms.html">Terms</a></nav>
-  <h1>Crossplay Board Analyzer</h1>
-  <p class="subtitle">Load finished games from your NYT Crossplay account, replay each turn, and compare it with Quackle.</p>
+  <header class="masthead">
+    <div class="brand"><span class="brand-mark" aria-hidden="true">C</span> crossplay <span class="brand-tag">the game review</span></div>
+    <nav class="site-nav" aria-label="Main navigation"><span aria-current="page">Game review</span><a href="screenshot.html">Screenshot analyzer</a><a href="manual.html">Manual board</a></nav>
+  </header>
+  <div class="page-intro">
+    <p class="eyebrow">A little reflection. A better next game.</p>
+    <h1>Your game, in focus.</h1>
+    <p class="subtitle">See what went well, find your missed opportunities, and make your next move count.</p>
+  </div>
 
   <section class="panel account" aria-label="NYT account connection">
     <div class="account-top">
       <div id="connectionState" class="account-state">Checking local connection…</div>
       <div class="account-actions">
+        <button id="accountSettingsButton" class="hidden" type="button" aria-expanded="false" aria-controls="cookieForm accountHelp">Manage connection</button>
         <button id="googleSignInButton" class="hidden" type="button">Sign in with Google</button>
         <button id="signOutButton" class="hidden" type="button">Sign out</button>
         <button id="forgetButton" class="danger-button hidden" type="button">Forget cookie</button>
       </div>
     </div>
-    <form id="cookieForm" class="account-form">
+    <form id="cookieForm" class="account-form" data-dd-privacy="hidden">
       <input id="cookieInput" type="password" autocomplete="off" autocapitalize="off" spellcheck="false"
         aria-label="NYT-S cookie" placeholder="Paste your NYT-S session cookie">
       <button id="saveCookieButton" type="submit">Connect</button>
@@ -177,8 +307,10 @@
         Remember this NYT cookie encrypted on my account
       </label>
     </form>
-    <p class="account-help">Google sign-in identifies your account here and does not connect other Google services; you still connect your NYT account separately. On Vercel, a remembered NYT-S value is encrypted before saving and can be removed with Forget cookie. Locally, the server keeps it in memory. Use the value of the NYT-S cookie from a signed-in NYTimes browser session. See our <a href="privacy.html">Privacy Policy</a>.</p>
+    <p id="accountHelp" class="account-help">Google sign-in identifies your account here and does not connect other Google services; you still connect your NYT account separately. On Vercel, a remembered NYT-S value is encrypted before saving and can be removed with Forget cookie. Locally, the server keeps it in memory. Use the value of the NYT-S cookie from a signed-in NYTimes browser session. See our <a href="privacy.html">Privacy Policy</a>.</p>
   </section>
+
+  <div id="sharedBanner" class="shared-banner hidden">Shared game · No sign-in needed. <a href="./">View your games</a></div>
 
   <div class="workspace">
     <section class="panel games-panel" aria-label="Recent games">
@@ -196,10 +328,12 @@
       <div class="review-placeholder">Choose a finished game to replay its turns.</div>
     </section>
   </div>
+  <footer class="site-footer"><span>Crossplay Board Analyzer · Powered by Quackle</span><span><a href="privacy.html">Privacy</a><a href="terms.html">Terms</a></span></footer>
 </main>
 
 <script src="supabase-config.js"></script>
 <script src="supabase-auth.js"></script>
+<script src="luck-analysis.js"></script>
 <script>
 const PREMIUM_COORDS = {
   '3L': 'A1 O1 G2 I2 F5 J5 E6 K6 B7 N7 B9 N9 E10 K10 F11 J11 G14 I14 A15 O15',
@@ -220,8 +354,11 @@ const TERMINAL_BAG_LIMIT = 21;
 let games = [];
 let activeGameId = null;
 let currentReview = null;
+let customMoveController = null;
 let currentTurnIndex = 0;
 let boardView = 'after';
+let previewBestMove = false;
+let flaggedMovesOnly = false;
 let trendResults = null;
 let trendRequestToken = 0;
 let moveQualityResults = null;
@@ -236,6 +373,8 @@ let activeNytCookie = '';
 let persistenceEnabled = false;
 let signedInUser = null;
 let nytConfigured = false;
+let viewingSharedGame = false;
+let reviewRequestToken = 0;
 const ANALYSIS_VERSION = 'quackle-equity-v1';
 
 const byId = id => document.getElementById(id);
@@ -251,16 +390,20 @@ function setConnection(message, state = '') {
   const node = byId('connectionState');
   node.textContent = message;
   node.className = 'account-state' + (state ? ' ' + state : '');
+  node.closest('.account').classList.toggle('connected', state === 'connected');
+  byId('accountSettingsButton').classList.toggle('hidden', state !== 'connected');
 }
 
 async function api(path, options = {}) {
-  const headers = { ...(options.headers || {}) };
-  const accessToken = await window.CrossplayAuth.accessToken();
+  const { publicRequest = false, ...requestOptions } = options;
+  const headers = { ...(requestOptions.headers || {}) };
+  const accessToken = publicRequest ? null : await window.CrossplayAuth.accessToken();
   if (accessToken) headers.Authorization = 'Bearer ' + accessToken;
-  if (activeNytCookie) headers['X-NYT-S'] = activeNytCookie;
+  if (!publicRequest && activeNytCookie) headers['X-NYT-S'] = activeNytCookie;
   const response = await fetch('/api/crossplay/' + path, {
     cache: 'no-store',
-    ...options,
+    ...requestOptions,
+    ...(publicRequest ? { credentials: 'omit' } : {}),
     headers
   });
   let data = {};
@@ -312,6 +455,9 @@ function showNytDisconnected(message, state = '') {
 }
 
 function clearAccountUi(message) {
+  if (customMoveController) customMoveController.dispose();
+  customMoveController = null;
+  reviewRequestToken++;
   trendRequestToken++;
   moveQualityRequestToken++;
   trendResults = null;
@@ -370,28 +516,53 @@ function renderGames() {
     button.setAttribute('aria-label', 'Review game against ' + (game.opponent || 'opponent'));
     const top = makeElement('span', 'game-card-top');
     top.append(makeElement('span', '', game.opponent || 'Opponent'));
-    top.append(makeElement('span', '', String(game.my_score ?? '—') + '–' + String(game.opponent_score ?? '—')));
+    const result = gameResult(game);
+    top.append(makeElement('span', 'game-result result-' + result.kind, result.label));
     const bottom = makeElement('span', 'game-card-bottom');
     bottom.append(makeElement('span', '', formatDate(game.timestamp)));
     bottom.append(makeElement('span', '', (game.turn_count ?? '?') + ' turns'));
-    button.append(top, bottom);
+    const score = makeElement('span', 'game-card-score', String(game.my_score ?? '—') + ' – ' + String(game.opponent_score ?? '—'));
+    score.append(makeElement('small', '', 'Your score first'));
+    button.setAttribute('aria-pressed', String(game.id === activeGameId));
+    button.append(top, score, bottom);
     button.addEventListener('click', () => openGame(game.id));
     list.append(button);
   }
 }
 
-async function openGame(gameId) {
+function gameShareUrl(token) {
+  const url = new URL(location.pathname, location.origin);
+  url.searchParams.set('game', token);
+  return url;
+}
+
+async function openGame(gameId, { shareToken = null } = {}) {
+  if (customMoveController) customMoveController.dispose();
+  customMoveController = null;
+  const requestToken = ++reviewRequestToken;
+  viewingSharedGame = shareToken !== null;
+  document.body.classList.toggle('shared-game', viewingSharedGame);
+  byId('sharedBanner').classList.toggle('hidden', !viewingSharedGame);
   trendRequestToken++;
   trendResults = null;
   moveQualityRequestToken++;
   moveQualityResults = null;
   boardView = 'after';
+  previewBestMove = false;
+  flaggedMovesOnly = false;
   activeGameId = gameId;
   renderGames();
   currentReview = null;
   byId('reviewPanel').replaceChildren(makeElement('div', 'review-placeholder', 'Loading game review…'));
   try {
-    currentReview = await api('games/' + encodeURIComponent(gameId) + '/review');
+    const review = viewingSharedGame
+      ? await api('shared/' + encodeURIComponent(shareToken), { publicRequest: true })
+      : await api('games/' + encodeURIComponent(gameId) + '/review');
+    if (requestToken !== reviewRequestToken) return;
+    currentReview = review;
+    activeGameId = review.id;
+    const url = gameShareUrl(review.share_token);
+    if (url.href !== location.href) history.pushState({}, '', url);
     const stored = currentReview.stored_analysis;
     if (stored && stored.version === ANALYSIS_VERSION) {
       trendResults = stored.win_trend || null;
@@ -401,12 +572,13 @@ async function openGame(gameId) {
     renderGames();
     renderReview();
   } catch (error) {
+    if (requestToken !== reviewRequestToken) return;
     byId('reviewPanel').replaceChildren(makeElement('div', 'review-placeholder', error.message));
   }
 }
 
 async function persistCompletedAnalysis() {
-  if (!persistenceEnabled || !signedInUser || !currentReview) return null;
+  if (viewingSharedGame || !persistenceEnabled || !signedInUser || !currentReview) return null;
   const payload = { analysis_version: ANALYSIS_VERSION };
   if (trendResults && trendResults.state === 'done') payload.win_trend = trendResults;
   if (moveQualityResults && moveQualityResults.state === 'done') payload.move_quality = moveQualityResults;
@@ -485,6 +657,8 @@ function renderBoard(grid, action) {
 }
 
 function renderReview() {
+  if (customMoveController) customMoveController.dispose();
+  customMoveController = null;
   if (!currentReview || !Array.isArray(currentReview.turns) || !currentReview.turns.length) {
     byId('reviewPanel').replaceChildren(makeElement('div', 'review-placeholder', 'This game has no turns to review.'));
     return;
@@ -493,32 +667,91 @@ function renderReview() {
   const turn = review.turns[currentTurnIndex];
   const root = byId('reviewPanel');
   root.replaceChildren();
-  const header = makeElement('div', 'review-heading');
+  const result = gameResult(review);
+  const header = makeElement('div', 'review-heading result-' + result.kind);
   const title = document.createElement('div');
-  title.append(makeElement('h2', '', 'vs ' + (review.opponent || 'Opponent')));
+  title.append(makeElement('p', 'eyebrow', result.headline));
+  title.append(makeElement('h2', '', (viewingSharedGame ? (review.my_name || 'Player') + ' vs ' : 'vs ') + (review.opponent || 'Opponent')));
   title.append(makeElement('div', 'opponent-label', formatDate(review.timestamp) + ' · ' + review.turns.length + ' turns'));
   header.append(title);
-  header.append(makeElement('div', 'scoreline', String(review.my_score ?? '—') + '  –  ' + String(review.opponent_score ?? '—')));
+  const scoreline = makeElement('div', 'scoreline');
+  for (const [value, name] of [[review.my_score, viewingSharedGame ? review.my_name || 'Player' : 'You'], [review.opponent_score, review.opponent || 'Opponent']]) {
+    if (scoreline.childNodes.length) scoreline.append(makeElement('span', 'score-divider', '–'));
+    const score = makeElement('div');
+    score.append(makeElement('span', 'score-value', value ?? '—'), makeElement('span', 'score-person', name));
+    scoreline.append(score);
+  }
+  header.append(scoreline);
   root.append(header);
+
+  const shareTools = makeElement('div', 'share-tools');
+  const shareUrl = makeElement('input', 'share-url');
+  shareUrl.type = 'text';
+  shareUrl.readOnly = true;
+  shareUrl.value = gameShareUrl(review.share_token).href;
+  shareUrl.setAttribute('aria-label', 'Shareable game link');
+  shareUrl.addEventListener('focus', () => shareUrl.select());
+  const copyButton = makeElement('button', '', 'Copy game link');
+  copyButton.type = 'button';
+  const shareNote = makeElement('p', 'muted share-note', 'Anyone with this link can view this finished game, including player names, racks, and analysis.');
+  shareNote.setAttribute('role', 'status');
+  copyButton.addEventListener('click', async () => {
+    try {
+      await navigator.clipboard.writeText(shareUrl.value);
+      copyButton.textContent = 'Link copied';
+    } catch (_) {
+      shareUrl.focus();
+      shareUrl.select();
+      shareNote.textContent = 'Copy the selected link to share this game.';
+    }
+  });
+  shareTools.append(shareUrl, copyButton);
+  const shareDetails = makeElement('details', 'share-details');
+  shareDetails.append(makeElement('summary', '', 'Share this game ↗'), shareTools, shareNote);
+  root.append(shareDetails);
 
   const dashboard = makeElement('section', 'dashboard');
   dashboard.append(makeDashboardStats(review));
   const charts = makeElement('div', 'dashboard-charts');
-  charts.append(makeTrendPanel(review), makeMoveQualityPanel(review));
-  dashboard.append(charts);
+  charts.append(makeScorePanel(review), makeMoveQualityPanel(review));
+  dashboard.append(charts, makeLuckPanel(review), makeInsightsPanel(review));
   root.append(dashboard);
 
+  const replayHeading = makeElement('div', 'replay-heading');
+  replayHeading.id = 'replayHeading';
+  replayHeading.append(makeElement('h2', '', 'Move-by-move walkthrough'), makeElement('span', '', 'Replay · understand · improve'));
+  root.append(replayHeading, makeWalkthroughTools(review));
   const body = makeElement('div', 'review-body');
+  body.addEventListener('keydown', event => {
+    if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey ||
+        event.target.closest('input, select, textarea, [contenteditable]')) return;
+    const destinations = { ArrowLeft: currentTurnIndex - 1, ArrowRight: currentTurnIndex + 1, Home: 0, End: review.turns.length - 1 };
+    if (!(event.key in destinations)) return;
+    event.preventDefault();
+    selectTurn(destinations[event.key], '.turn-controls');
+  });
   const turnPanel = makeElement('div', 'turn-panel');
   const controls = makeElement('div', 'turn-controls');
+  controls.tabIndex = -1;
+  controls.setAttribute('aria-label', 'Walkthrough navigation');
+  const first = makeElement('button', 'first-turn', '⇤ First');
+  first.type = 'button';
+  first.disabled = currentTurnIndex === 0;
+  first.addEventListener('click', () => selectTurn(0, '.first-turn'));
   const previous = makeElement('button', '', '← Previous');
+  previous.className = 'previous-turn';
   previous.type = 'button';
   previous.disabled = currentTurnIndex === 0;
-  previous.addEventListener('click', () => selectTurn(currentTurnIndex - 1));
+  previous.addEventListener('click', () => selectTurn(currentTurnIndex - 1, '.previous-turn'));
   const next = makeElement('button', '', 'Next →');
+  next.className = 'next-turn';
   next.type = 'button';
   next.disabled = currentTurnIndex >= review.turns.length - 1;
-  next.addEventListener('click', () => selectTurn(currentTurnIndex + 1));
+  next.addEventListener('click', () => selectTurn(currentTurnIndex + 1, '.next-turn'));
+  const last = makeElement('button', 'last-turn', 'Last ⇥');
+  last.type = 'button';
+  last.disabled = currentTurnIndex === review.turns.length - 1;
+  last.addEventListener('click', () => selectTurn(review.turns.length - 1, '.last-turn'));
   const select = document.createElement('select');
   select.setAttribute('aria-label', 'Select game turn');
   review.turns.forEach((item, index) => {
@@ -533,9 +766,10 @@ function renderReview() {
   boardToggle.type = 'button';
   boardToggle.addEventListener('click', () => {
     boardView = boardView === 'after' ? 'before' : 'after';
+    previewBestMove = false;
     renderReview();
   });
-  controls.append(previous, select, next, boardToggle);
+  controls.append(first, previous, select, next, last, boardToggle);
   turnPanel.append(controls);
 
   const actor = turn.mine ? (review.my_name || 'You') : (review.opponent || 'Opponent');
@@ -549,12 +783,16 @@ function renderReview() {
   details.push('Bag: ' + turn.bag_count);
   if (turn.swapped_tiles) details.push('Swapped: ' + turn.swapped_tiles);
   meta.append(makeElement('div', 'turn-subtitle', details.join(' · ')));
-  const qualityPoint = moveQualityResults && moveQualityResults.points[currentTurnIndex];
+  const qualityPoint = qualityPointForTurn(currentTurnIndex);
   if (qualityPoint) meta.append(makeQualityBadge(qualityPoint, true));
   turnPanel.append(meta);
   const board = boardView === 'after' && Array.isArray(turn.grid_after) ? turn.grid_after : turn.grid;
-  turnPanel.append(renderBoard(board, turn.action));
-  turnPanel.append(makeElement('div', 'board-legend', (boardView === 'after' ? 'Board after this move.' : 'Board before this move.') + ' Gold outline marks newly placed tiles. Lowercase letters are assigned blanks.'));
+  const preview = previewBestMove && candidatePreview(turn, qualityPoint?.bestMove);
+  turnPanel.append(renderBoard(preview ? preview.grid : board, preview ? preview.action : turn.action));
+  turnPanel.append(makeElement('div', 'board-legend' + (preview ? ' board-preview-note' : ''),
+    (preview ? 'Best move preview · ' + qualityPoint.bestMove.word + ' at ' + qualityPoint.bestMove.position + '. Return to played move to continue.'
+      : boardView === 'after' ? 'Board after this move.' : 'Board before this move.') +
+    ' Green outline marks newly placed tiles. Italic letters are assigned blanks.'));
 
   const analysis = makeElement('section', 'panel analysis-panel');
   analysis.append(makeElement('h3', '', 'Quackle analysis for this position'));
@@ -565,34 +803,174 @@ function renderReview() {
   const output = makeElement('div', '');
   analyzeButton.addEventListener('click', () => analyzePosition(turn, analyzeButton, status, output));
   analysis.append(analyzeButton, status, output);
-  turnPanel.append(analysis);
+  customMoveController = new CustomMove(analysis, () => ({
+    gridJson: JSON.stringify(turn.grid), rack: turn.rack,
+    playerScore: Number(turn.mover_score) || 0, opponentScore: Number(turn.other_score) || 0,
+    bagCount: Number(turn.bag_count), finalTurnsRemaining: Number(turn.bag_count) === 0 ? Number(turn.final_turns_remaining) : 0
+  }), 'Try an alternative using the rack and board before this turn, even when it is outside Quackle’s suggestions.');
   body.append(turnPanel);
 
-  const turnListPanel = makeElement('aside', 'panel turn-list-panel');
-  turnListPanel.append(makeElement('h3', '', 'Game turns'));
-  const turnList = makeElement('div', 'turn-list');
-  review.turns.forEach((item, index) => {
-    const row = makeElement('button', 'turn-row' + (item.mine ? ' mine' : '') + (index === currentTurnIndex ? ' selected' : ''));
-    row.type = 'button';
-    const player = makeElement('span', 'turn-player', (index + 1) + '. ' + (item.mine ? (review.my_name || 'You') : (review.opponent || 'Opponent')));
-    const score = makeElement('span', 'turn-score', (item.action || 'Pass').split(' ').slice(0, 2).join(' ') + ' · +' + item.score);
-    row.append(player, score);
-    const point = moveQualityResults && moveQualityResults.points[index];
-    if (point) row.append(makeQualityBadge(point, false, true));
-    row.addEventListener('click', () => selectTurn(index));
-    turnList.append(row);
-  });
-  turnListPanel.append(turnList);
-  body.append(turnListPanel);
+  const sidebar = makeElement('div', 'walkthrough-sidebar');
+  sidebar.append(makeTurnCoach(turn, qualityPoint), makeTurnList(review));
+  body.append(sidebar, analysis);
   root.append(body);
 }
 
-function selectTurn(index) {
+function selectTurn(index, focusSelector) {
   if (!currentReview || index < 0 || index >= currentReview.turns.length) return;
   currentTurnIndex = index;
+  previewBestMove = false;
   renderReview();
-  const selected = byId('reviewPanel').querySelector('.turn-row.selected');
-  if (selected) selected.scrollIntoView({ block: 'nearest' });
+  const list = byId('reviewPanel').querySelector('.turn-list-panel');
+  const selected = list && list.querySelector('.turn-row.selected');
+  if (selected) list.scrollTop = Math.max(0, selected.offsetTop - list.offsetTop - list.clientHeight / 2);
+  if (focusSelector) {
+    const target = byId('reviewPanel').querySelector(focusSelector);
+    (target?.disabled ? byId('reviewPanel').querySelector('.turn-controls') : target)?.focus({ preventScroll: true });
+  }
+}
+
+function qualityPointForTurn(index) {
+  return moveQualityResults?.points?.find(point => point.turnIndex === index);
+}
+
+function flaggedQualityPoints(review) {
+  return personalQualityPoints(review).filter(point => Number.isFinite(point.loss) && point.loss >= 1)
+    .sort((a, b) => a.turnIndex - b.turnIndex);
+}
+
+function makeWalkthroughTools(review) {
+  const tools = makeElement('div', 'walkthrough-tools');
+  const flagged = flaggedQualityPoints(review);
+  const rated = personalQualityPoints(review).filter(point => Number.isFinite(point.loss)).length;
+  tools.append(makeElement('span', 'walkthrough-progress', 'Turn ' + (currentTurnIndex + 1) + ' of ' + review.turns.length +
+    ' · ' + (moveQualityResults ? flagged.length + ' of your moves flagged · ' + rated + ' rated' : 'Analyze move quality to flag mistakes')));
+  for (const [direction, label] of [[-1, '← Previous flagged move'], [1, 'Next flagged move →']]) {
+    const point = direction < 0 ? flagged.filter(point => point.turnIndex < currentTurnIndex).at(-1)
+      : flagged.find(point => point.turnIndex > currentTurnIndex);
+    const button = makeElement('button', direction < 0 ? 'previous-flagged' : 'next-flagged', label);
+    button.type = 'button';
+    button.disabled = !point;
+    button.addEventListener('click', () => selectTurn(point.turnIndex, direction < 0 ? '.previous-flagged' : '.next-flagged'));
+    tools.append(button);
+  }
+  return tools;
+}
+
+function makeTurnList(review) {
+  const panel = makeElement('aside', 'panel turn-list-panel');
+  panel.append(makeElement('h3', '', 'Game turns'));
+  const filter = makeElement('label', 'turn-list-filter');
+  const checkbox = document.createElement('input');
+  checkbox.type = 'checkbox';
+  checkbox.checked = flaggedMovesOnly;
+  checkbox.addEventListener('change', () => {
+    flaggedMovesOnly = checkbox.checked;
+    panel.replaceWith(makeTurnList(review));
+    byId('reviewPanel').querySelector('.turn-list-filter input').focus({ preventScroll: true });
+  });
+  filter.append(checkbox, document.createTextNode('Only your flagged moves'));
+  panel.append(filter);
+  const flagged = new Set(flaggedQualityPoints(review).map(point => point.turnIndex));
+  const list = makeElement('div', 'turn-list');
+  review.turns.forEach((turn, index) => {
+    if (flaggedMovesOnly && !flagged.has(index)) return;
+    const row = makeElement('button', 'turn-row' + (turn.mine ? ' mine' : '') + (index === currentTurnIndex ? ' selected' : ''));
+    row.type = 'button';
+    row.dataset.turnIndex = index;
+    row.setAttribute('aria-pressed', String(index === currentTurnIndex));
+    const player = makeElement('span', 'turn-player', (index + 1) + '. ' + (turn.mine ? (review.my_name || 'You') : (review.opponent || 'Opponent')));
+    const score = makeElement('span', 'turn-score', (turn.action || 'Pass').split(' ').slice(0, 2).join(' ') + ' · ' + (turn.score >= 0 ? '+' : '') + turn.score);
+    row.append(player, score);
+    const point = qualityPointForTurn(index);
+    if (point) row.append(makeQualityBadge(point, false, true));
+    row.addEventListener('click', () => selectTurn(index, '.turn-row.selected'));
+    list.append(row);
+  });
+  if (!list.childNodes.length) list.append(makeElement('p', 'turn-list-empty', !moveQualityResults
+    ? 'Analyze move quality to flag your moves.' : 'No flagged moves among your rated turns so far.'));
+  panel.append(list, makeElement('p', 'analysis-note', 'Use ← / → to step through moves, Home / End for the first / last move.'));
+  return panel;
+}
+
+function makeTurnCoach(turn, point) {
+  const panel = makeElement('section', 'turn-coach coach-' + (point?.category || 'unrated'));
+  panel.setAttribute('aria-label', 'Move explanation');
+  panel.setAttribute('aria-live', 'polite');
+  if (!point) {
+    panel.append(makeElement('h3', '', turn.mine ? 'What could you play here?' : 'Your opponent’s move'));
+    const running = moveQualityResults?.state === 'running';
+    panel.append(makeElement('p', '', running ? 'Review in progress. This turn has not been analyzed yet.'
+      : 'Analyze move quality to see a verdict for this turn and compare it with the engine’s best play.'));
+    if (!running) {
+      const analyze = makeElement('button', 'analysis-button', 'Review all moves');
+      analyze.type = 'button';
+      analyze.addEventListener('click', () => startMoveQuality(currentReview));
+      panel.append(analyze);
+    }
+    return panel;
+  }
+  if (!Number.isFinite(point.loss)) {
+    panel.append(makeElement('h3', '', 'This turn is unrated'), makeElement('p', '', point.reason || 'The played move could not be matched to an engine candidate.'),
+      makeElement('p', 'analysis-note', 'Unrated turns are excluded from mistake counts and averages.'));
+  } else {
+    panel.append(makeElement('h3', '', qualityLabel(point.category) + ' · ' + point.loss.toFixed(1) + ' equity lost'));
+    panel.append(makeElement('p', '', point.category === 'best'
+      ? 'This play is within 1 equity point of Quackle’s best returned candidate.'
+      : 'Quackle found a play worth ' + point.loss.toFixed(1) + ' more equity points from the same board and rack.'));
+  }
+  if (point.bestMove) {
+    const comparison = makeElement('div', 'move-comparison');
+    for (const [label, move, word, score] of [
+      ['Played move', point.playedMove, actionWord(turn.action) || turn.action, turn.score],
+      ['Quackle’s best', point.bestMove, point.bestMove.word, point.bestMove.score]
+    ]) {
+      const card = makeElement('div', 'comparison-move');
+      card.append(makeElement('span', '', label), makeElement('strong', '', word + (move?.position ? ' · ' + move.position : '')),
+        makeElement('small', '', (score ?? '—') + ' points · leave ' + (move?.leave || '—')));
+      if (Number.isFinite(move?.equity)) card.append(makeElement('small', '', move.equity.toFixed(1) + ' equity'));
+      comparison.append(card);
+    }
+    panel.append(comparison);
+    if (candidatePreview(turn, point.bestMove)) {
+      const preview = makeElement('button', 'preview-best-move', previewBestMove ? 'Return to played move' : 'Preview best move');
+      preview.type = 'button';
+      preview.setAttribute('aria-pressed', String(previewBestMove));
+      preview.addEventListener('click', () => {
+        previewBestMove = !previewBestMove;
+        renderReview();
+        byId('reviewPanel').querySelector('.preview-best-move').focus({ preventScroll: true });
+      });
+      panel.append(preview);
+    }
+  } else if (Number.isFinite(point.loss)) {
+    panel.append(makeElement('p', 'analysis-note', 'This saved review has no move comparison. Re-analyze moves to add the best alternative.'));
+  }
+  panel.append(makeElement('p', 'analysis-note', 'Equity weighs points scored and the tiles left on your rack. These provisional grades compare the engine’s returned candidates; they are not win probabilities.'));
+  return panel;
+}
+
+function candidatePreview(turn, move) {
+  const start = movePosition(move?.position);
+  if (!start || typeof move.tiles !== 'string' || !Array.isArray(turn.grid) || turn.grid.length !== 15 ||
+      !turn.grid.every(row => typeof row === 'string' && /^[A-Za-z.]{15}$/.test(row))) return null;
+  const grid = turn.grid.map(row => row.split(''));
+  let row = start.row, col = start.col, word = '', placed = 0;
+  for (const tile of move.tiles) {
+    if (row < 0 || row >= 15 || col < 0 || col >= 15) return null;
+    if (tile === '.') {
+      if (grid[row][col] === '.') return null;
+      word += '(' + grid[row][col] + ')';
+    } else {
+      if (!/^[A-Za-z]$/.test(tile) || grid[row][col] !== '.') return null;
+      grid[row][col] = tile;
+      word += tile;
+      placed++;
+    }
+    row += start.dr;
+    col += start.dc;
+  }
+  return placed ? { grid: grid.map(row => row.join('')), action: word + ' ' + move.position + ' ' + move.score } : null;
 }
 
 function svgElement(name, attrs = {}) {
@@ -601,26 +979,238 @@ function svgElement(name, attrs = {}) {
   return node;
 }
 
+function gameResult(game) {
+  const hasScores = [game.my_score, game.opponent_score].every(value =>
+    value !== null && value !== undefined && String(value).trim() !== '' && Number.isFinite(Number(value)));
+  if (!hasScores) return { kind: 'complete', label: 'Complete', headline: 'Game complete · Final scores unavailable' };
+  const margin = Number(game.my_score) - Number(game.opponent_score);
+  if (margin === 0) return { kind: 'draw', label: 'Draw', headline: 'An even finish · Draw' };
+  return margin > 0
+    ? { kind: 'win', label: 'Win', headline: 'A game to build on · Won by ' + margin + ' points' }
+    : { kind: 'loss', label: 'Loss', headline: 'A game to learn from · Lost by ' + Math.abs(margin) + ' points' };
+}
+
+function personalQualityPoints(review) {
+  return (moveQualityResults && moveQualityResults.points || []).filter(point => review.turns[point.turnIndex]?.mine);
+}
+
 function makeDashboardStats(review) {
   const stats = makeElement('div', 'dashboard-stats');
-  const mine = Number(review.my_score), theirs = Number(review.opponent_score);
-  const margin = mine - theirs;
-  const hasScores = review.my_score !== null && review.my_score !== undefined && String(review.my_score).trim() !== '' &&
-    review.opponent_score !== null && review.opponent_score !== undefined && String(review.opponent_score).trim() !== '';
-  const result = !hasScores || !Number.isFinite(mine) || !Number.isFinite(theirs) ? 'Complete' :
-    margin > 0 ? 'Win' : margin < 0 ? 'Loss' : 'Draw';
+  const mine = review.turns.filter(turn => turn.mine);
+  const best = mine.reduce((top, turn) => !top || turn.score > top.score ? turn : top, null);
+  const rated = personalQualityPoints(review).filter(point => Number.isFinite(point.loss));
+  const bestCount = rated.filter(point => point.category === 'best').length;
+  const average = mine.length ? (mine.reduce((total, turn) => total + turn.score, 0) / mine.length).toFixed(1) : '—';
+  const averageLoss = rated.length ? (rated.reduce((total, point) => total + point.loss, 0) / rated.length).toFixed(1) : '—';
   const values = [
-    ['Result', result],
-    ['Final spread', hasScores && Number.isFinite(margin) ? (margin > 0 ? '+' : '') + margin : '—'],
-    ['Moves', review.turns.length]
+    ['Points per turn', average, mine.length + ' of your turns · includes passes'],
+    ['Highest-scoring play', best ? String(best.score) + ' pts' : '—', best ? actionWord(best.action) || best.action : 'No turns played'],
+    ['Best moves', rated.length ? bestCount + ' / ' + rated.length : '—', rated.length ? 'Of your rated turns · within 1 equity point' : 'Analyze moves to find out'],
+    ['Avg. equity lost', averageLoss, rated.length ? rated.length + ' of your ' + mine.length + ' turns rated · lower is better' : 'Analyze moves to find out']
   ];
-  for (const [label, value] of values) {
+  for (const [label, value, note] of values) {
     const card = makeElement('div', 'dashboard-stat');
-    card.append(makeElement('div', 'dashboard-stat-label', label));
-    card.append(makeElement('div', 'dashboard-stat-value', value));
+    card.append(makeElement('div', 'dashboard-stat-label', label), makeElement('div', 'dashboard-stat-value', value), makeElement('div', 'dashboard-stat-note', note));
     stats.append(card);
   }
   return stats;
+}
+
+function makeLuckPanel(review) {
+  const summary = CrossplayLuck.summarize(review, moveQualityResults?.points || []);
+  const panel = makeElement('section', 'panel luck-panel');
+  panel.append(makeElement('h3', '', 'Luck & performance'), makeElement('p', 'panel-subtitle', 'How favorable your racks were, and what you made of them'));
+  const stats = makeElement('div', 'luck-stats');
+  const score = value => Number.isFinite(value) ? Math.round(value) + ' / 100' : '—';
+  const partial = moveQualityResults && moveQualityResults.state !== 'done' ? ' · partial analysis' : '';
+  const values = [
+    ['Rack favorability', score(summary.favorability), summary.rackCount + ' of your ' + summary.turns.length + ' racks estimated · 50 is typical'],
+    ['Execution', score(summary.execution), summary.ratedCount + ' of your ' + summary.turns.length + ' turns rated' + partial],
+    ['Adjusted performance', score(summary.adjusted), summary.adjustedCount + ' of your ' + summary.turns.length + ' turns weighted' + partial]
+  ];
+  for (const [label, value, note] of values) {
+    const card = makeElement('div', 'luck-stat');
+    card.append(makeElement('span', 'dashboard-stat-label', label), makeElement('strong', '', value), makeElement('small', '', note));
+    stats.append(card);
+  }
+  panel.append(stats);
+  panel.append(makeElement('p', 'analysis-note', 'Rack favorability estimates tile flexibility. Execution measures your choices against Quackle; adjusted performance gives harder racks more weight and allows for less-common alternatives. These are provisional scores, not win odds or a percentage of the result caused by luck.'));
+  if (!summary.adjustedCount) {
+    const note = !moveQualityResults ? 'Use Analyze move quality above to add execution and adjusted performance.'
+      : moveQualityResults.state === 'running' ? 'Analysis is running. Performance will appear as eligible turns are rated.'
+      : summary.ratedCount ? 'Re-analyze moves to include word commonness in performance. Only turns with a rated move, a valid rack estimate, and word-opportunity analysis can be weighted.'
+      : 'No eligible rated turns yet. Passes, exchanges, and moves outside Quackle’s returned candidates are excluded from performance.';
+    panel.append(makeElement('p', 'analysis-note', note));
+  }
+  if (summary.adjustedCount) {
+    panel.append(makeElement('p', 'analysis-note', 'Word frequency available for ' + summary.knownWords + ' of ' + summary.candidateWords + ' candidate entries on weighted turns. Words outside the local list stay unknown and receive no familiarity allowance.'));
+  }
+  if (moveQualityResults?.frequencyWarning) panel.append(makeElement('p', 'analysis-note', moveQualityResults.frequencyWarning));
+  const breakdown = makeElement('details', 'estimate-details luck-breakdown');
+  breakdown.append(makeElement('summary', '', 'Your turn-by-turn breakdown'));
+  const table = makeElement('table', 'luck-table');
+  const head = document.createElement('thead');
+  const headings = document.createElement('tr');
+  for (const label of ['Turn', 'Rack / best word', 'Favorability', 'Adjusted loss']) headings.append(makeElement('th', '', label));
+  head.append(headings);
+  const body = document.createElement('tbody');
+  for (const item of summary.turns) {
+    const row = document.createElement('tr');
+    const turnCell = document.createElement('td');
+    const button = makeElement('button', '', item.index + 1);
+    button.type = 'button';
+    button.setAttribute('aria-label', 'Replay turn ' + (item.index + 1) + ' from luck breakdown');
+    button.addEventListener('click', () => {
+      selectTurn(item.index);
+      byId('replayHeading')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      byId('reviewPanel').querySelector('select[aria-label="Select game turn"]')?.focus({ preventScroll: true });
+    });
+    turnCell.append(button);
+    const rackCell = makeElement('td', 'luck-rack', item.turn.rack || 'Unavailable');
+    const context = item.point?.opportunity;
+    if (context?.bestWord) {
+      const zipf = context.bestWordZipf;
+      const familiarity = Number.isFinite(zipf) ? (zipf >= 4 ? 'Common' : zipf >= 3 ? 'Familiar' : 'Less common') : 'Frequency unknown';
+      rackCell.append(makeElement('span', 'luck-word', context.bestWord + ' · ' + familiarity));
+    }
+    const favorability = item.rack ? Math.round(item.rack.percentile) + ' · ' + item.rack.band : 'Unavailable';
+    const adjustedLoss = item.performance?.adjustedLoss;
+    row.append(turnCell, rackCell, makeElement('td', '', favorability), makeElement('td', '', Number.isFinite(adjustedLoss) ? adjustedLoss.toFixed(1) + ' eq' : 'Unrated'));
+    body.append(row);
+  }
+  table.append(head, body);
+  breakdown.append(table);
+  panel.append(breakdown);
+  const method = makeElement('details', 'estimate-details');
+  method.append(makeElement('summary', '', 'How luck and performance are estimated'));
+  method.append(makeElement('p', 'analysis-note', 'Each rack is compared with 2,048 deterministic samples of the same size, drawn without replacement from Crossplay tiles not yet on the board. The percentile measures a tile-flexibility heuristic: blanks +12, S +3, E/R/N/T +0.8 each; vowel imbalance −2.5 per tile from a 42% target (blanks can balance it), duplicate pairs −1.5, J −2, V −1.5, W/K −1, and Q without U or a blank −6. Assigned blanks on the board consume physical blanks. Rack order does not matter.'));
+  method.append(makeElement('p', 'analysis-note', 'The game value averages your rack percentiles, including pass and exchange turns with valid racks. Retained tiles reflect earlier choices, so repeated racks are not independent draws. This estimates rack ease, not pure draw luck; it does not model board openings, opponent decisions, or the actual sequence of draws.'));
+  method.append(makeElement('p', 'analysis-note', 'Execution averages 100 / (1 + equity loss / 10). For adjusted loss, each returned candidate’s equity is reduced by 2 × max(0, 4 − Zipf frequency of its main word), capped at 6 points; unknown words receive no reduction. The best resulting benchmark is compared with your played equity, with loss floored at zero and capped at the original loss. The same 0–100 conversion is weighted by 1 + (100 − rack percentile) / 100, so tougher racks count up to twice as much. Only your eligible turns are included. Passes, exchanges, and moves outside Quackle’s top ' + MOVE_COUNT + ' remain unrated.'));
+  const attribution = makeElement('p', 'analysis-note', 'General English frequency is a rough familiarity signal, not Scrabble vocabulary. Source: wordfreq / Alex Parrish, CC BY-SA 4.0. ');
+  const link = makeElement('a', '', 'Frequency source and attribution');
+  link.href = 'WORD_FREQUENCY.md';
+  attribution.append(link);
+  method.append(attribution);
+  panel.append(method);
+  return panel;
+}
+
+function makeScorePanel(review) {
+  const panel = makeElement('section', 'panel score-panel');
+  panel.append(makeElement('h3', '', 'How the game unfolded'), makeElement('p', 'panel-subtitle', 'Cumulative score · select a point to replay that turn'));
+  const chart = makeElement('div', 'trend-chart score-chart');
+  chart.append(drawScoreChart(review));
+  const legend = makeElement('div', 'trend-legend');
+  for (const [label, color] of [[viewingSharedGame ? review.my_name || 'Player' : 'You', '#2b7954'], [review.opponent || 'Opponent', '#b88755']]) {
+    const item = makeElement('span');
+    const swatch = makeElement('i', 'trend-swatch');
+    swatch.style.background = color;
+    item.append(swatch, document.createTextNode(label));
+    legend.append(item);
+  }
+  const details = makeElement('details', 'estimate-details');
+  details.append(makeElement('summary', '', 'Explore estimated win chances'), makeTrendPanel(review));
+  panel.append(chart, legend, details);
+  return panel;
+}
+
+function drawScoreChart(review) {
+  const width = 600, height = 230;
+  const points = [{ mine: 0, theirs: 0 }];
+  for (const turn of review.turns) {
+    const mine = turn.mine ? turn.mover_score + turn.score : turn.other_score;
+    const theirs = turn.mine ? turn.other_score : turn.mover_score + turn.score;
+    points.push({ mine, theirs });
+  }
+  const hasFinal = gameResult(review).kind !== 'complete';
+  const last = points[points.length - 1];
+  if (hasFinal && (last.mine !== Number(review.my_score) || last.theirs !== Number(review.opponent_score))) {
+    points.push({ mine: Number(review.my_score), theirs: Number(review.opponent_score), final: true });
+  }
+  const yMin = Math.min(0, ...points.flatMap(point => [point.mine, point.theirs]));
+  const yMax = Math.max(10, ...points.flatMap(point => [point.mine, point.theirs]));
+  const x = index => 42 + index / Math.max(1, points.length - 1) * (width - 62);
+  const y = value => 16 + (yMax - value) / (yMax - yMin) * (height - 47);
+  const svg = svgElement('svg', { viewBox: `0 0 ${width} ${height}`, role: 'group', 'aria-label': 'Cumulative scores for both players by turn' });
+  for (let i = 0; i <= 4; i++) {
+    const value = yMin + (yMax - yMin) * i / 4;
+    svg.append(svgElement('line', { x1: 42, x2: width - 20, y1: y(value), y2: y(value), stroke: '#e5ebe1', 'stroke-dasharray': '3 4' }));
+    const label = svgElement('text', { x: 32, y: y(value) + 4, fill: '#64736c', 'font-size': 12, 'text-anchor': 'end' });
+    label.textContent = String(Math.round(value));
+    svg.append(label);
+  }
+  svg.append(svgElement('line', { x1: x(currentTurnIndex + 1), x2: x(currentTurnIndex + 1), y1: 12, y2: height - 30, stroke: '#c4d5bb', 'stroke-dasharray': '4 4' }));
+  for (const [key, color] of [['mine', '#2b7954'], ['theirs', '#b88755']]) {
+    svg.append(svgElement('polyline', { points: points.map((point, index) => `${x(index)},${y(point[key])}`).join(' '), fill: 'none', stroke: color, 'stroke-width': 3, 'stroke-linejoin': 'round', 'stroke-linecap': 'round' }));
+  }
+  const tickStep = Math.max(1, Math.ceil(review.turns.length / 6));
+  points.forEach((point, index) => {
+    if (index % tickStep === 0 || index === points.length - 1) {
+      const label = svgElement('text', { x: x(index), y: height - 8, fill: '#64736c', 'font-size': 12, 'text-anchor': 'middle' });
+      label.textContent = point.final ? 'Final' : String(index);
+      svg.append(label);
+    }
+    if (!index) return;
+    const turnIndex = Math.min(index - 1, review.turns.length - 1);
+    const group = svgElement('g', { class: 'score-point', tabindex: 0, role: 'button', 'data-turn-index': turnIndex, 'aria-label': (point.final ? 'Final score' : 'Turn ' + index) + ': ' + point.mine + ' to ' + point.theirs + '. Replay turn ' + (turnIndex + 1) });
+    for (const [key, color] of [['mine', '#2b7954'], ['theirs', '#b88755']]) {
+      group.append(svgElement('circle', { cx: x(index), cy: y(point[key]), r: index === currentTurnIndex + 1 ? 5 : 3.5, fill: color, stroke: '#fff', 'stroke-width': 1.5 }));
+      group.append(svgElement('circle', { cx: x(index), cy: y(point[key]), r: 12, fill: 'transparent' }));
+    }
+    group.addEventListener('click', () => selectTurn(turnIndex));
+    group.addEventListener('keydown', event => {
+      if (event.key === 'Enter' || event.key === ' ') {
+        event.preventDefault();
+        selectTurn(turnIndex);
+        byId('reviewPanel').querySelector('.score-point[data-turn-index="' + turnIndex + '"]')?.focus({ preventScroll: true });
+      }
+    });
+    svg.append(group);
+  });
+  return svg;
+}
+
+function makeInsightsPanel(review) {
+  const panel = makeElement('section', 'panel insights-panel');
+  panel.append(makeElement('h3', '', 'Your next step'));
+  const points = personalQualityPoints(review);
+  const rated = points.filter(point => Number.isFinite(point.loss));
+  const opportunities = rated.filter(point => point.loss >= 1).sort((a, b) => b.loss - a.loss).slice(0, 3);
+  if (!opportunities.length) {
+    const text = !moveQualityResults ? 'Start with move quality to uncover the turns where a different play could have helped.'
+      : !rated.length ? 'No rated turns yet. Passes, exchanges, and plays outside the engine’s candidates stay unrated.'
+      : 'Every rated move is within 1 equity point of the engine’s best candidate. Keep building on those choices.';
+    panel.append(makeElement('p', 'panel-subtitle', text));
+  } else {
+    panel.append(makeElement('p', 'panel-subtitle', 'Your largest rated opportunities, in order. Select one to revisit the position.'));
+    const list = makeElement('div', 'insight-list');
+    for (const point of opportunities) {
+      const button = makeElement('button', 'insight');
+      button.type = 'button';
+      const label = makeElement('span');
+      label.append(makeElement('strong', '', 'Turn ' + (point.turnIndex + 1) + ' · ' + (actionWord(point.action) || point.action)), makeElement('small', '', qualityLabel(point.category) + ' · Review this turn →'));
+      button.append(label, makeElement('span', 'insight-loss', point.loss.toFixed(1) + ' equity'));
+      button.addEventListener('click', () => {
+        selectTurn(point.turnIndex);
+        byId('replayHeading').scrollIntoView({ block: 'start', behavior: 'instant' });
+        byId('reviewPanel').querySelector('select').focus({ preventScroll: true });
+      });
+      list.append(button);
+    }
+    panel.append(list);
+  }
+  if (moveQualityResults) {
+    const count = review.turns.filter(turn => turn.mine).length;
+    panel.append(makeElement('p', 'analysis-note', rated.length + ' of your ' + count + ' turns rated. ' + (moveQualityResults.state === 'done' ? 'Unrated turns are excluded from averages and opportunities.' : 'Analysis is incomplete; insights reflect rated turns so far.')));
+  }
+  const walkthrough = makeElement('button', 'analysis-button walkthrough-start', 'Start walkthrough');
+  walkthrough.type = 'button';
+  walkthrough.addEventListener('click', () => {
+    selectTurn(0, '.turn-controls');
+    byId('replayHeading').scrollIntoView({ block: 'start', behavior: 'instant' });
+  });
+  panel.append(walkthrough);
+  return panel;
 }
 
 function qualityBand(loss) {
@@ -647,7 +1237,7 @@ function makeQualityBadge(point, detail = false, compact = false) {
 
 function makeMoveQualityPanel(review) {
   const panel = makeElement('section', 'panel quality-panel');
-  panel.append(makeElement('h3', '', 'Move quality by equity lost'));
+  panel.append(makeElement('h3', '', 'How well you played'), makeElement('p', 'panel-subtitle', 'Your move quality · measured against Quackle'));
   const controls = makeElement('div', 'trend-controls');
   const button = makeElement('button', 'analysis-button', moveQualityResults && moveQualityResults.state === 'running' ? 'Stop move analysis' :
     (moveQualityResults && moveQualityResults.state === 'done' ? 'Re-analyze moves' : 'Analyze move quality'));
@@ -662,23 +1252,30 @@ function makeMoveQualityPanel(review) {
     startMoveQuality(review);
   });
   controls.append(button);
-  panel.append(controls);
+  if (!moveQualityResults) {
+    const empty = makeElement('div', 'quality-empty');
+    empty.append(makeElement('span', 'quality-empty-icon', '↗'), makeElement('strong', '', 'Go beyond the final score'), makeElement('p', '', 'Find your best moves and the opportunities you missed. Analyze once to see your personal breakdown.'), controls);
+    panel.append(empty);
+  } else panel.append(controls);
   panel.append(makeElement('div', 'trend-status', moveQualityResults
-    ? moveQualityResults.message || ''
-    : 'Run Quackle once across the game to score played moves.'));
+    ? moveQualityResults.state === 'done'
+      ? 'Your review is ready · ' + personalQualityPoints(review).filter(point => Number.isFinite(point.loss)).length + ' of your ' + review.turns.filter(turn => turn.mine).length + ' turns rated.' + (moveQualityResults.message?.includes('Save failed:') ? ' ' + moveQualityResults.message.slice(moveQualityResults.message.indexOf('Save failed:')) : '')
+      : moveQualityResults.message || ''
+    : 'Analysis runs locally with the bundled engine.'));
   if (moveQualityResults && moveQualityResults.points && moveQualityResults.points.length) {
-    const rated = moveQualityResults.points.filter(point => point.category !== 'unrated');
+    const personal = personalQualityPoints(review);
+    const rated = personal.filter(point => Number.isFinite(point.loss));
     const summary = makeElement('div', 'quality-summary');
     for (const category of ['best', 'inaccuracy', 'mistake', 'blunder']) {
       const count = rated.filter(point => point.category === category).length;
       if (!count) continue;
       summary.append(makeElement('span', 'quality-count quality-' + category, count + ' ' + qualityLabel(category)));
     }
-    const unratedCount = moveQualityResults.points.length - rated.length;
+    const unratedCount = personal.length - rated.length;
     if (unratedCount) summary.append(makeElement('span', 'quality-count quality-unrated', unratedCount + ' unrated'));
     if (summary.childNodes.length) panel.append(summary);
     const chart = makeElement('div', 'trend-chart quality-chart');
-    chart.append(drawEquityLossChart(moveQualityResults.points, review.turns.length));
+    chart.append(drawEquityLossChart(personal, review.turns.length));
     panel.append(chart);
     const legend = makeElement('div', 'quality-legend');
     for (const category of ['best', 'inaccuracy', 'mistake', 'blunder', 'unrated']) {
@@ -689,12 +1286,15 @@ function makeMoveQualityPanel(review) {
     }
     panel.append(legend);
   }
-  panel.append(makeElement('p', 'analysis-note', 'Lower is better. Loss is the gap from the played move to Quackle’s best returned candidate. Provisional bands: Best <1 point; Inaccuracy 1–<3; Mistake 3–<8; Blunder ≥8. Quackle equity is a score plus rack-leave estimate, not win probability. Passes, exchanges, and moves outside the top ' + MOVE_COUNT + ' are unrated.'));
+  panel.append(makeElement('p', 'analysis-note', 'Equity estimates points plus rack value. Lower loss is better. New analyses use deterministic position evaluation, without sampled draws.'));
+  const methodology = makeElement('details', 'estimate-details');
+  methodology.append(makeElement('summary', '', 'How move quality is measured'), makeElement('p', 'analysis-note', 'Only your turns are shown. Loss is the gap from the played move to Quackle’s best returned candidate. Provisional bands: Best <1 point; Inaccuracy 1–<3; Mistake 3–<8; Blunder ≥8. Equity is not win probability. Passes, exchanges, and moves outside the top ' + MOVE_COUNT + ' are unrated.'));
+  panel.append(methodology);
   return panel;
 }
 
 function drawEquityLossChart(points, totalTurns) {
-  const width = 760, height = 260;
+  const width = 600, height = 230;
   const margin = { top: 18, right: 14, bottom: 37, left: 48 };
   const plotWidth = width - margin.left - margin.right;
   const plotHeight = height - margin.top - margin.bottom;
@@ -703,28 +1303,28 @@ function drawEquityLossChart(points, totalTurns) {
   const yMax = Math.ceil(maxLoss / 5) * 5;
   const x = turnIndex => margin.left + (turnIndex + 0.5) / Math.max(1, totalTurns) * plotWidth;
   const y = value => margin.top + plotHeight - value / yMax * plotHeight;
-  const svg = svgElement('svg', { viewBox: `0 0 ${width} ${height}`, role: 'img', 'aria-label': 'Quackle equity points lost by game turn; select a bar to review that turn' });
+  const svg = svgElement('svg', { viewBox: `0 0 ${width} ${height}`, role: 'group', 'aria-label': 'Your Quackle equity points lost by game turn; select a bar to review that turn' });
   for (let i = 0; i <= 4; i++) {
     const value = yMax * i / 4;
-    svg.append(svgElement('line', { x1: margin.left, x2: width - margin.right, y1: y(value), y2: y(value), stroke: '#34415a', 'stroke-width': 1 }));
-    const label = svgElement('text', { x: margin.left - 8, y: y(value) + 4, fill: '#9aa7bb', 'font-size': 11, 'text-anchor': 'end' });
+    svg.append(svgElement('line', { x1: margin.left, x2: width - margin.right, y1: y(value), y2: y(value), stroke: '#e0e7dc', 'stroke-width': 1 }));
+    const label = svgElement('text', { x: margin.left - 8, y: y(value) + 4, fill: '#64736c', 'font-size': 11, 'text-anchor': 'end' });
     label.textContent = String(Math.round(value));
     svg.append(label);
   }
   const tickCount = Math.min(8, totalTurns);
   for (let i = 0; i < tickCount; i++) {
     const turnNumber = tickCount === 1 ? 1 : Math.round(1 + i * (totalTurns - 1) / (tickCount - 1));
-    const label = svgElement('text', { x: x(turnNumber - 1), y: height - 10, fill: '#9aa7bb', 'font-size': 11, 'text-anchor': 'middle' });
+    const label = svgElement('text', { x: x(turnNumber - 1), y: height - 22, fill: '#64736c', 'font-size': 11, 'text-anchor': 'middle' });
     label.textContent = String(turnNumber);
     svg.append(label);
   }
-  const xLabel = svgElement('text', { x: margin.left + plotWidth / 2, y: height - 1, fill: '#9aa7bb', 'font-size': 10, 'text-anchor': 'middle' });
-  xLabel.textContent = 'Game turn · click a marker to inspect';
+  const xLabel = svgElement('text', { x: margin.left + plotWidth / 2, y: height - 1, fill: '#64736c', 'font-size': 10, 'text-anchor': 'middle' });
+  xLabel.textContent = 'Game turn';
   svg.append(xLabel);
   const barWidth = Math.max(3, Math.min(14, plotWidth / Math.max(1, totalTurns) * 0.68));
-  const colors = { best: '#75d39a', inaccuracy: '#e8c77a', mistake: '#f0a45f', blunder: '#f08080', unrated: '#8490a4' };
+  const colors = { best: '#3d8057', inaccuracy: '#b39236', mistake: '#cb8a4c', blunder: '#bd5d60', unrated: '#8b978b' };
   for (const point of points) {
-    const group = svgElement('g', { class: 'quality-point', tabindex: 0, role: 'button', 'aria-label': point.category === 'unrated'
+    const group = svgElement('g', { class: 'quality-point', 'data-turn-index': point.turnIndex, tabindex: 0, role: 'button', 'aria-label': point.category === 'unrated'
       ? 'Turn ' + (point.turnIndex + 1) + ', unrated. Select to inspect.'
       : 'Turn ' + (point.turnIndex + 1) + ', ' + qualityLabel(point.category) + ', ' + point.loss.toFixed(1) + ' equity points lost. Select to inspect.' });
     const title = svgElement('title');
@@ -740,10 +1340,15 @@ function drawEquityLossChart(points, totalTurns) {
     } else {
       group.append(svgElement('circle', { cx: centerX, cy: y(0) - 3, r: Math.max(3, barWidth / 2), fill: colors.unrated }));
     }
+    group.append(svgElement('rect', { x: centerX - Math.max(12, barWidth / 2), y: margin.top, width: Math.max(24, barWidth), height: plotHeight, fill: 'transparent' }));
     const inspect = () => selectTurn(point.turnIndex);
     group.addEventListener('click', inspect);
     group.addEventListener('keydown', event => {
-      if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); inspect(); }
+      if (event.key === 'Enter' || event.key === ' ') {
+        event.preventDefault();
+        inspect();
+        byId('reviewPanel').querySelector('.quality-point[data-turn-index="' + point.turnIndex + '"]')?.focus({ preventScroll: true });
+      }
     });
     svg.append(group);
   }
@@ -753,15 +1358,24 @@ function drawEquityLossChart(points, totalTurns) {
 function refreshMoveQualityPanel() {
   const existing = byId('reviewPanel').querySelector('.quality-panel');
   if (existing && currentReview) existing.replaceWith(makeMoveQualityPanel(currentReview));
-  const points = moveQualityResults && moveQualityResults.points || [];
-  byId('reviewPanel').querySelectorAll('.turn-row').forEach((row, index) => {
-    row.querySelectorAll('.quality-chip').forEach(node => node.remove());
-    if (points[index]) row.append(makeQualityBadge(points[index], false, true));
-  });
+  if (currentReview) {
+    byId('reviewPanel').querySelector('.dashboard-stats')?.replaceWith(makeDashboardStats(currentReview));
+    byId('reviewPanel').querySelector('.insights-panel')?.replaceWith(makeInsightsPanel(currentReview));
+    byId('reviewPanel').querySelector('.walkthrough-tools')?.replaceWith(makeWalkthroughTools(currentReview));
+    const list = byId('reviewPanel').querySelector('.turn-list-panel');
+    if (list) {
+      const scrollTop = list.scrollTop;
+      list.replaceWith(makeTurnList(currentReview));
+      byId('reviewPanel').querySelector('.turn-list-panel').scrollTop = scrollTop;
+    }
+    byId('reviewPanel').querySelector('.turn-coach')?.replaceWith(makeTurnCoach(currentReview.turns[currentTurnIndex], qualityPointForTurn(currentTurnIndex)));
+    byId('reviewPanel').querySelector('.luck-panel')?.replaceWith(makeLuckPanel(currentReview));
+  }
   const meta = byId('reviewPanel').querySelector('.turn-meta');
   if (meta) {
     meta.querySelectorAll('.turn-quality').forEach(node => node.remove());
-    if (points[currentTurnIndex]) meta.append(makeQualityBadge(points[currentTurnIndex], true));
+    const point = qualityPointForTurn(currentTurnIndex);
+    if (point) meta.append(makeQualityBadge(point, true));
   }
 }
 
@@ -801,11 +1415,11 @@ function makeTrendPanel(review) {
     const legend = makeElement('div', 'trend-legend');
     const mine = makeElement('span');
     const mineSwatch = makeElement('i', 'trend-swatch');
-    mineSwatch.style.background = '#72b7ff';
+    mineSwatch.style.background = '#2b7954';
     mine.append(mineSwatch, document.createTextNode(review.my_name || 'You'));
     const theirs = makeElement('span');
     const theirsSwatch = makeElement('i', 'trend-swatch');
-    theirsSwatch.style.background = '#ff9d9d';
+    theirsSwatch.style.background = '#b88755';
     theirs.append(theirsSwatch, document.createTextNode(review.opponent || 'Opponent'));
     legend.append(mine, theirs);
     panel.append(legend);
@@ -825,24 +1439,24 @@ function drawTrendChart(points, totalTurns) {
   const svg = svgElement('svg', { viewBox: `0 0 ${width} ${height}`, role: 'img', 'aria-label': 'Estimated player win chance by completed turns' });
 
   for (let value = 0; value <= 100; value += 25) {
-    const gridLine = svgElement('line', { x1: margin.left, x2: width - margin.right, y1: y(value), y2: y(value), stroke: '#34415a', 'stroke-width': 1 });
+    const gridLine = svgElement('line', { x1: margin.left, x2: width - margin.right, y1: y(value), y2: y(value), stroke: '#e0e7dc', 'stroke-width': 1 });
     svg.append(gridLine);
-    const label = svgElement('text', { x: margin.left - 8, y: y(value) + 4, fill: '#9aa7bb', 'font-size': 11, 'text-anchor': 'end' });
+    const label = svgElement('text', { x: margin.left - 8, y: y(value) + 4, fill: '#64736c', 'font-size': 11, 'text-anchor': 'end' });
     label.textContent = value + '%';
     svg.append(label);
   }
   const tickCount = Math.min(5, xMax);
   for (let i = 0; i <= tickCount; i++) {
     const value = Math.round(xMax * i / tickCount);
-    const label = svgElement('text', { x: x(value), y: height - 10, fill: '#9aa7bb', 'font-size': 11, 'text-anchor': 'middle' });
+    const label = svgElement('text', { x: x(value), y: height - 22, fill: '#64736c', 'font-size': 11, 'text-anchor': 'middle' });
     label.textContent = String(value);
     svg.append(label);
   }
-  const xLabel = svgElement('text', { x: margin.left + plotWidth / 2, y: height - 1, fill: '#9aa7bb', 'font-size': 10, 'text-anchor': 'middle' });
+  const xLabel = svgElement('text', { x: margin.left + plotWidth / 2, y: height - 1, fill: '#64736c', 'font-size': 10, 'text-anchor': 'middle' });
   xLabel.textContent = 'Moves completed';
   svg.append(xLabel);
 
-  for (const [key, color] of [['mine', '#72b7ff'], ['theirs', '#ff9d9d']]) {
+  for (const [key, color] of [['mine', '#2b7954'], ['theirs', '#b88755']]) {
     const values = points.map(point => `${x(point.x)},${y(point[key])}`).join(' ');
     if (points.length > 1) svg.append(svgElement('polyline', { points: values, fill: 'none', stroke: color, 'stroke-width': 2.5, 'stroke-linejoin': 'round', 'stroke-linecap': 'round' }));
     for (const point of points) {
@@ -936,11 +1550,18 @@ async function startMoveQuality(review) {
     return;
   }
   const token = ++moveQualityRequestToken;
-  moveQualityResults = { state: 'running', points: [], current: 0, message: 'Preparing Quackle…' };
+  moveQualityResults = { state: 'running', evaluation: 'static-equity-v1', points: [], current: 0, message: 'Preparing Quackle…' };
+  if (previewBestMove) {
+    previewBestMove = false;
+    renderReview();
+  }
   refreshMoveQualityPanel();
   const turns = review.turns;
   try {
     await loadQuackle();
+    const frequencies = await loadWordFrequency().catch(() => null);
+    if (token !== moveQualityRequestToken || activeGameId !== review.id) return;
+    if (!frequencies) moveQualityResults.frequencyWarning = 'Word commonness could not load. Move quality is still available; re-analyze moves to retry adjusted performance.';
     for (let index = 0; index < turns.length; index++) {
       if (token !== moveQualityRequestToken || activeGameId !== review.id) return;
       const turn = turns[index];
@@ -950,27 +1571,24 @@ async function startMoveQuality(review) {
       let point;
       if (!validAnalysisTurn(turn)) {
         point = makeUnratedPoint(index, turn, 'Missing a valid board, rack, or bag count.');
-      } else if (!actionWord(turn.action)) {
+      } else if (!parsePlay(turn.action)?.length || !actionWord(turn.action)) {
         point = makeUnratedPoint(index, turn, 'Passes and tile exchanges have no played word to compare.');
       } else {
-        const bagCount = Number(turn.bag_count);
-        const finalTurnsRemaining = bagCount === 0 ? Number(turn.final_turns_remaining) : 0;
-        const result = await workerRequest('simulateKibitz', {
+        const result = await workerRequest('kibitz', {
           gridJson: JSON.stringify(turn.grid),
           rack: String(turn.rack),
           playerScore: Number(turn.mover_score) || 0,
           opponentScore: Number(turn.other_score) || 0,
-          numMoves: MOVE_COUNT,
-          iterations: 1,
-          bagCount,
-          finalTurnsRemaining
+          numMoves: MOVE_COUNT
         });
         if (token !== moveQualityRequestToken || activeGameId !== review.id) return;
-        if (!result || result.simulated !== true || !Array.isArray(result.moves)) {
+        if (!result || result.error || result.simulated !== false || !Array.isArray(result.moves)) {
           throw new Error('Quackle did not return move candidates for turn ' + (index + 1) + '.');
         }
         const moves = result.moves;
         const candidates = moves.filter(move => Number.isFinite(move.equity));
+        const bestEquity = candidates.length ? Math.max(...candidates.map(move => move.equity)) : null;
+        const bestMove = candidates.find(move => move.equity === bestEquity);
         const playedIndex = findPlayedCandidateIndex(turn, moves, false);
         if (playedIndex < 0) {
           const looseMatch = findPlayedCandidateIndex(turn, moves, true);
@@ -980,7 +1598,6 @@ async function startMoveQuality(review) {
         } else if (!Number.isFinite(moves[playedIndex].equity) || !candidates.length) {
           point = makeUnratedPoint(index, turn, 'Quackle returned no equity value for the played move.');
         } else {
-          const bestEquity = Math.max(...candidates.map(move => move.equity));
           const loss = Math.max(0, bestEquity - moves[playedIndex].equity);
           point = {
             turnIndex: index,
@@ -991,10 +1608,13 @@ async function startMoveQuality(review) {
             loss,
             playedEquity: moves[playedIndex].equity,
             bestEquity,
+            playedMove: reviewMove(turn, moves[playedIndex]),
             candidateRank: playedIndex + 1,
             candidateCount: moves.length
           };
         }
+        if (bestMove) point.bestMove = reviewMove(turn, bestMove);
+        if (frequencies) point.opportunity = CrossplayLuck.opportunityContext(turn, moves, frequencies, candidateWord);
       }
       moveQualityResults.points.push(point);
       moveQualityResults.current = index + 1;
@@ -1017,6 +1637,17 @@ async function startMoveQuality(review) {
 
 function makeUnratedPoint(turnIndex, turn, reason) {
   return { turnIndex, turn: turnIndex + 1, mine: Boolean(turn && turn.mine), action: turn && turn.action, category: 'unrated', loss: null, reason };
+}
+
+function reviewMove(turn, move) {
+  return {
+    word: candidateWord(turn, move) || (move.tiles ? 'Exchange ' + move.tiles : 'Pass'),
+    position: String(move.position || ''),
+    tiles: String(move.tiles || ''),
+    score: move.score,
+    leave: String(move.leave || ''),
+    equity: move.equity
+  };
 }
 
 function workerRequest(type, payload = {}) {
@@ -1198,6 +1829,7 @@ function wordFrequencyLabel(word, frequencies) {
 function actionWord(action) {
   const token = String(action || '').trim().split(/\s+/)[0] || '';
   const word = token.replace(/[()]/g, '').toUpperCase();
+  if (['PASS', 'SWAP', 'EXCHANGE'].includes(word)) return '';
   return /^[A-Z]{2,15}$/.test(word) ? word : '';
 }
 
@@ -1246,7 +1878,13 @@ function findPlayedCandidateIndex(turn, moves, allowScoreFallback = true) {
   if (!actual) return -1;
   const actionParts = String(turn.action || '').trim().split(/\s+/);
   const actualPosition = actionParts[1] || '';
-  let index = moves.findIndex(move => candidateWord(turn, move) === actual && String(move.position) === actualPosition);
+  const played = candidatePreview(turn, { position: actualPosition,
+    tiles: actionParts[0].replace(/\(([A-Za-z]+)\)/g, (_, letters) => '.'.repeat(letters.length)), score: turn.score });
+  let index = moves.findIndex(move => {
+    if (!played || Number(move.score) !== Number(turn.score)) return false;
+    const candidate = candidatePreview(turn, move);
+    return candidate && candidate.grid.every((row, index) => row === played.grid[index]);
+  });
   if (index < 0 && allowScoreFallback) {
     index = moves.findIndex(move => String(move.position) === actualPosition && Number(move.score) === Number(turn.score));
   }
@@ -1324,6 +1962,11 @@ function renderWordInsight(turn, moves, output) {
   });
 }
 
+byId('accountSettingsButton').addEventListener('click', event => {
+  const expanded = byId('connectionState').closest('.account').classList.toggle('expanded');
+  event.currentTarget.setAttribute('aria-expanded', String(expanded));
+});
+
 byId('cookieForm').addEventListener('submit', async event => {
   event.preventDefault();
   const input = byId('cookieInput');
@@ -1393,6 +2036,11 @@ byId('signOutButton').addEventListener('click', async () => {
 byId('refreshButton').addEventListener('click', () => loadGames({ refresh: true }));
 
 async function start() {
+  const url = new URL(location.href);
+  if (url.searchParams.has('game')) {
+    await openGame(null, { shareToken: url.searchParams.get('game') });
+    return;
+  }
   let authError = null;
   try {
     await window.CrossplayAuth.initialize();
@@ -1448,6 +2096,7 @@ async function start() {
   }
 }
 
+window.addEventListener('popstate', () => location.reload());
 start();
 </script>
 </body>

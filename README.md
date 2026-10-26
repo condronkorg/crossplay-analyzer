@@ -14,7 +14,132 @@ Open [http://localhost:8000](http://localhost:8000). On the game review page, pa
 
 The recent games list comes from NYT's Crossplay service and only completed games can be reviewed. NYT may change its service endpoints or session requirements.
 
+Each game review starts with the result and labeled scores, your points per turn and highest-scoring play, and an interactive cumulative-score timeline. Analyze move quality to see your best-move count, average equity loss, and largest rated opportunities; select an opportunity to replay that turn. Personal summaries exclude opponent moves and unrated turns. Partial analysis and rated-turn coverage are labeled. Estimated win chances remain available under **Explore estimated win chances**.
+
+Choose **Start walkthrough** to review the game from the first turn. Step forward or backward, jump to the first or last move, or use the arrow keys and Home/End while focused in the replay. After analyzing move quality, use **Previous flagged move** / **Next flagged move** or **Only your flagged moves** to revisit your inaccuracies, mistakes, and blunders in game order. Opponent moves remain available in the full turn list.
+
+Each analyzed turn explains its grade and, when candidates are available, compares the played move with Quackle’s best candidate, including points, rack leave, and equity. **Preview best move** places the candidate on the board before that turn; **Return to played move** restores the replay. New completed analyses save these comparisons with the game. Older saved grades still work; re-analyze to add comparisons. Grades use provisional equity-loss bands (Best <1, Inaccuracy 1–<3, Mistake 3–<8, Blunder ≥8), rather than win probability. Passes, exchanges, invalid positions, and played moves outside the returned top 15 stay unrated; an available best candidate can still be previewed for an unmatched play.
+
+**Luck & performance** estimates how favorable your racks were compared with
+2,048 reproducible samples of the same size from Crossplay tiles not on the
+board. The tile-flexibility heuristic rewards blanks, S, balanced vowels and
+consonants, and flexible letters, while penalizing duplicates and awkward
+combinations. A score of 50 is typical. This is rack ease, not pure draw luck:
+retained tiles reflect previous choices, and repeated racks are not independent.
+The estimate does not model board openings or opponent decisions.
+
+**Analyze move quality** also produces execution and adjusted performance scores
+from 0–100. Move quality uses Quackle's deterministic position evaluation rather
+than sampled draws. Execution converts each rated turn's Quackle equity loss with
+`100 / (1 + loss / 10)`. Adjusted performance discounts less-common candidate
+words using the bundled wordfreq list, then gives tougher racks up to twice the
+weight. Unknown words receive no discount. Coverage, a replayable turn breakdown,
+frequency attribution, and the full provisional formulas appear in the panel.
+These scores do not assign a percentage of the result to skill or luck. Existing
+saved reviews still work; re-analyze moves to add word-opportunity data. New data
+is saved with move-quality results and is available on shared reviews.
+
+Opening a finished game puts its shareable URL in the address bar. Send that URL to a friend, or expand **Share this game** and use **Copy game link**. Anyone with the link can replay that game and view player names, scores, racks, and saved analysis without signing in or connecting an NYT account. Links use a random token and grant access only to that game. Guests can run Quackle in their own browser; their analysis does not change the owner's saved results.
+
+Hosted links persist in Supabase. Apply all migrations in `supabase/migrations/` before deploying this feature. Local links last until the owner's local session expires, its cookie is forgotten or replaced, or the server restarts; recipients must be able to reach the server's address. For synthetic data without real credentials, use `npm run frontend` as described under Tests.
+
 The screenshot parser is at `/screenshot.html` and the manual board page is at `/manual.html`. Screenshot parsing and the bundled Quackle engine run locally in the browser.
+
+Use **Try a custom move** on any analysis page to evaluate a word outside
+Quackle’s suggested moves. Enter the word, its start square (for example, `G8`),
+and Across or Down. Include existing board letters or use `.` for them; uppercase
+letters use regular rack tiles and lowercase letters use blanks. Game reviews
+evaluate against the board and rack **before** the selected turn.
+
+The result compares score, rack leave, and static equity with the best legal
+move. **Estimate win% (slower)** runs 277 samples per candidate and compares
+simulated equity and win chances. Moves far down the static ranking take longer
+because the bundled engine must simulate the candidates above them too. You can
+cancel a custom evaluation independently of other analysis. Custom results stay
+in the current page and do not alter the recorded game or saved move-quality review.
+
+## Datadog
+
+All integrations target the US5 site, `us5.datadoghq.com`, with service
+`crossplay-analyzer`. Browser monitoring uses environment `production`; tests
+use `ci`.
+
+### Browser RUM and Error Tracking
+
+1. Create a **Browser** RUM application in Datadog. In the shared
+   `datadog-rum.js` file, replace both public placeholder values:
+   - `REPLACE_WITH_DATADOG_RUM_APPLICATION_ID`: the RUM application ID.
+   - `REPLACE_WITH_DATADOG_RUM_CLIENT_TOKEN`: the RUM client token.
+2. Redeploy. `index.html`, `screenshot.html`, and `manual.html` load that shared
+   file, which loads the US5 Browser RUM v6 SDK asynchronously from Datadog's
+   CDN. Until **both** placeholders are filled, it loads no SDK and sends no
+   telemetry. Allow `www.datadoghq-browser-agent.com` and Datadog US5 RUM intake
+   in any deployment content security policy or network allow list.
+3. Verify page views, resources, and browser errors in RUM / Error Tracking.
+
+The application ID and client token are public browser configuration. **Never
+put `DD_API_KEY` or `DD_APP_KEY` in frontend files.** Session Replay is disabled
+(`sessionReplaySampleRate: 0`), `defaultPrivacyLevel: 'mask'` masks all content
+and inputs, and the NYT-S form has `data-dd-privacy="hidden"` as an additional
+protection. Do not add cookies, request headers/bodies, or authentication data
+to RUM context or error messages. Screenshot processing and Quackle remain
+local; configured RUM sends browser diagnostics to Datadog.
+
+RUM injects Datadog and W3C trace context only into same-origin
+`/api/crossplay` and `/api/crossplay/...` requests. Other origins, including
+NYTimes and Supabase, do not receive these tracing headers. To see linked
+backend spans, the deployed API must also have Datadog APM ingestion configured
+and extract this incoming trace context; the browser configuration alone does
+not create backend traces. Backend APM deployment setup is separate from this
+repository's browser and CI instrumentation.
+
+### GitHub Actions: pipelines, Test Optimization, and Code Security
+
+Add these **repository Actions secrets** from the same Datadog organization:
+
+| Secret | Required for |
+| --- | --- |
+| `DD_API_KEY` | Agentless Python test reporting, pipeline custom spans, SAST, and SCA |
+| `DD_APP_KEY` | SAST and SCA, with the Code Security access required by the Datadog actions |
+
+In Datadog, connect this repository through the **GitHub integration**, enable
+**CI Visibility / Pipeline Visibility** for GitHub Actions, and enable **Test
+Optimization** and **Code Security** for the repository. The GitHub integration
+supplies full workflow/job/step events. The API key and `datadog-ci trace`
+custom span in `test.yml` do not replace that integration.
+
+The existing Test workflow runs `npm test`, covering the API, sharing, game
+review, browser pipeline, grid-detection, score-OCR, and RUM checks. The Python
+suites run through pytest, with adapters for the standalone OCR/grid scripts.
+When `DD_API_KEY` is present, `PYTEST_ADDOPTS=--ddtrace` sends individual Python
+test results directly to Datadog, and `datadog-ci trace` adds a regression step
+span to the pipeline. The adapters preserve each script's exit status
+and execute inside pytest so coverage can be associated with each test;
+they do not change OCR or grid checks. RUM privacy and trace-routing checks
+run with `npm run test:rum`.
+
+The Datadog Code Security workflow runs the official SAST and SCA actions on
+pushes, manual dispatch, and weekly. Datadog Code Security rejects
+`pull_request` events, so branch updates use only `push` to avoid duplicate
+scans. The Test workflow continues to run on pull requests. SAST uses the Python
+and JavaScript security rules in `static-analysis.datadog.yml`; SCA scans dependency
+manifests. The test tracer has an exact version in `requirements-test.txt`
+because SCA omits ranged versions. SCA still runs if SAST fails. Without the
+repository secrets (including fork pull requests), Python tests run without Datadog and security
+scans are explicitly skipped. Neither workflow uses `pull_request_target`,
+and both only request read access to repository contents.
+
+For local validation:
+
+```bash
+npm run frontend                 # mock API/dev server on port 8000
+npm run test:rum                 # no npm dependencies or Datadog credentials
+npm test                         # full Python and RUM presubmit suite
+```
+
+The Python suites need `requirements-test.txt` and a Playwright Chromium
+installation, as described below. Local tests do not upload to Datadog unless
+explicitly instrumented and given credentials.
 
 ## Deploy to Vercel
 
@@ -57,19 +182,90 @@ Do not put NYT cookies in deployment variables, browser storage, query strings, 
 
 ## Tests
 
-Install the test dependencies and Chromium:
+### Develop and test with fake NYT data
+
+Start the real frontend and local API with a synthetic NYT transport:
+
+```bash
+npm run frontend
+# Open http://127.0.0.1:8000
+```
+
+Enter `mock-nyt-cookie-for-local-testing` in the **NYT-S cookie** field and click
+**Connect**. No real NYT cookie, Supabase account, or network access is needed.
+Two finished games are available to replay and analyze with the bundled Quackle
+engine; an active game is hidden. Fixtures include existing letters, an assigned
+blank, a swap, passes, and a game fetched through the detail endpoint.
+
+The transport replaces only upstream NYT JSON requests. The frontend, HTTP API,
+cookie validation, browser sessions, game summaries, and replay use the normal
+application code. All players, identifiers, and abbreviated games in
+`tools/fixtures/nyt.json` are invented, not captured account data. This exercises
+the local API; Vercel's Google sign-in and Supabase persistence are not emulated.
+
+Other fake cookie values exercise error and empty states:
+
+| Cookie value | Scenario |
+| --- | --- |
+| `mock-empty-cookie-for-local-testing` | Connected account with no recent games |
+| `mock-expired-cookie-for-local-testing` | NYT rejects the cookie (401) |
+| `mock-outage-cookie-for-local-testing` | Connect succeeds; loading games fails (502) |
+
+`npm run frontend -- 8001` selects another port; `PORT` and `HOST` are also
+supported. The default bind address is loopback. Mock mode requires the explicit
+`--mock-nyt` flag and is rejected when `VERCEL` is set. Running
+`python3 crossplay_server.py 8000` without the flag still uses the live NYT API.
+
+### Run presubmit checks
+
+Use Node.js 22+ and Python 3.10+. Install the test dependencies and Chromium:
 
 ```bash
 python3 -m pip install -r requirements-test.txt
 python3 -m playwright install chromium
 ```
 
-Then run the root-level Python tests:
+Bits Code already provides system Chrome, which the browser tests use if
+Playwright's bundled Chromium is unavailable. There are no npm dependencies;
+`npm ci --ignore-scripts` verifies the package lock without downloading packages.
+
+Run the same suite used for GitHub pull requests:
 
 ```bash
-python3 test_grid_detection.py
-python3 test_score_ocr.py
-python3 test_browser_pipeline.py
+npm test
+```
+
+Individual suites are available as `npm run test:api` (standard-library HTTP API
+and upstream transport tests), `npm run test:sharing` (local and persisted sharing
+authorization checks), `npm run test:review` (Playwright game review and
+real Quackle analysis), and `npm run test:ocr` (existing grid, score OCR, screenshot
+upload, manual board, and engine regressions). API and review tests start and stop
+isolated mock servers on free ports; each browser test uses a fresh context and
+blocks external requests. No service credentials or GitHub secrets are needed.
+
+To run review checks against the interactive dev server instead:
+
+```bash
+# Keep npm run frontend running in another terminal.
+CROSSPLAY_TEST_BASE_URL=http://127.0.0.1:8000 npm run test:review
+```
+
+For agent-driven exploration, use the `playwright-cli` skill with that server,
+then navigate and connect through the visible form:
+
+```bash
+playwright-cli open http://127.0.0.1:8000 --browser=chrome
+playwright-cli snapshot
+# Click the NYT-S textbox ref from the snapshot, then:
+playwright-cli type "mock-nyt-cookie-for-local-testing"
+# Click Connect, then a finished game; use snapshot to inspect current refs.
+playwright-cli close
 ```
 
 Keep local `.env` files, HAR captures, and account game data out of commits. Those files are ignored by Git.
+
+## License
+
+Licensed under the [GNU Affero General Public License v3.0](LICENSE). If you run a modified version of this project as a network service, you must offer its source to the users of that service.
+
+The bundled Quackle engine (`quackle.js`, `quackle.wasm`, `quackle.data`) is built from [Quackle](https://github.com/quackle/quackle), which is licensed under the GPL. Check the dictionary data bundled with it for its own terms. "NYT Crossplay" is a trademark of its owner, and this project is not affiliated with or endorsed by The New York Times.
