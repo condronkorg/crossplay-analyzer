@@ -58,6 +58,7 @@ SESSION_TTL_SECONDS = 14 * 24 * 60 * 60
 MAX_SESSIONS = 256
 LIST_CACHE_SECONDS = 15
 ANALYSIS_VERSION = 'quackle-equity-v1'
+DAILY_REFRESH_SECONDS = 24 * 60 * 60
 TOTAL_TILES = 100
 CENTER = (7, 7)
 
@@ -644,7 +645,7 @@ class Handler(SimpleHTTPRequestHandler):
 
     def saved_game_analysis(self, user_id, game_id):
         rows = self.supabase_data_request('GET', 'game_analyses', {
-            'select': 'win_trend,move_quality,analysis_version',
+            'select': 'win_trend,move_quality,turn_analyses,analysis_version',
             'user_id': 'eq.' + user_id,
             'nyt_game_id': 'eq.' + game_id,
             'analysis_version': 'eq.' + ANALYSIS_VERSION,
@@ -656,24 +657,54 @@ class Handler(SimpleHTTPRequestHandler):
             'version': rows[0].get('analysis_version'),
             'win_trend': rows[0].get('win_trend'),
             'move_quality': rows[0].get('move_quality'),
+            'turn_analyses': rows[0].get('turn_analyses') or {},
         }
 
-    def save_game_analysis(self, user_id, game_id, body):
+    @staticmethod
+    def validate_game_analysis(body):
+        if body.get('analysis_version') != ANALYSIS_VERSION:
+            raise CrossplayError('Unsupported analysis version.', 400)
         for field in ('win_trend', 'move_quality'):
             value = body.get(field)
-            if value is not None and (not isinstance(value, dict) or value.get('state') != 'done' or not isinstance(value.get('points'), list)):
+            if field in body and (not isinstance(value, dict) or value.get('state') != 'done' or not isinstance(value.get('points'), list)):
                 raise CrossplayError('Only completed game analyses can be saved.', 400)
-        existing = self.saved_game_analysis(user_id, game_id) or {}
-        win_trend = body.get('win_trend') if 'win_trend' in body else existing.get('win_trend')
-        move_quality = body.get('move_quality') if 'move_quality' in body else existing.get('move_quality')
-        self.supabase_data_request('POST', 'game_analyses', {'on_conflict': 'user_id,nyt_game_id,analysis_version'}, {
-            'user_id': user_id,
-            'nyt_game_id': game_id,
-            'analysis_version': ANALYSIS_VERSION,
-            'win_trend': win_trend,
-            'move_quality': move_quality,
-            'updated_at': datetime.now(timezone.utc).isoformat(),
+        entries = body.get('turn_analyses', {})
+        if not isinstance(entries, dict) or len(entries) > 512:
+            raise CrossplayError('Invalid turn analysis cache.', 400)
+        for key, result in entries.items():
+            if len(key) > 2048 or not isinstance(result, dict) or result.get('error') or not isinstance(result.get('moves'), list):
+                raise CrossplayError('Invalid turn analysis result.', 400)
+        return {field: body[field] for field in ('win_trend', 'move_quality', 'turn_analyses') if field in body}
+
+    def save_game_analysis(self, user_id, game_id, body):
+        snapshot = self.validate_game_analysis(body)
+        review = self.saved_game_review(user_id, game_id)
+        if not review or review.get('status') != 'completed':
+            raise CrossplayError('Import this finished game before saving analysis.', 404)
+        self.supabase_data_request('POST', 'rpc/save_crossplay_analysis', payload={
+            'account_id': user_id, 'game_id': game_id,
+            'version': ANALYSIS_VERSION, 'snapshot': snapshot,
+        })
+
+    def refresh_persistent_games(self, user_id, if_stale=False):
+        if if_stale:
+            rows = self.supabase_data_request('GET', 'crossplay_refresh_state', {
+                'select': 'refreshed_at', 'user_id': 'eq.' + user_id, 'limit': '1',
+            })
+            if rows:
+                refreshed = datetime.fromisoformat(rows[0]['refreshed_at'].replace('Z', '+00:00'))
+                if time.time() - refreshed.timestamp() < DAILY_REFRESH_SECONDS:
+                    return self.persistent_games(user_id)
+        _, client = self.current_session()
+        if client is None:
+            raise CrossplayError('Connect your NYT cookie before importing recent games.', 409)
+        me = client.me()
+        summaries = [summarize_game(game, me['user_id']) for game in client.recent_games()]
+        self.upsert_game_summaries(user_id, summaries)
+        self.supabase_data_request('POST', 'crossplay_refresh_state', {'on_conflict': 'user_id'}, {
+            'user_id': user_id, 'refreshed_at': datetime.now(timezone.utc).isoformat(),
         }, 'resolution=merge-duplicates,return=minimal')
+        return self.persistent_games(user_id)
 
     def current_session(self):
         if os.environ.get('VERCEL'):
@@ -800,6 +831,23 @@ class Handler(SimpleHTTPRequestHandler):
                 return self.handle_token(method)
             if os.environ.get('VERCEL'):
                 return self.handle_persistent_api(method, route)
+            match = re.fullmatch(r'games/([a-z0-9]{6,32})/analysis', route)
+            if match and method == 'PUT':
+                session_id, client = self.current_session()
+                if client is None:
+                    raise CrossplayError('Paste your NYT-S cookie first', 409)
+                snapshot = self.validate_game_analysis(self.read_json_body(max_bytes=2097152))
+                with Handler.sessions_lock:
+                    session = Handler.sessions.get(session_id)
+                    saved = next((review for review in session.get('shared_reviews', {}).values()
+                                  if review['id'] == match.group(1)), None) if session else None
+                    if saved is None:
+                        raise CrossplayError('Import this finished game before saving analysis.', 404)
+                    analysis = saved.get('stored_analysis') or {'version': ANALYSIS_VERSION}
+                    saved['stored_analysis'] = {**analysis, **snapshot, 'turn_analyses': {
+                        **analysis.get('turn_analyses', {}), **snapshot.get('turn_analyses', {}),
+                    }}
+                return self.send_json(200, {'saved': True, 'analysis_version': ANALYSIS_VERSION})
             if method != 'GET':
                 return self.send_json(405, {'error': 'Method not allowed'})
             session_id, client = self.current_session()
@@ -818,6 +866,7 @@ class Handler(SimpleHTTPRequestHandler):
                     return self.send_json(400, {'error': 'Invalid game ID'})
                 review = game_review(client.game(game_id), me['user_id'])
                 review['share_token'] = self.local_game_share_token(session_id, review)
+                review['stored_analysis'] = self.shared_game_review(review['share_token']).get('stored_analysis')
                 return self.send_json(200, review)
             return self.send_json(404, {'error': 'Unknown endpoint'})
         except CrossplayError as e:
@@ -836,13 +885,8 @@ class Handler(SimpleHTTPRequestHandler):
         if route == 'games' and method == 'GET':
             return self.send_json(200, {'games': self.persistent_games(user_id)})
         if route == 'games/refresh' and method == 'POST':
-            _, client = self.current_session()
-            if client is None:
-                return self.send_json(409, {'error': 'Connect your NYT cookie before importing recent games.'})
-            me = client.me()
-            summaries = [summarize_game(game, me['user_id']) for game in client.recent_games()]
-            self.upsert_game_summaries(user_id, summaries)
-            return self.send_json(200, {'games': summaries})
+            body = self.read_json_body() if int(self.headers.get('Content-Length') or 0) else {}
+            return self.send_json(200, {'games': self.refresh_persistent_games(user_id, body.get('if_stale') is True)})
         match = re.match(r'^games/([^/]+)/review$', route)
         if match and method == 'GET':
             game_id = match.group(1).lower()
@@ -867,7 +911,7 @@ class Handler(SimpleHTTPRequestHandler):
             game_id = match.group(1).lower()
             if not GAME_ID_RE.match(game_id):
                 return self.send_json(400, {'error': 'Invalid game ID'})
-            body = self.read_json_body(max_bytes=524288)
+            body = self.read_json_body(max_bytes=2097152)
             self.save_game_analysis(user_id, game_id, body)
             return self.send_json(200, {'saved': True, 'analysis_version': ANALYSIS_VERSION})
         return self.send_json(404 if method in ('GET', 'POST', 'PUT', 'DELETE') else 405,

@@ -14,11 +14,11 @@ Open [http://localhost:8000](http://localhost:8000). On the game review page, pa
 
 The recent games list comes from NYT's Crossplay service and only completed games can be reviewed. NYT may change its service endpoints or session requirements.
 
-Each game review starts with the result and labeled scores, your points per turn and highest-scoring play, and an interactive cumulative-score timeline. Analyze move quality to see your best-move count, average equity loss, and largest rated opportunities; select an opportunity to replay that turn. Personal summaries exclude opponent moves and unrated turns. Partial analysis and rated-turn coverage are labeled. Estimated win chances remain available under **Explore estimated win chances**.
+Each game review starts with the result and labeled scores, your points per turn and highest-scoring play, and an interactive cumulative-score timeline. Opening a game automatically starts move-quality analysis and then prepares Quackle candidates and win estimates for every valid turn in a background worker. You can replay turns while it runs. Your best-move count, average equity loss, and largest rated opportunities appear as results arrive; select an opportunity to replay that turn. Personal summaries exclude opponent moves and unrated turns. Partial analysis and rated-turn coverage are labeled. Estimated win chances remain available under **Explore estimated win chances**.
 
 Choose **Start walkthrough** to review the game from the first turn. Step forward or backward, jump to the first or last move, or use the arrow keys and Home/End while focused in the replay. After analyzing move quality, use **Previous flagged move** / **Next flagged move** or **Only your flagged moves** to revisit your inaccuracies, mistakes, and blunders in game order. Opponent moves remain available in the full turn list.
 
-Each analyzed turn explains its grade and, when candidates are available, compares the played move with Quackle’s best candidate, including points, rack leave, and equity. **Preview best move** places the candidate on the board before that turn; **Return to played move** restores the replay. New completed analyses save these comparisons with the game. Older saved grades still work; re-analyze to add comparisons. Grades use provisional equity-loss bands (Best <1, Inaccuracy 1–<3, Mistake 3–<8, Blunder ≥8), rather than win probability. Passes, exchanges, invalid positions, and played moves outside the returned top 15 stay unrated; an available best candidate can still be previewed for an unmatched play.
+Each analyzed turn explains its grade and, when candidates are available, compares the played move with Quackle’s best candidate, including points, rack leave, and equity. **Preview best move** places the candidate on the board before that turn; **Return to played move** restores the replay. New analyses save both these comparisons and individual engine results with the game. Candidates appear in turn details as soon as grading has prepared them; simulations fill in win estimates afterward. Reopening a game reuses saved engine results, and interrupted runs resume missing positions. Static grades and sampled win estimates remain separate evaluations. Older saved grades still work; re-analyze to add comparisons. Grades use provisional equity-loss bands (Best <1, Inaccuracy 1–<3, Mistake 3–<8, Blunder ≥8), rather than win probability. Passes, exchanges, invalid positions, and played moves outside the returned top 15 stay unrated; an available best candidate can still be previewed for an unmatched play.
 
 **Luck & performance** estimates how favorable your racks were compared with
 2,048 reproducible samples of the same size from Crossplay tiles not on the
@@ -57,6 +57,10 @@ simulated equity and win chances. Moves far down the static ranking take longer
 because the bundled engine must simulate the candidates above them too. You can
 cancel a custom evaluation independently of other analysis. Custom results stay
 in the current page and do not alter the recorded game or saved move-quality review.
+
+Game imports refresh automatically when the signed-in account has not refreshed successfully in 24 hours. The page checks on startup, hourly while open, and when returning to the tab; manual Refresh always imports immediately. Saved history stays visible during background refreshes and after a refresh failure. Successful refresh times are stored per Supabase user, including accounts with no games. Local sessions refresh daily while open.
+
+Automatic processing runs while the page is open and catches up on the next visit. There is no unattended server job or daily Quackle rerun: finished-game results are reused until their position or engine parameters change. A server queue and compute worker would be needed to analyze games with every browser closed. Apply `supabase/migrations/20261027000000_background_analysis.sql` before deploying: it adds per-turn results, an atomic result-merge function, and per-user refresh times. The browser never stores NYT credentials in local storage.
 
 ## Datadog
 
@@ -174,7 +178,7 @@ Vercel serves the HTML and analyzer assets as static files and runs the game-rev
 
 5. Open the HTTPS deployment URL, choose **Sign in with Google**, then paste the `NYT-S` cookie from a signed-in NYTimes browser session. Imported games and completed analyses are saved to the signed-in Supabase account. The cookie is sent over HTTPS and is encrypted before it is stored when **Remember this NYT cookie encrypted on my account** is checked; uncheck it to keep the cookie only in page memory. **Forget cookie** deletes the saved copy.
 
-The local server keeps its existing in-memory browser session and does not use Supabase persistence. The screenshot parser and manual board page remain local browser tools. Vercel ignores local fixtures, developer notes, and test tooling through `.vercelignore`.
+The local server keeps game analyses with its in-memory browser session and does not use Supabase persistence; they expire with that session or a server restart. The screenshot parser and manual board page remain local browser tools. Vercel ignores local fixtures, developer notes, and test tooling through `.vercelignore`.
 
 Vercel Hobby is free for personal, non-commercial use. The [Hobby plan](https://vercel.com/docs/plans/hobby) allows Functions up to 60 seconds, which is configured here.
 

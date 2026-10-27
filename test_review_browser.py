@@ -58,6 +58,9 @@ class ReviewBrowserTest(unittest.TestCase):
         self.page.on('pageerror', lambda error: self.page_errors.append(str(error)))
         self.page.goto(self.base_url, wait_until='domcontentloaded')
         expect(self.page.locator('#connectionState')).to_contain_text('Not connected')
+        # Display/custom-move tests control computation explicitly. Automation
+        # tests below restore the production entry point.
+        self.page.evaluate('window.automaticAnalysis = startBackgroundAnalysis; startBackgroundAnalysis = () => {}')
 
     def route_request(self, route):
         if urlsplit(route.request.url).netloc != urlsplit(self.base_url).netloc:
@@ -443,11 +446,11 @@ class ReviewBrowserTest(unittest.TestCase):
 
         self.page.route('**/api/crossplay/games/mockgame01/analysis', save)
         self.open_game()
-        self.page.evaluate("persistenceEnabled = true; signedInUser = {id: 'synthetic-user'}")
         self.page.get_by_role('button', name='Analyze move quality', exact=True).click()
         expect(self.page.locator('.quality-panel .trend-status')).to_contain_text('Your review is ready')
-        self.assertEqual(len(saved), 1)
-        points = saved[0]['move_quality']['points']
+        completed = [snapshot for snapshot in saved if 'move_quality' in snapshot]
+        self.assertTrue(completed)
+        points = completed[-1]['move_quality']['points']
         self.assertEqual(points[0]['category'], 'blunder')
         self.assertEqual(points[0]['loss'], 10)
         self.assertEqual(points[0]['bestMove']['word'], 'ACT')
@@ -463,8 +466,8 @@ class ReviewBrowserTest(unittest.TestCase):
         expect(self.page.locator('.turn-coach')).to_contain_text('Blunder · 10.0 equity lost')
         expect(self.page.locator('.move-comparison')).to_contain_text('ACT · 8G')
         # Reloading the saved API representation must restore its comparison.
-        self.use_saved_analysis({'version': saved[0]['analysis_version'],
-                                 'move_quality': saved[0]['move_quality']})
+        self.use_saved_analysis({'version': completed[-1]['analysis_version'],
+                                 'move_quality': completed[-1]['move_quality']})
         self.page.get_by_role('button', name='Review game against Demo Cedar').click()
         self.page.get_by_role('combobox', name='Select game turn').select_option('2')
         expect(self.page.locator('.turn-coach')).to_contain_text('This turn is unrated')
@@ -491,14 +494,26 @@ class ReviewBrowserTest(unittest.TestCase):
                             for point in points if point['turnIndex'] in (3, 4, 5)))
         expect(self.page.locator('.luck-panel')).to_contain_text('3 of your 3 racks estimated')
 
-    def test_analyze_turn_with_bundled_quackle(self):
+    def test_automatic_analysis_with_bundled_quackle_is_saved_and_reused(self):
+        self.page.evaluate('startBackgroundAnalysis = window.automaticAnalysis')
         self.open_game()
+        expect(self.page.locator('.quality-panel .trend-status')).to_contain_text('Your review is ready', timeout=120_000)
+        expect(self.page.locator('#trendStatus')).to_contain_text('Win trend complete', timeout=120_000)
         self.page.get_by_role('combobox', name='Select game turn').select_option('0')
-        self.page.get_by_role('button', name='Analyze this turn', exact=True).click()
-        expect(self.page.locator('#engineStatus')).to_contain_text('Finished 277 simulations per move', timeout=120_000)
+        expect(self.page.locator('#engineStatus')).to_contain_text('277 simulations per move')
         expect(self.page.locator('.moves-table tbody tr').first).to_be_visible()
-        self.assertGreater(self.page.locator('.moves-table tbody tr').count(), 0)
-        expect(self.page.get_by_role('button', name='Analyze this turn', exact=True)).to_be_enabled()
+        expect(self.page.get_by_role('button', name='Analyze this turn', exact=True)).to_have_count(0)
+        results = self.page.evaluate('JSON.stringify(positionCache.results)')
+        self.assertEqual(self.page.evaluate('Object.keys(positionCache.results).length'), 9)
+        # Owners and shared guests load results without starting the engine again.
+        self.page.evaluate('workerRequest = () => { throw new Error("Repeated engine work"); }')
+        self.page.get_by_role('button', name='Review game against Demo Cedar').click()
+        expect(self.page.locator('#engineStatus')).to_contain_text('277 simulations per move')
+        self.assertEqual(self.page.evaluate('JSON.stringify(positionCache.results)'), results)
+        self.page.reload()
+        expect(self.page.locator('#sharedBanner')).to_be_visible()
+        expect(self.page.locator('#engineStatus')).to_contain_text('277 simulations per move')
+        self.assertEqual(self.page.evaluate('JSON.stringify(positionCache.results)'), results)
 
     def enter_custom_move(self, word, square, direction='across'):
         self.page.get_by_role('textbox', name='Custom move word', exact=True).fill(word)
