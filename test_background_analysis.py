@@ -12,7 +12,7 @@ class BackgroundAnalysisTest(unittest.TestCase):
     def setUp(self):
         self.handler = object.__new__(Handler)
         self.handler.supabase_data_request = Mock()
-        self.handler.saved_game_review = Mock(return_value={'status': 'completed'})
+        self.handler.saved_review_status = Mock(return_value='completed')
         self.handler.persistent_games = Mock(return_value=[{'id': 'oldergame'}, {'id': 'newgame1'}])
         self.handler.upsert_game_summaries = Mock()
         self.client = Mock()
@@ -37,11 +37,22 @@ class BackgroundAnalysisTest(unittest.TestCase):
         self.assertNotIn('move_quality', self.handler.supabase_data_request.call_args.kwargs['payload']['snapshot'])
 
     def test_missing_or_unfinished_game_cannot_save_results(self):
-        for review in (None, {'status': 'active'}):
-            self.handler.saved_game_review.return_value = review
+        for status in (None, 'active'):
+            self.handler.saved_review_status.return_value = status
             with self.assertRaises(CrossplayError):
                 self.handler.save_game_analysis('account-b', 'game0001', {'analysis_version': ANALYSIS_VERSION})
         self.handler.supabase_data_request.assert_not_called()
+
+    def test_save_check_reads_only_the_owner_review_status(self):
+        handler = object.__new__(Handler)
+        handler.supabase_data_request = Mock(return_value=[{'status': 'completed'}])
+        self.assertEqual(handler.saved_review_status('account-a', 'game0001'), 'completed')
+        args = handler.supabase_data_request.call_args.args
+        self.assertEqual(args[:2], ('GET', 'crossplay_games'))
+        self.assertEqual(args[2]['select'], 'status:review->>status')
+        self.assertEqual(args[2]['user_id'], 'eq.account-a')
+        handler.supabase_data_request.return_value = []
+        self.assertIsNone(handler.saved_review_status('account-a', 'game0001'))
 
     def test_incomplete_and_wrong_version_results_are_rejected(self):
         for body in ({'analysis_version': 'old'},

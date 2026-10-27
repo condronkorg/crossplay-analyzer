@@ -335,6 +335,7 @@
 <script src="supabase-auth.js"></script>
 <script src="luck-analysis.js"></script>
 <script src="analysis-cache.js"></script>
+<script src="quackle-pool.js"></script>
 <script>
 const PREMIUM_COORDS = {
   '3L': 'A1 O1 G2 I2 F5 J5 E6 K6 B7 N7 B9 N9 E10 K10 F11 J11 G14 I14 A15 O15',
@@ -351,6 +352,12 @@ const MOVE_COUNT = 15;
 const SIMULATION_PLIES = 2;
 const SIMULATION_ITERATIONS = 277;
 const TERMINAL_BAG_LIMIT = 21;
+// The win trend only needs Quackle's top move; full simulations run for the open turn.
+const TREND_MOVE_COUNT = 1;
+const TREND_ITERATIONS = 80;
+// The open turn runs before grading, and grading before the win trend.
+const ANALYSIS_PRIORITY = { view: 100, candidates: 2, trend: 1 };
+const ANALYSIS_SAVE_DELAY = 4000;
 
 let games = [];
 let activeGameId = null;
@@ -362,23 +369,23 @@ let previewBestMove = false;
 let flaggedMovesOnly = false;
 let trendResults = null;
 let trendRequestToken = 0;
+let trendController = null;
 let moveQualityResults = null;
 let moveQualityRequestToken = 0;
+let moveQualityController = null;
 let wordFrequencyPromise = null;
-let quackleWorker = null;
-let workerReady = false;
-let workerPromise = null;
-let workerRequestId = 0;
-const workerRequests = new Map();
+let quacklePool = null;
+let viewedTurnRequest = null;
+let viewRequestSequence = 0;
 let activeNytCookie = '';
 let persistenceEnabled = false;
 let signedInUser = null;
 let nytConfigured = false;
 let viewingSharedGame = false;
 let reviewRequestToken = 0;
-let backgroundRequestToken = 0;
 const POSITION_PARAMETERS = { moveCount: MOVE_COUNT, iterations: SIMULATION_ITERATIONS,
-  plies: SIMULATION_PLIES, terminalBagLimit: TERMINAL_BAG_LIMIT };
+  plies: SIMULATION_PLIES, terminalBagLimit: TERMINAL_BAG_LIMIT,
+  trendMoveCount: TREND_MOVE_COUNT, trendIterations: TREND_ITERATIONS };
 let positionCache = new AnalysisCache({}, POSITION_PARAMETERS);
 let analysisSaveQueue = Promise.resolve();
 let dailyRefreshRunning = false;
@@ -466,7 +473,7 @@ function clearAccountUi(message) {
   if (customMoveController) customMoveController.dispose();
   customMoveController = null;
   reviewRequestToken++;
-  backgroundRequestToken++;
+  clearTimeout(positionCache.saveTimer);
   positionCache = new AnalysisCache({}, POSITION_PARAMETERS);
   stopWorker();
   lastDailyRefreshCheck = 0;
@@ -564,7 +571,8 @@ async function openGame(gameId, { shareToken = null } = {}) {
   if (customMoveController) customMoveController.dispose();
   customMoveController = null;
   const requestToken = ++reviewRequestToken;
-  backgroundRequestToken++;
+  // Send the previous game's unsaved batch before its cache is replaced.
+  if (currentReview) flushAnalysisSave(currentReview, positionCache);
   positionCache = new AnalysisCache({}, POSITION_PARAMETERS);
   stopWorker();
   viewingSharedGame = shareToken !== null;
@@ -606,21 +614,41 @@ async function openGame(gameId, { shareToken = null } = {}) {
   }
 }
 
-async function persistCompletedAnalysis(review = currentReview, cache = positionCache, entries = cache.unsaved || {}) {
-  if (viewingSharedGame || !review || currentReview !== review) return null;
-  const payload = { analysis_version: ANALYSIS_VERSION, turn_analyses: entries };
-  if (trendResults?.state === 'done') payload.win_trend = trendResults;
-  if (moveQualityResults?.state === 'done') payload.move_quality = moveQualityResults;
-  const body = JSON.stringify(payload);
+// New engine results are batched so the engine never waits on the network.
+// Shared viewers compute locally but never save.
+function recordEngineResult(review, cache, key, result) {
+  if (viewingSharedGame || positionCache !== cache) return;
+  cache.unsaved = { ...cache.unsaved, [key]: result };
+  if (!cache.saveTimer) cache.saveTimer = setTimeout(() => flushAnalysisSave(review, cache), ANALYSIS_SAVE_DELAY);
+}
+
+function markAnalysisComplete(field, value) {
+  if (viewingSharedGame) return;
+  positionCache.completed = { ...positionCache.completed, [field]: value };
+}
+
+function flushAnalysisSave(review = currentReview, cache = positionCache, { keepalive = false } = {}) {
+  clearTimeout(cache.saveTimer);
+  cache.saveTimer = null;
   const save = analysisSaveQueue.then(async () => {
-    if (currentReview !== review || positionCache !== cache || viewingSharedGame) return null;
+    const entries = cache.unsaved || {};
+    const completed = cache.completed || {};
+    if (!review || (!Object.keys(entries).length && !Object.keys(completed).length)) return null;
+    cache.unsaved = {};
+    cache.completed = {};
+    const body = JSON.stringify({ analysis_version: ANALYSIS_VERSION, turn_analyses: entries, ...completed });
     try {
       await api('games/' + encodeURIComponent(review.id) + '/analysis', {
-        method: 'PUT', headers: { 'Content-Type': 'application/json' }, body
+        method: 'PUT', headers: { 'Content-Type': 'application/json' }, body,
+        // Browsers cap keepalive bodies at 64 KB.
+        keepalive: keepalive && body.length < 60000
       });
       cache.saveError = null;
       return null;
     } catch (error) {
+      // Keep the batch for the next save; anything newer takes precedence.
+      cache.unsaved = { ...entries, ...cache.unsaved };
+      cache.completed = { ...completed, ...cache.completed };
       cache.saveError = error.message;
       return error.message;
     }
@@ -629,13 +657,13 @@ async function persistCompletedAnalysis(review = currentReview, cache = position
   return save;
 }
 
+// Grading and the win trend queue together; worker priorities run grading first.
 async function startBackgroundAnalysis(review) {
   if (currentReview !== review) return;
-  const token = ++backgroundRequestToken;
-  if (!moveQualityResults || moveQualityResults.state === 'error') await startMoveQuality(review);
-  if (token !== backgroundRequestToken || currentReview !== review || moveQualityResults?.state !== 'done') return;
-  if (trendResults?.state !== 'running' && (!trendResults || trendResults.state === 'error' ||
-      review.turns.some(turn => validAnalysisTurn(turn) && !positionCache.get(turn, 'simulation')))) await startWinTrend(review);
+  const work = [];
+  if (!moveQualityResults || moveQualityResults.state === 'error') work.push(startMoveQuality(review));
+  if (!trendResults || !['running', 'done'].includes(trendResults.state)) work.push(startWinTrend(review));
+  await Promise.all(work);
 }
 
 async function refreshGamesIfDue() {
@@ -855,11 +883,14 @@ function renderReview() {
   const output = makeElement('div', 'position-output');
   analyzeButton.addEventListener('click', async () => {
     analyzeButton.disabled = true;
-    try { await ensurePositionAnalysis(review, turn, 'simulation'); }
-    catch (_) { /* The position panel displays the error and retry action. */ }
+    try {
+      await ensurePositionAnalysis(review, turn, 'simulation', { priority: ANALYSIS_PRIORITY.view + ++viewRequestSequence });
+      await flushAnalysisSave(review, positionCache);
+    } catch (_) { /* The position panel displays the error and retry action. */ }
     finally { if (currentReview === review) refreshPositionPanel(); }
   });
   analysis.append(analyzeButton, status, output);
+  prepareViewedTurn();
   renderPositionAnalysis(turn, analyzeButton, status, output);
   customMoveController = new CustomMove(analysis, () => ({
     gridJson: JSON.stringify(turn.grid), rack: turn.rack,
@@ -1303,7 +1334,7 @@ function makeMoveQualityPanel(review) {
   button.addEventListener('click', () => {
     if (moveQualityResults && moveQualityResults.state === 'running') {
       moveQualityRequestToken++;
-      backgroundRequestToken++;
+      moveQualityController?.abort();
       moveQualityResults = { ...moveQualityResults, state: 'stopped', message: 'Move-quality analysis stopped.' };
       refreshMoveQualityPanel();
       return;
@@ -1453,7 +1484,7 @@ function makeTrendPanel(review) {
   button.addEventListener('click', () => {
     if (trendResults && trendResults.state === 'running') {
       trendRequestToken++;
-      backgroundRequestToken++;
+      trendController?.abort();
       trendResults = { ...trendResults, state: 'stopped', message: 'Trend stopped.' };
       refreshTrendPanel();
       return;
@@ -1484,7 +1515,7 @@ function makeTrendPanel(review) {
     legend.append(mine, theirs);
     panel.append(legend);
   }
-  panel.append(makeElement('p', 'analysis-note', 'Each estimate is taken at the start of the numbered turn using the top-ranked simulated candidate. The final point is the actual game result. Estimates reuse the turn’s ' + SIMULATION_ITERATIONS + ' samples per move; they are approximate.'));
+  panel.append(makeElement('p', 'analysis-note', 'Each estimate is taken at the start of the numbered turn and assumes that player chooses Quackle’s top-ranked move. The final point is the actual game result. Estimates use ' + TREND_ITERATIONS + ' samples, or the turn’s full ' + SIMULATION_ITERATIONS + '-sample simulation when it is already available; they are approximate.'));
   return panel;
 }
 
@@ -1538,10 +1569,18 @@ function validAnalysisTurn(turn) {
 
 async function startWinTrend(review) {
   const token = ++trendRequestToken;
+  trendController?.abort();
+  const controller = trendController = new AbortController();
   trendResults = { state: 'running', points: [], current: 0, message: 'Preparing Quackle…' };
   refreshTrendPanel();
   try {
     const turns = review.turns;
+    // Queue every position so idle workers stay busy; points are still added in turn order.
+    const requests = turns.map(turn => validAnalysisTurn(turn)
+      ? positionCache.get(turn, 'simulation') || ensurePositionAnalysis(review, turn, 'trend',
+        { priority: ANALYSIS_PRIORITY.trend, signal: controller.signal })
+      : null);
+    requests.forEach(request => request?.catch?.(() => {}));
     for (let index = 0; index < turns.length; index++) {
       if (token !== trendRequestToken || activeGameId !== review.id) return;
       const turn = turns[index];
@@ -1549,7 +1588,7 @@ async function startWinTrend(review) {
       trendResults.message = 'Estimating turn ' + (index + 1) + ' of ' + turns.length + '…';
       const status = byId('trendStatus');
       if (status) status.textContent = trendResults.message;
-      const result = await ensurePositionAnalysis(review, turn, 'simulation');
+      const result = await requests[index];
       if (token !== trendRequestToken || currentReview !== review) return;
       const best = result.moves[0];
       const mine = turn.mine ? best.win * 100 : (1 - best.win) * 100;
@@ -1566,7 +1605,8 @@ async function startWinTrend(review) {
     trendResults.state = 'done';
     const skipped = turns.filter(turn => !validAnalysisTurn(turn)).length;
     trendResults.message = 'Win trend complete.' + (skipped ? ' ' + skipped + ' turns skipped because position data is missing.' : '');
-    const saveError = await persistCompletedAnalysis();
+    markAnalysisComplete('win_trend', trendResults);
+    const saveError = await flushAnalysisSave(review);
     if (token !== trendRequestToken) return;
     if (saveError) trendResults.message += ' Save failed: ' + saveError;
   } catch (error) {
@@ -1580,6 +1620,8 @@ async function startWinTrend(review) {
 
 async function startMoveQuality(review) {
   const token = ++moveQualityRequestToken;
+  moveQualityController?.abort();
+  const controller = moveQualityController = new AbortController();
   moveQualityResults = { state: 'running', evaluation: 'static-equity-v1', points: [], current: 0, message: 'Preparing Quackle…' };
   if (previewBestMove) {
     previewBestMove = false;
@@ -1591,6 +1633,11 @@ async function startMoveQuality(review) {
     const frequencies = await loadWordFrequency().catch(() => null);
     if (token !== moveQualityRequestToken || activeGameId !== review.id) return;
     if (!frequencies) moveQualityResults.frequencyWarning = 'Word commonness could not load. Move quality is still available; re-analyze moves to retry adjusted performance.';
+    const gradable = turn => validAnalysisTurn(turn) && parsePlay(turn.action)?.length && actionWord(turn.action);
+    // Queue every gradable position so idle workers stay busy; points are still added in turn order.
+    const requests = turns.map(turn => gradable(turn) ? ensurePositionAnalysis(review, turn, 'candidates',
+      { priority: ANALYSIS_PRIORITY.candidates, signal: controller.signal }) : null);
+    requests.forEach(request => request?.catch(() => {}));
     for (let index = 0; index < turns.length; index++) {
       if (token !== moveQualityRequestToken || activeGameId !== review.id) return;
       const turn = turns[index];
@@ -1603,7 +1650,7 @@ async function startMoveQuality(review) {
       } else if (!parsePlay(turn.action)?.length || !actionWord(turn.action)) {
         point = makeUnratedPoint(index, turn, 'Passes and tile exchanges have no played word to compare.');
       } else {
-        const result = await ensurePositionAnalysis(review, turn, 'candidates');
+        const result = await requests[index];
         if (token !== moveQualityRequestToken || currentReview !== review) return;
         const moves = result.moves;
         const candidates = moves.filter(move => Number.isFinite(move.equity));
@@ -1644,7 +1691,8 @@ async function startMoveQuality(review) {
     const rated = moveQualityResults.points.filter(point => point.category !== 'unrated').length;
     moveQualityResults.state = 'done';
     moveQualityResults.message = 'Move-quality analysis complete · ' + rated + ' of ' + turns.length + ' moves rated.';
-    const saveError = await persistCompletedAnalysis();
+    markAnalysisComplete('move_quality', moveQualityResults);
+    const saveError = await flushAnalysisSave(review);
     if (token !== moveQualityRequestToken) return;
     if (saveError) moveQualityResults.message += ' Save failed: ' + saveError;
   } catch (error) {
@@ -1671,120 +1719,99 @@ function reviewMove(turn, move) {
   };
 }
 
-function workerRequest(type, payload = {}) {
-  return new Promise((resolve, reject) => {
-    if (!quackleWorker) return reject(new Error('Quackle worker is unavailable'));
-    const id = ++workerRequestId;
-    const timer = setTimeout(() => {
-      const entry = workerRequests.get(id);
-      if (entry) {
-        workerRequests.delete(id);
-        entry.reject(new Error('Quackle request timed out. Try again to restart the engine.'));
-        stopWorker();
-      }
-    }, 120000);
-    workerRequests.set(id, {
-      resolve: value => { clearTimeout(timer); resolve(value); },
-      reject: error => { clearTimeout(timer); reject(error); }
-    });
-    try { quackleWorker.postMessage({ id, type, payload }); }
-    catch (error) {
-      clearTimeout(timer);
-      workerRequests.delete(id);
-      reject(error);
-    }
+// Each worker holds its own engine and dictionary, so phones and low-memory devices get fewer.
+function quacklePoolSize() {
+  const cores = navigator.hardwareConcurrency || 2;
+  const constrained = matchMedia('(pointer: coarse)').matches || (navigator.deviceMemory || 8) <= 4;
+  return Math.max(1, Math.min(constrained ? 2 : 3, cores - 1));
+}
+
+function workerRequest(type, payload = {}, options = {}) {
+  if (!quacklePool) quacklePool = new QuackleWorkerPool({
+    createWorker: () => new Worker('quackle-worker.js'), size: quacklePoolSize()
   });
+  return quacklePool.run(type, payload, options);
 }
 
 function stopWorker() {
-  if (quackleWorker) quackleWorker.terminate();
-  quackleWorker = null;
-  workerReady = false;
-  workerPromise = null;
-  for (const request of workerRequests.values()) request.reject(new Error('Quackle worker stopped'));
-  workerRequests.clear();
+  if (quacklePool) quacklePool.stop();
+  viewedTurnRequest = null;
 }
 
-async function loadQuackle() {
-  if (workerReady) return;
-  if (workerPromise) return workerPromise;
-  workerPromise = (async () => {
-    quackleWorker = new Worker('quackle-worker.js');
-    quackleWorker.addEventListener('message', event => {
-      const pending = workerRequests.get(event.data.id);
-      if (!pending) return;
-      workerRequests.delete(event.data.id);
-      if (event.data.error) pending.reject(new Error(event.data.error));
-      else pending.resolve(event.data.result);
-    });
-    quackleWorker.addEventListener('error', event => {
-      stopWorker();
-      const status = byId('engineStatus');
-      if (status) status.textContent = event.message || 'Quackle worker failed.';
-    });
-    const result = await workerRequest('init');
-    workerReady = true;
-    return result;
-  })();
-  try { return await workerPromise; }
-  catch (error) { stopWorker(); throw error; }
-}
-
-async function ensurePositionAnalysis(review, turn, kind) {
+async function ensurePositionAnalysis(review, turn, kind, options = {}) {
   const cache = positionCache;
-  const result = await cache.request(turn, kind, async () => {
+  const key = cache.key(turn, kind);
+  const result = await cache.request(turn, kind, async onStart => {
     if (!validAnalysisTurn(turn)) throw new Error('This turn is missing a valid board, rack, or bag count.');
-    await loadQuackle();
-    if (currentReview !== review) throw new Error('Game changed.');
+    const iterations = kind === 'trend' ? TREND_ITERATIONS : SIMULATION_ITERATIONS;
     const payload = {
       gridJson: JSON.stringify(turn.grid), rack: String(turn.rack),
       playerScore: Number(turn.mover_score) || 0, opponentScore: Number(turn.other_score) || 0,
-      numMoves: MOVE_COUNT, iterations: SIMULATION_ITERATIONS,
+      numMoves: kind === 'trend' ? TREND_MOVE_COUNT : MOVE_COUNT, iterations,
       bagCount: Number(turn.bag_count),
       finalTurnsRemaining: Number(turn.bag_count) === 0 ? Number(turn.final_turns_remaining) : 0
     };
-    const result = await workerRequest(kind === 'simulation' ? 'simulateKibitz' : 'kibitz', payload);
+    const result = await workerRequest(kind === 'candidates' ? 'kibitz' : 'simulateKibitz', payload, { ...options, onStart });
     if (!result || result.error || !Array.isArray(result.moves) || !result.moves.length) {
       throw new Error(result?.error || 'Quackle did not return move candidates.');
     }
-    if (kind === 'simulation') {
+    if (kind !== 'candidates') {
       const playToEnd = payload.bagCount <= TERMINAL_BAG_LIMIT;
       if (result.simulated !== true || result.plies !== (playToEnd ? -1 : SIMULATION_PLIES) ||
           result.playToEnd !== playToEnd || result.simulationMode !== (playToEnd ? 'play-to-end' : '2-ply') ||
           result.winModel !== (playToEnd ? 'terminal' : 'bogowin') || result.bagCount !== payload.bagCount ||
           result.finalTurnsRemaining !== payload.finalTurnsRemaining ||
-          result.iterationsRequested !== SIMULATION_ITERATIONS || result.iterationsCompleted !== SIMULATION_ITERATIONS ||
-          result.candidateCount !== result.moves.length || result.totalPlayaheads !== SIMULATION_ITERATIONS * result.moves.length ||
-          !result.moves.every(move => move.samples === SIMULATION_ITERATIONS &&
-            (!playToEnd || move.terminalSamples === SIMULATION_ITERATIONS) &&
+          result.iterationsRequested !== iterations || result.iterationsCompleted !== iterations ||
+          result.candidateCount !== result.moves.length || result.totalPlayaheads !== iterations * result.moves.length ||
+          !result.moves.every(move => move.samples === iterations &&
+            (!playToEnd || move.terminalSamples === iterations) &&
             Number.isFinite(move.win) && move.win >= 0 && move.win <= 1)) {
         throw new Error('Quackle returned incomplete simulation results.');
       }
     } else if (result.simulated !== false) throw new Error('Quackle did not return static move candidates.');
+    // Only fresh engine work is saved; cached and restored results already are.
+    recordEngineResult(review, cache, key, result);
     return result;
-  });
-  if (currentReview === review && positionCache === cache) {
-    // Retain unsaved entries for a later retry if a save fails.
-    cache.unsaved = { ...cache.unsaved, [cache.key(turn, kind)]: result };
-    const entries = cache.unsaved;
-    const error = await persistCompletedAnalysis(review, cache, entries);
-    if (!error) for (const key of Object.keys(entries)) delete cache.unsaved[key];
-    refreshPositionPanel();
-  }
+  }, options.signal);
+  if (currentReview === review && positionCache === cache) refreshPositionPanel();
   return result;
+}
+
+// The open turn gets the full simulation ahead of background work. Moving to
+// another turn cancels it if it has not reached a worker yet.
+function prepareViewedTurn() {
+  const review = currentReview;
+  const turn = review?.turns[currentTurnIndex];
+  const key = turn && validAnalysisTurn(turn) ? positionCache.key(turn, 'simulation') : null;
+  if (viewedTurnRequest?.key === key) return;
+  viewedTurnRequest?.controller.abort();
+  viewedTurnRequest = null;
+  if (!key || positionCache.get(turn, 'simulation') || positionCache.errors.has(key)) return;
+  const controller = new AbortController();
+  const request = { key, controller };
+  viewedTurnRequest = request;
+  ensurePositionAnalysis(review, turn, 'simulation', {
+    priority: ANALYSIS_PRIORITY.view + ++viewRequestSequence, signal: controller.signal
+  }).catch(() => {}).finally(() => {
+    if (viewedTurnRequest === request) viewedTurnRequest = null;
+    if (currentReview === review) refreshPositionPanel();
+  });
 }
 
 function renderPositionAnalysis(turn, button, status, output) {
   const simulation = positionCache.get(turn, 'simulation');
   const candidates = positionCache.get(turn, 'candidates');
-  const error = simulation ? null : (positionCache.errors.get(positionCache.key(turn, 'simulation')) ||
+  const simulating = positionCache.pending.has(positionCache.key(turn, 'simulation'));
+  const error = simulation || simulating ? null : (positionCache.errors.get(positionCache.key(turn, 'simulation')) ||
     positionCache.errors.get(positionCache.key(turn, 'candidates')));
   output.replaceChildren();
   if (simulation || candidates) renderMoves((simulation || candidates).moves, simulation || candidates, output, turn);
   status.textContent = simulation ? 'Ready · ' + simulation.iterationsCompleted + ' simulations per move.'
     : error ? 'Analysis failed: ' + error
     : !validAnalysisTurn(turn) ? 'This turn is missing a valid board, rack, or bag count.'
-    : candidates ? 'Move candidates ready · win estimates are being prepared in the background.'
+    : simulating && candidates ? 'Move candidates ready · simulating win chances for this turn…'
+    : simulating ? 'Simulating candidates and win chances for this turn…'
+    : candidates ? 'Move candidates ready · win estimates run when this turn is open.'
     : 'Analysis is queued in the background. You can keep reviewing the game.';
   if (positionCache.saveError) status.textContent += ' Save failed: ' + positionCache.saveError;
   button.classList.toggle('hidden', !error && !positionCache.saveError);
@@ -2127,6 +2154,10 @@ async function start() {
 setInterval(refreshGamesIfDue, 60 * 60 * 1000);
 document.addEventListener('visibilitychange', () => {
   if (!document.hidden) refreshGamesIfDue();
+  else if (currentReview) flushAnalysisSave(currentReview, positionCache, { keepalive: true });
+});
+window.addEventListener('pagehide', () => {
+  if (currentReview) flushAnalysisSave(currentReview, positionCache, { keepalive: true });
 });
 window.addEventListener('popstate', () => location.reload());
 start().then(refreshGamesIfDue);

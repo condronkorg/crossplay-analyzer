@@ -39,3 +39,43 @@ test('failed requests are retryable and never become saved results', async () =>
   assert.equal(result.moves[0].win, 0.5);
   assert.equal(cache.errors.size, 0);
 });
+
+test('trend estimates have their own identity and keep full simulation keys unchanged', () => {
+  const cache = new AnalysisCache();
+  assert.notEqual(cache.key(turn, 'trend'), cache.key(turn, 'simulation'));
+  assert.notEqual(cache.key(turn, 'trend'), new AnalysisCache({}, { trendIterations: 40 }).key(turn, 'trend'));
+  // Results saved before trend estimates existed must still be found.
+  assert.equal(cache.key(turn, 'simulation'), JSON.stringify(['quackle-position-v1', 'simulation', turn.grid,
+    turn.rack, 0, 0, 86, 0, 15, 277, 2, 21]));
+});
+
+test('cancelled requests are not errors, and only unstarted ones are replaced', async () => {
+  const cache = new AnalysisCache();
+  const queued = new AbortController();
+  const cancelled = cache.request(turn, 'simulation', () => new Promise((_, reject) => {
+    queued.signal.addEventListener('abort', () => reject(Object.assign(new Error('cancelled'), { name: 'AbortError' })));
+  }), queued.signal);
+  await Promise.resolve();
+  queued.abort();
+  // A new request right after cancelling must not join the cancelled one.
+  const replacement = cache.request(turn, 'simulation', async () => ({ moves: [{ win: 0.4 }] }));
+  await assert.rejects(cancelled, { name: 'AbortError' });
+  assert.equal((await replacement).moves[0].win, 0.4);
+  assert.equal(cache.errors.size, 0);
+
+  const other = { ...turn, rack: 'EINORST' };
+  const running = new AbortController();
+  let finish;
+  let calls = 0;
+  const first = cache.request(other, 'simulation', onStart => {
+    calls++;
+    onStart();
+    return new Promise(resolve => { finish = resolve; });
+  }, running.signal);
+  await Promise.resolve();
+  running.abort();
+  const second = cache.request(other, 'simulation', async () => { calls++; return { moves: [] }; });
+  finish({ moves: [{ win: 0.6 }] });
+  assert.equal(await second, await first);
+  assert.equal(calls, 1);
+});

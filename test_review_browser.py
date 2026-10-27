@@ -60,7 +60,8 @@ class ReviewBrowserTest(unittest.TestCase):
         expect(self.page.locator('#connectionState')).to_contain_text('Not connected')
         # Display/custom-move tests control computation explicitly. Automation
         # tests below restore the production entry point.
-        self.page.evaluate('window.automaticAnalysis = startBackgroundAnalysis; startBackgroundAnalysis = () => {}')
+        self.page.evaluate('window.automaticAnalysis = startBackgroundAnalysis; startBackgroundAnalysis = () => {};'
+                           'window.automaticViewedTurn = prepareViewedTurn; prepareViewedTurn = () => {}')
 
     def route_request(self, route):
         if urlsplit(route.request.url).netloc != urlsplit(self.base_url).netloc:
@@ -495,21 +496,41 @@ class ReviewBrowserTest(unittest.TestCase):
         expect(self.page.locator('.luck-panel')).to_contain_text('3 of your 3 racks estimated')
 
     def test_automatic_analysis_with_bundled_quackle_is_saved_and_reused(self):
-        self.page.evaluate('startBackgroundAnalysis = window.automaticAnalysis')
+        self.page.evaluate('startBackgroundAnalysis = window.automaticAnalysis; prepareViewedTurn = window.automaticViewedTurn')
+        saved = []
+
+        def save(route):
+            saved.append(route.request.post_data_json)
+            route.continue_()
+
+        self.page.route('**/api/crossplay/games/mockgame01/analysis', save)
         self.open_game()
         expect(self.page.locator('.quality-panel .trend-status')).to_contain_text('Your review is ready', timeout=120_000)
         expect(self.page.locator('#trendStatus')).to_contain_text('Win trend complete', timeout=120_000)
+        # Only opened turns get the full simulation; the trend uses short estimates.
+        expect(self.page.locator('#engineStatus')).to_contain_text('277 simulations per move', timeout=120_000)
         self.page.get_by_role('combobox', name='Select game turn').select_option('0')
-        expect(self.page.locator('#engineStatus')).to_contain_text('277 simulations per move')
+        expect(self.page.locator('#engineStatus')).to_contain_text('277 simulations per move', timeout=120_000)
         expect(self.page.locator('.moves-table tbody tr').first).to_be_visible()
-        expect(self.page.get_by_role('button', name='Analyze this turn', exact=True)).to_have_count(0)
+        expect(self.page.get_by_role('button', name='Retry this turn', exact=True)).to_be_hidden()
+        kinds = self.page.evaluate('Object.keys(positionCache.results).map(key => JSON.parse(key)[1])')
+        self.assertEqual({kind: kinds.count(kind) for kind in set(kinds)},
+                         {'candidates': 3, 'trend': 6, 'simulation': 2})
+        self.page.evaluate('flushAnalysisSave()')
         results = self.page.evaluate('JSON.stringify(positionCache.results)')
-        self.assertEqual(self.page.evaluate('Object.keys(positionCache.results).length'), 9)
-        # Owners and shared guests load results without starting the engine again.
-        self.page.evaluate('workerRequest = () => { throw new Error("Repeated engine work"); }')
+        saved_keys = [key for snapshot in saved for key in snapshot['turn_analyses']]
+        self.assertEqual(sorted(saved_keys), sorted(json.loads(results)), 'Each engine result is saved exactly once')
+        self.assertLess(len(saved), len(saved_keys), 'Engine results are batched into fewer saves')
+        self.assertEqual(sum('move_quality' in snapshot for snapshot in saved), 1)
+        self.assertEqual(sum('win_trend' in snapshot for snapshot in saved), 1)
+        # Owners and shared guests load results without starting the engine or saving again.
+        save_count = len(saved)
+        self.page.evaluate('workerRequest = () => { throw new Error("Repeated engine work"); }; undefined')
         self.page.get_by_role('button', name='Review game against Demo Cedar').click()
         expect(self.page.locator('#engineStatus')).to_contain_text('277 simulations per move')
         self.assertEqual(self.page.evaluate('JSON.stringify(positionCache.results)'), results)
+        self.page.evaluate('flushAnalysisSave()')
+        self.assertEqual(len(saved), save_count)
         self.page.reload()
         expect(self.page.locator('#sharedBanner')).to_be_visible()
         expect(self.page.locator('#engineStatus')).to_contain_text('277 simulations per move')
