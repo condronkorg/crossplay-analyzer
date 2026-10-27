@@ -676,10 +676,19 @@ class Handler(SimpleHTTPRequestHandler):
                 raise CrossplayError('Invalid turn analysis result.', 400)
         return {field: body[field] for field in ('win_trend', 'move_quality', 'turn_analyses') if field in body}
 
+    def saved_review_status(self, user_id, game_id):
+        # Saves happen during analysis, so read only the status rather than the whole review.
+        rows = self.supabase_data_request('GET', 'crossplay_games', {
+            'select': 'status:review->>status',
+            'user_id': 'eq.' + user_id,
+            'nyt_game_id': 'eq.' + game_id,
+            'limit': '1',
+        })
+        return rows[0].get('status') if rows else None
+
     def save_game_analysis(self, user_id, game_id, body):
         snapshot = self.validate_game_analysis(body)
-        review = self.saved_game_review(user_id, game_id)
-        if not review or review.get('status') != 'completed':
+        if self.saved_review_status(user_id, game_id) != 'completed':
             raise CrossplayError('Import this finished game before saving analysis.', 404)
         self.supabase_data_request('POST', 'rpc/save_crossplay_analysis', payload={
             'account_id': user_id, 'game_id': game_id,
