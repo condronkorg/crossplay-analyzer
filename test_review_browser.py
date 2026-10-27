@@ -425,6 +425,12 @@ class ReviewBrowserTest(unittest.TestCase):
         # from the real WASM tests. All boards and candidates are synthetic.
         worker = """
           self.onmessage = ({data: {id, type, payload}}) => {
+            if (type === 'evaluateMove') {
+              // The blank s play is outside the returned candidates.
+              return self.postMessage({id, result: {simulated: false, staticRank: 4, legalMoveCount: 120,
+                selected: {position: '8F', tiles: 's...', score: 5, leave: 'EINRU?', equity: 3},
+                best: {position: '8F', tiles: 'S...', score: 5, leave: '?EINRU', equity: 10}}});
+            }
             let moves = [];
             if (type !== 'init') {
               if (payload.rack === 'ACERSTU') moves = [
@@ -446,6 +452,9 @@ class ReviewBrowserTest(unittest.TestCase):
             route.fulfill(json={'saved': True})
 
         self.page.route('**/api/crossplay/games/mockgame01/analysis', save)
+        self.page.evaluate('window.evaluatedMoves = []; const request = workerRequest; workerRequest = (type, payload, options) => {'
+                           ' if (type === "evaluateMove") evaluatedMoves.push(payload.customMove);'
+                           ' return request(type, payload, options); }; undefined')
         self.open_game()
         self.page.get_by_role('button', name='Analyze move quality', exact=True).click()
         expect(self.page.locator('.quality-panel .trend-status')).to_contain_text('Your review is ready')
@@ -456,9 +465,14 @@ class ReviewBrowserTest(unittest.TestCase):
         self.assertEqual(points[0]['loss'], 10)
         self.assertEqual(points[0]['bestMove']['word'], 'ACT')
         self.assertEqual(points[0]['playedMove']['leave'], 'ERSU')
-        # An S tile must not match the assigned blank s used in the actual game.
-        self.assertEqual(points[2]['category'], 'unrated')
-        self.assertIsNone(points[2]['loss'])
+        # An S tile must not match the assigned blank s used in the actual game,
+        # so the played move is evaluated directly instead.
+        self.assertEqual(self.page.evaluate('evaluatedMoves'),
+                         [{'word': 'sCAT', 'square': 'F8', 'direction': 'across'}])
+        self.assertEqual(points[2]['category'], 'mistake')
+        self.assertEqual(points[2]['loss'], 7)
+        self.assertEqual(points[2]['playedMove']['tiles'], 's...')
+        self.assertEqual((points[2]['candidateRank'], points[2]['candidateCount']), (4, 120))
         self.assertEqual(points[2]['bestMove']['tiles'], 'S...')
         for point in points[3:]:
             self.assertEqual(point['category'], 'unrated')
@@ -471,8 +485,29 @@ class ReviewBrowserTest(unittest.TestCase):
                                  'move_quality': completed[-1]['move_quality']})
         self.page.get_by_role('button', name='Review game against Demo Cedar').click()
         self.page.get_by_role('combobox', name='Select game turn').select_option('2')
-        expect(self.page.locator('.turn-coach')).to_contain_text('This turn is unrated')
+        expect(self.page.locator('.turn-coach')).to_contain_text('Mistake · 7.0 equity lost')
         expect(self.page.get_by_role('button', name='Preview best move', exact=True)).to_be_enabled()
+
+    def test_older_saved_grades_are_regraded_and_unevaluable_plays_stay_unrated(self):
+        worker = """
+          self.onmessage = ({data: {id, type, payload}}) => {
+            if (type === 'evaluateMove') return self.postMessage({id, error: 'This move is not legal in Quackle’s dictionary at this position.'});
+            if (type !== 'kibitz') return self.postMessage({id, result: type === 'init' ? {} : {error: 'Not simulated in this test.'}});
+            self.postMessage({id, result: {simulated: false, moves: [{position: '8G', tiles: 'TAX', score: 9, leave: 'CERSU', equity: 20}]}});
+          };
+        """
+        self.page.route('**/quackle-worker.js', lambda route: route.fulfill(
+            content_type='application/javascript', body=worker))
+        self.use_saved_analysis({'version': 'quackle-equity-v1', 'move_quality': {
+            'state': 'done', 'evaluation': 'static-equity-v1', 'points': [{
+                'turnIndex': 0, 'turn': 1, 'mine': True, 'action': 'CAT 8G 5', 'category': 'unrated', 'loss': None,
+                'reason': 'Played move was outside Quackle’s returned top 15 candidates.'}]}})
+        self.page.evaluate('startBackgroundAnalysis = window.automaticAnalysis; undefined')
+        self.open_game()
+        expect(self.page.locator('.quality-panel .trend-status')).to_contain_text('Your review is ready')
+        self.assertEqual(self.page.evaluate('moveQualityResults.evaluation'), 'static-equity-v2')
+        reason = self.page.evaluate('moveQualityResults.points[0].reason')
+        self.assertTrue(reason.startswith('Quackle could not evaluate the played move: This move is not legal'), reason)
 
     def test_move_quality_refreshes_summary_with_real_engine(self):
         self.open_game()
@@ -496,7 +531,7 @@ class ReviewBrowserTest(unittest.TestCase):
         expect(self.page.locator('.luck-panel')).to_contain_text('3 of your 3 racks estimated')
 
     def test_automatic_analysis_with_bundled_quackle_is_saved_and_reused(self):
-        self.page.evaluate('startBackgroundAnalysis = window.automaticAnalysis; prepareViewedTurn = window.automaticViewedTurn')
+        self.page.evaluate('startBackgroundAnalysis = window.automaticAnalysis; prepareViewedTurn = window.automaticViewedTurn; undefined')
         saved = []
 
         def save(route):
@@ -657,7 +692,7 @@ class ReviewBrowserTest(unittest.TestCase):
         self.page.locator('.luck-breakdown summary').click()
         expect(self.page.locator('.luck-table')).to_contain_text('ACT · Common')
         first_points = self.page.evaluate('moveQualityResults.points')
-        self.assertEqual(self.page.evaluate('moveQualityResults.evaluation'), 'static-equity-v1')
+        self.assertEqual(self.page.evaluate('moveQualityResults.evaluation'), 'static-equity-v2')
         self.page.get_by_role('button', name='Re-analyze moves', exact=True).click()
         expect(self.page.locator('.quality-panel .trend-status')).to_contain_text(
             'Your review is ready', timeout=120_000)

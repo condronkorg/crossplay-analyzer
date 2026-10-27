@@ -358,6 +358,8 @@ const TREND_ITERATIONS = 80;
 // The open turn runs before grading, and grading before the win trend.
 const ANALYSIS_PRIORITY = { view: 100, candidates: 2, trend: 1 };
 const ANALYSIS_SAVE_DELAY = 4000;
+// v2 grades plays outside the returned candidates; older saved grades are regraded.
+const MOVE_QUALITY_EVALUATION = 'static-equity-v2';
 
 let games = [];
 let activeGameId = null;
@@ -661,7 +663,10 @@ function flushAnalysisSave(review = currentReview, cache = positionCache, { keep
 async function startBackgroundAnalysis(review) {
   if (currentReview !== review) return;
   const work = [];
-  if (!moveQualityResults || moveQualityResults.state === 'error') work.push(startMoveQuality(review));
+  if (!moveQualityResults || moveQualityResults.state === 'error' ||
+      (moveQualityResults.state === 'done' && moveQualityResults.evaluation !== MOVE_QUALITY_EVALUATION)) {
+    work.push(startMoveQuality(review));
+  }
   if (!trendResults || !['running', 'done'].includes(trendResults.state)) work.push(startWinTrend(review));
   await Promise.all(work);
 }
@@ -1128,7 +1133,7 @@ function makeLuckPanel(review) {
     const note = !moveQualityResults ? 'Use Analyze move quality above to add execution and adjusted performance.'
       : moveQualityResults.state === 'running' ? 'Analysis is running. Performance will appear as eligible turns are rated.'
       : summary.ratedCount ? 'Re-analyze moves to include word commonness in performance. Only turns with a rated move, a valid rack estimate, and word-opportunity analysis can be weighted.'
-      : 'No eligible rated turns yet. Passes, exchanges, and moves outside Quackle’s returned candidates are excluded from performance.';
+      : 'No eligible rated turns yet. Passes, exchanges, and plays Quackle cannot evaluate are excluded from performance.';
     panel.append(makeElement('p', 'analysis-note', note));
   }
   if (summary.adjustedCount) {
@@ -1174,7 +1179,7 @@ function makeLuckPanel(review) {
   method.append(makeElement('summary', '', 'How luck and performance are estimated'));
   method.append(makeElement('p', 'analysis-note', 'Each rack is compared with 2,048 deterministic samples of the same size, drawn without replacement from Crossplay tiles not yet on the board. The percentile measures a tile-flexibility heuristic: blanks +12, S +3, E/R/N/T +0.8 each; vowel imbalance −2.5 per tile from a 42% target (blanks can balance it), duplicate pairs −1.5, J −2, V −1.5, W/K −1, and Q without U or a blank −6. Assigned blanks on the board consume physical blanks. Rack order does not matter.'));
   method.append(makeElement('p', 'analysis-note', 'The game value averages your rack percentiles, including pass and exchange turns with valid racks. Retained tiles reflect earlier choices, so repeated racks are not independent draws. This estimates rack ease, not pure draw luck; it does not model board openings, opponent decisions, or the actual sequence of draws.'));
-  method.append(makeElement('p', 'analysis-note', 'Execution averages 100 / (1 + equity loss / 10). For adjusted loss, each returned candidate’s equity is reduced by 2 × max(0, 4 − Zipf frequency of its main word), capped at 6 points; unknown words receive no reduction. The best resulting benchmark is compared with your played equity, with loss floored at zero and capped at the original loss. The same 0–100 conversion is weighted by 1 + (100 − rack percentile) / 100, so tougher racks count up to twice as much. Only your eligible turns are included. Passes, exchanges, and moves outside Quackle’s top ' + MOVE_COUNT + ' remain unrated.'));
+  method.append(makeElement('p', 'analysis-note', 'Execution averages 100 / (1 + equity loss / 10). For adjusted loss, each returned candidate’s equity is reduced by 2 × max(0, 4 − Zipf frequency of its main word), capped at 6 points; unknown words receive no reduction. The best resulting benchmark is compared with your played equity, with loss floored at zero and capped at the original loss. The same 0–100 conversion is weighted by 1 + (100 − rack percentile) / 100, so tougher racks count up to twice as much. Only your eligible turns are included. Passes, exchanges, and plays Quackle cannot evaluate remain unrated.'));
   const attribution = makeElement('p', 'analysis-note', 'General English frequency is a rough familiarity signal, not Scrabble vocabulary. Source: wordfreq / Alex Parrish, CC BY-SA 4.0. ');
   const link = makeElement('a', '', 'Frequency source and attribution');
   link.href = 'WORD_FREQUENCY.md';
@@ -1378,7 +1383,7 @@ function makeMoveQualityPanel(review) {
   }
   panel.append(makeElement('p', 'analysis-note', 'Equity estimates points plus rack value. Lower loss is better. New analyses use deterministic position evaluation, without sampled draws.'));
   const methodology = makeElement('details', 'estimate-details');
-  methodology.append(makeElement('summary', '', 'How move quality is measured'), makeElement('p', 'analysis-note', 'Only your turns are shown. Loss is the gap from the played move to Quackle’s best returned candidate. Provisional bands: Best <1 point; Inaccuracy 1–<3; Mistake 3–<8; Blunder ≥8. Equity is not win probability. Passes, exchanges, and moves outside the top ' + MOVE_COUNT + ' are unrated.'));
+  methodology.append(makeElement('summary', '', 'How move quality is measured'), makeElement('p', 'analysis-note', 'Only your turns are shown. Loss is the gap from the played move to Quackle’s best returned candidate. Provisional bands: Best <1 point; Inaccuracy 1–<3; Mistake 3–<8; Blunder ≥8. Equity is not win probability. Plays outside Quackle’s top ' + MOVE_COUNT + ' are evaluated directly against every legal move. Passes, exchanges, and plays Quackle cannot evaluate, such as words missing from its dictionary, are unrated.'));
   panel.append(methodology);
   return panel;
 }
@@ -1622,7 +1627,7 @@ async function startMoveQuality(review) {
   const token = ++moveQualityRequestToken;
   moveQualityController?.abort();
   const controller = moveQualityController = new AbortController();
-  moveQualityResults = { state: 'running', evaluation: 'static-equity-v1', points: [], current: 0, message: 'Preparing Quackle…' };
+  moveQualityResults = { state: 'running', evaluation: MOVE_QUALITY_EVALUATION, points: [], current: 0, message: 'Preparing Quackle…' };
   if (previewBestMove) {
     previewBestMove = false;
     renderReview();
@@ -1635,8 +1640,16 @@ async function startMoveQuality(review) {
     if (!frequencies) moveQualityResults.frequencyWarning = 'Word commonness could not load. Move quality is still available; re-analyze moves to retry adjusted performance.';
     const gradable = turn => validAnalysisTurn(turn) && parsePlay(turn.action)?.length && actionWord(turn.action);
     // Queue every gradable position so idle workers stay busy; points are still added in turn order.
-    const requests = turns.map(turn => gradable(turn) ? ensurePositionAnalysis(review, turn, 'candidates',
-      { priority: ANALYSIS_PRIORITY.candidates, signal: controller.signal }) : null);
+    const options = { priority: ANALYSIS_PRIORITY.candidates, signal: controller.signal };
+    const requests = turns.map(turn => gradable(turn) ? ensurePositionAnalysis(review, turn, 'candidates', options)
+      .then(async result => {
+        if (findPlayedCandidateIndex(turn, result.moves, false) >= 0) return { result };
+        try { return { result, played: await evaluatePlayedMove(turn, options) }; }
+        catch (error) {
+          if (error.name === 'AbortError') throw error;
+          return { result, playedError: error.message };
+        }
+      }) : null);
     requests.forEach(request => request?.catch(() => {}));
     for (let index = 0; index < turns.length; index++) {
       if (token !== moveQualityRequestToken || activeGameId !== review.id) return;
@@ -1650,35 +1663,39 @@ async function startMoveQuality(review) {
       } else if (!parsePlay(turn.action)?.length || !actionWord(turn.action)) {
         point = makeUnratedPoint(index, turn, 'Passes and tile exchanges have no played word to compare.');
       } else {
-        const result = await requests[index];
+        const { result, played, playedError } = await requests[index];
         if (token !== moveQualityRequestToken || currentReview !== review) return;
         const moves = result.moves;
         const candidates = moves.filter(move => Number.isFinite(move.equity));
         const bestEquity = candidates.length ? Math.max(...candidates.map(move => move.equity)) : null;
         const bestMove = candidates.find(move => move.equity === bestEquity);
         const playedIndex = findPlayedCandidateIndex(turn, moves, false);
-        if (playedIndex < 0) {
-          const looseMatch = findPlayedCandidateIndex(turn, moves, true);
-          point = makeUnratedPoint(index, turn, looseMatch >= 0
-            ? 'The played word could not be matched exactly to a Quackle candidate.'
-            : 'Played move was outside Quackle’s returned top ' + MOVE_COUNT + ' candidates.');
-        } else if (!Number.isFinite(moves[playedIndex].equity) || !candidates.length) {
-          point = makeUnratedPoint(index, turn, 'Quackle returned no equity value for the played move.');
-        } else {
-          const loss = Math.max(0, bestEquity - moves[playedIndex].equity);
-          point = {
+        const ratedPoint = (move, rank, count) => {
+          const loss = Math.max(0, bestEquity - move.equity);
+          return {
             turnIndex: index,
             turn: index + 1,
             mine: Boolean(turn.mine),
             action: turn.action,
             category: qualityBand(loss),
             loss,
-            playedEquity: moves[playedIndex].equity,
+            playedEquity: move.equity,
             bestEquity,
-            playedMove: reviewMove(turn, moves[playedIndex]),
-            candidateRank: playedIndex + 1,
-            candidateCount: moves.length
+            playedMove: reviewMove(turn, move),
+            candidateRank: rank,
+            candidateCount: count
           };
+        };
+        if (!candidates.length) {
+          point = makeUnratedPoint(index, turn, 'Quackle returned no equity values for this position.');
+        } else if (playedIndex >= 0) {
+          point = Number.isFinite(moves[playedIndex].equity)
+            ? ratedPoint(moves[playedIndex], playedIndex + 1, moves.length)
+            : makeUnratedPoint(index, turn, 'Quackle returned no equity value for the played move.');
+        } else if (played) {
+          point = ratedPoint(played.selected, played.staticRank, played.legalMoveCount);
+        } else {
+          point = makeUnratedPoint(index, turn, 'Quackle could not evaluate the played move: ' + playedError);
         }
         if (bestMove) point.bestMove = reviewMove(turn, bestMove);
         if (frequencies) point.opportunity = CrossplayLuck.opportunityContext(turn, moves, frequencies, candidateWord);
@@ -1706,6 +1723,30 @@ async function startMoveQuality(review) {
 
 function makeUnratedPoint(turnIndex, turn, reason) {
   return { turnIndex, turn: turnIndex + 1, mine: Boolean(turn && turn.mine), action: turn && turn.action, category: 'unrated', loss: null, reason };
+}
+
+// Plays outside the returned candidates are scored against every legal move
+// with the same evaluation as custom moves. Its rank counts all legal moves.
+async function evaluatePlayedMove(turn, options) {
+  const parts = String(turn.action || '').trim().split(/\s+/);
+  const across = (parts[1] || '').match(/^(\d{1,2})([A-O])$/);
+  const down = (parts[1] || '').match(/^([A-O])(\d{1,2})$/);
+  if (!across && !down) throw new Error('the recorded move could not be read.');
+  const bagCount = Number(turn.bag_count);
+  const result = await workerRequest('evaluateMove', {
+    gridJson: JSON.stringify(turn.grid), rack: String(turn.rack),
+    playerScore: Number(turn.mover_score) || 0, opponentScore: Number(turn.other_score) || 0,
+    bagCount, finalTurnsRemaining: bagCount === 0 ? Number(turn.final_turns_remaining) : 0,
+    customMove: {
+      word: parts[0].replace(/[()]/g, ''),
+      square: across ? across[2] + across[1] : down[1] + down[2],
+      direction: across ? 'across' : 'down'
+    }
+  }, options);
+  if (!result || !Number.isFinite(result.selected?.equity) || !Number.isInteger(result.staticRank)) {
+    throw new Error('Quackle returned no equity value for the played move.');
+  }
+  return result;
 }
 
 function reviewMove(turn, move) {
