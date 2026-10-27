@@ -334,6 +334,7 @@
 <script src="supabase-config.js"></script>
 <script src="supabase-auth.js"></script>
 <script src="luck-analysis.js"></script>
+<script src="analysis-cache.js"></script>
 <script>
 const PREMIUM_COORDS = {
   '3L': 'A1 O1 G2 I2 F5 J5 E6 K6 B7 N7 B9 N9 E10 K10 F11 J11 G14 I14 A15 O15',
@@ -375,6 +376,13 @@ let signedInUser = null;
 let nytConfigured = false;
 let viewingSharedGame = false;
 let reviewRequestToken = 0;
+let backgroundRequestToken = 0;
+const POSITION_PARAMETERS = { moveCount: MOVE_COUNT, iterations: SIMULATION_ITERATIONS,
+  plies: SIMULATION_PLIES, terminalBagLimit: TERMINAL_BAG_LIMIT };
+let positionCache = new AnalysisCache({}, POSITION_PARAMETERS);
+let analysisSaveQueue = Promise.resolve();
+let dailyRefreshRunning = false;
+let lastDailyRefreshCheck = 0;
 const ANALYSIS_VERSION = 'quackle-equity-v1';
 
 const byId = id => document.getElementById(id);
@@ -458,6 +466,10 @@ function clearAccountUi(message) {
   if (customMoveController) customMoveController.dispose();
   customMoveController = null;
   reviewRequestToken++;
+  backgroundRequestToken++;
+  positionCache = new AnalysisCache({}, POSITION_PARAMETERS);
+  stopWorker();
+  lastDailyRefreshCheck = 0;
   trendRequestToken++;
   moveQualityRequestToken++;
   trendResults = null;
@@ -477,16 +489,28 @@ function clearAccountUi(message) {
   updateAuthUi();
 }
 
-async function loadGames({ refresh = false } = {}) {
+async function loadGames({ refresh = false, background = false } = {}) {
+  const account = signedInUser;
+  const wasConfigured = nytConfigured;
   byId('refreshButton').disabled = true;
-  byId('gameCount').textContent = 'Loading…';
-  setGameMessage('Loading recent games…');
+  if (!background) {
+    byId('gameCount').textContent = 'Loading…';
+    setGameMessage('Loading recent games…');
+  }
   try {
     const useLiveRefresh = persistenceEnabled && refresh;
-    const data = await api(useLiveRefresh ? 'games/refresh' : 'games', useLiveRefresh ? { method: 'POST' } : {});
+    const data = await api(useLiveRefresh ? 'games/refresh' : 'games', useLiveRefresh ? {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ if_stale: background })
+    } : {});
+    if (account !== signedInUser || wasConfigured !== nytConfigured) return;
     games = Array.isArray(data.games) ? data.games : [];
     renderGames();
   } catch (error) {
+    if (background) {
+      byId('gameCount').textContent = 'Auto-refresh failed · ' + error.message;
+      return;
+    }
     byId('gameCount').textContent = 'Could not load games';
     setGameMessage(error.message);
     if (/cookie|session|logged in/i.test(error.message)) setConnection(error.message, 'error');
@@ -540,6 +564,9 @@ async function openGame(gameId, { shareToken = null } = {}) {
   if (customMoveController) customMoveController.dispose();
   customMoveController = null;
   const requestToken = ++reviewRequestToken;
+  backgroundRequestToken++;
+  positionCache = new AnalysisCache({}, POSITION_PARAMETERS);
+  stopWorker();
   viewingSharedGame = shareToken !== null;
   document.body.classList.toggle('shared-game', viewingSharedGame);
   byId('sharedBanner').classList.toggle('hidden', !viewingSharedGame);
@@ -567,32 +594,57 @@ async function openGame(gameId, { shareToken = null } = {}) {
     if (stored && stored.version === ANALYSIS_VERSION) {
       trendResults = stored.win_trend || null;
       moveQualityResults = stored.move_quality || null;
+      positionCache = new AnalysisCache(stored.turn_analyses || {}, POSITION_PARAMETERS);
     }
     currentTurnIndex = Math.max(0, currentReview.turns.length - 1);
     renderGames();
     renderReview();
+    startBackgroundAnalysis(review);
   } catch (error) {
     if (requestToken !== reviewRequestToken) return;
     byId('reviewPanel').replaceChildren(makeElement('div', 'review-placeholder', error.message));
   }
 }
 
-async function persistCompletedAnalysis() {
-  if (viewingSharedGame || !persistenceEnabled || !signedInUser || !currentReview) return null;
-  const payload = { analysis_version: ANALYSIS_VERSION };
-  if (trendResults && trendResults.state === 'done') payload.win_trend = trendResults;
-  if (moveQualityResults && moveQualityResults.state === 'done') payload.move_quality = moveQualityResults;
-  if (!payload.win_trend && !payload.move_quality) return null;
-  try {
-    await api('games/' + encodeURIComponent(currentReview.id) + '/analysis', {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload)
-    });
-    return null;
-  } catch (error) {
-    return error.message;
-  }
+async function persistCompletedAnalysis(review = currentReview, cache = positionCache, entries = cache.unsaved || {}) {
+  if (viewingSharedGame || !review || currentReview !== review) return null;
+  const payload = { analysis_version: ANALYSIS_VERSION, turn_analyses: entries };
+  if (trendResults?.state === 'done') payload.win_trend = trendResults;
+  if (moveQualityResults?.state === 'done') payload.move_quality = moveQualityResults;
+  const body = JSON.stringify(payload);
+  const save = analysisSaveQueue.then(async () => {
+    if (currentReview !== review || positionCache !== cache || viewingSharedGame) return null;
+    try {
+      await api('games/' + encodeURIComponent(review.id) + '/analysis', {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' }, body
+      });
+      cache.saveError = null;
+      return null;
+    } catch (error) {
+      cache.saveError = error.message;
+      return error.message;
+    }
+  });
+  analysisSaveQueue = save;
+  return save;
+}
+
+async function startBackgroundAnalysis(review) {
+  if (currentReview !== review) return;
+  const token = ++backgroundRequestToken;
+  if (!moveQualityResults || moveQualityResults.state === 'error') await startMoveQuality(review);
+  if (token !== backgroundRequestToken || currentReview !== review || moveQualityResults?.state !== 'done') return;
+  if (trendResults?.state !== 'running' && (!trendResults || trendResults.state === 'error' ||
+      review.turns.some(turn => validAnalysisTurn(turn) && !positionCache.get(turn, 'simulation')))) await startWinTrend(review);
+}
+
+async function refreshGamesIfDue() {
+  if (viewingSharedGame || !nytConfigured || dailyRefreshRunning ||
+      Date.now() - lastDailyRefreshCheck < (persistenceEnabled ? 1 : 24) * 60 * 60 * 1000) return;
+  dailyRefreshRunning = true;
+  lastDailyRefreshCheck = Date.now();
+  try { await loadGames({ refresh: true, background: true }); }
+  finally { dailyRefreshRunning = false; }
 }
 
 function parsePlay(action) {
@@ -796,13 +848,19 @@ function renderReview() {
 
   const analysis = makeElement('section', 'panel analysis-panel');
   analysis.append(makeElement('h3', '', 'Quackle analysis for this position'));
-  const analyzeButton = makeElement('button', 'analysis-button', 'Analyze this turn');
+  const analyzeButton = makeElement('button', 'analysis-button hidden', 'Retry this turn');
   analyzeButton.type = 'button';
-  const status = makeElement('div', 'analysis-status', 'The engine loads when you first request an analysis.');
+  const status = makeElement('div', 'analysis-status');
   status.id = 'engineStatus';
-  const output = makeElement('div', '');
-  analyzeButton.addEventListener('click', () => analyzePosition(turn, analyzeButton, status, output));
+  const output = makeElement('div', 'position-output');
+  analyzeButton.addEventListener('click', async () => {
+    analyzeButton.disabled = true;
+    try { await ensurePositionAnalysis(review, turn, 'simulation'); }
+    catch (_) { /* The position panel displays the error and retry action. */ }
+    finally { if (currentReview === review) refreshPositionPanel(); }
+  });
   analysis.append(analyzeButton, status, output);
+  renderPositionAnalysis(turn, analyzeButton, status, output);
   customMoveController = new CustomMove(analysis, () => ({
     gridJson: JSON.stringify(turn.grid), rack: turn.rack,
     playerScore: Number(turn.mover_score) || 0, opponentScore: Number(turn.other_score) || 0,
@@ -1245,23 +1303,24 @@ function makeMoveQualityPanel(review) {
   button.addEventListener('click', () => {
     if (moveQualityResults && moveQualityResults.state === 'running') {
       moveQualityRequestToken++;
+      backgroundRequestToken++;
       moveQualityResults = { ...moveQualityResults, state: 'stopped', message: 'Move-quality analysis stopped.' };
       refreshMoveQualityPanel();
       return;
     }
-    startMoveQuality(review);
+    startMoveQuality(review).then(() => startBackgroundAnalysis(review));
   });
   controls.append(button);
   if (!moveQualityResults) {
     const empty = makeElement('div', 'quality-empty');
-    empty.append(makeElement('span', 'quality-empty-icon', '↗'), makeElement('strong', '', 'Go beyond the final score'), makeElement('p', '', 'Find your best moves and the opportunities you missed. Analyze once to see your personal breakdown.'), controls);
+    empty.append(makeElement('span', 'quality-empty-icon', '↗'), makeElement('strong', '', 'Go beyond the final score'), makeElement('p', '', 'Find your best moves and the opportunities you missed. Your personal breakdown is prepared automatically in the background.'), controls);
     panel.append(empty);
   } else panel.append(controls);
   panel.append(makeElement('div', 'trend-status', moveQualityResults
     ? moveQualityResults.state === 'done'
       ? 'Your review is ready · ' + personalQualityPoints(review).filter(point => Number.isFinite(point.loss)).length + ' of your ' + review.turns.filter(turn => turn.mine).length + ' turns rated.' + (moveQualityResults.message?.includes('Save failed:') ? ' ' + moveQualityResults.message.slice(moveQualityResults.message.indexOf('Save failed:')) : '')
       : moveQualityResults.message || ''
-    : 'Analysis runs locally with the bundled engine.'));
+    : 'Analysis starts automatically with the bundled engine.'));
   if (moveQualityResults && moveQualityResults.points && moveQualityResults.points.length) {
     const personal = personalQualityPoints(review);
     const rated = personal.filter(point => Number.isFinite(point.loss));
@@ -1394,6 +1453,7 @@ function makeTrendPanel(review) {
   button.addEventListener('click', () => {
     if (trendResults && trendResults.state === 'running') {
       trendRequestToken++;
+      backgroundRequestToken++;
       trendResults = { ...trendResults, state: 'stopped', message: 'Trend stopped.' };
       refreshTrendPanel();
       return;
@@ -1424,7 +1484,7 @@ function makeTrendPanel(review) {
     legend.append(mine, theirs);
     panel.append(legend);
   }
-  panel.append(makeElement('p', 'analysis-note', 'Each estimate is taken at the start of the numbered turn and assumes that player chooses Quackle’s top-ranked move. The final point is the actual game result. Estimates use ' + TREND_ITERATIONS + ' samples; they are approximate and can vary between runs.'));
+  panel.append(makeElement('p', 'analysis-note', 'Each estimate is taken at the start of the numbered turn using the top-ranked simulated candidate. The final point is the actual game result. Estimates reuse the turn’s ' + SIMULATION_ITERATIONS + ' samples per move; they are approximate.'));
   return panel;
 }
 
@@ -1476,49 +1536,22 @@ function validAnalysisTurn(turn) {
   return true;
 }
 
-const TREND_ITERATIONS = 80;
-
 async function startWinTrend(review) {
-  if (moveQualityResults && moveQualityResults.state === 'running') {
-    trendResults = { ...(trendResults || {}), state: 'error', points: trendResults && trendResults.points || [], message: 'Stop move-quality analysis before starting the win trend.' };
-    refreshTrendPanel();
-    return;
-  }
   const token = ++trendRequestToken;
   trendResults = { state: 'running', points: [], current: 0, message: 'Preparing Quackle…' };
   refreshTrendPanel();
   try {
-    await loadQuackle();
     const turns = review.turns;
     for (let index = 0; index < turns.length; index++) {
       if (token !== trendRequestToken || activeGameId !== review.id) return;
       const turn = turns[index];
-      if (!validAnalysisTurn(turn)) throw new Error('Turn ' + (index + 1) + ' is missing a valid board, rack, or bag count.');
+      if (!validAnalysisTurn(turn)) continue;
       trendResults.message = 'Estimating turn ' + (index + 1) + ' of ' + turns.length + '…';
       const status = byId('trendStatus');
       if (status) status.textContent = trendResults.message;
-      const bagCount = Number(turn.bag_count);
-      const finalTurnsRemaining = bagCount === 0 ? Number(turn.final_turns_remaining) : 0;
-      const playToEnd = bagCount <= TERMINAL_BAG_LIMIT;
-      const result = await workerRequest('simulateKibitz', {
-        gridJson: JSON.stringify(turn.grid),
-        rack: String(turn.rack),
-        playerScore: Number(turn.mover_score) || 0,
-        opponentScore: Number(turn.other_score) || 0,
-        numMoves: 1,
-        iterations: TREND_ITERATIONS,
-        bagCount,
-        finalTurnsRemaining
-      });
-      if (token !== trendRequestToken || activeGameId !== review.id) return;
-      const best = result && Array.isArray(result.moves) ? result.moves[0] : null;
-      if (!result || result.simulated !== true || !best || !Number.isFinite(best.win) || best.win < 0 || best.win > 1 ||
-          result.playToEnd !== playToEnd || result.iterationsRequested !== TREND_ITERATIONS ||
-          result.iterationsCompleted !== TREND_ITERATIONS || result.candidateCount !== result.moves.length ||
-          result.totalPlayaheads !== result.iterationsCompleted * result.moves.length ||
-          best.samples !== TREND_ITERATIONS || (playToEnd && best.terminalSamples !== TREND_ITERATIONS)) {
-        throw new Error('Quackle returned no complete estimate for turn ' + (index + 1) + '.');
-      }
+      const result = await ensurePositionAnalysis(review, turn, 'simulation');
+      if (token !== trendRequestToken || currentReview !== review) return;
+      const best = result.moves[0];
       const mine = turn.mine ? best.win * 100 : (1 - best.win) * 100;
       trendResults.points.push({ x: index, mine, theirs: 100 - mine, turn: index + 1, actual: false });
       trendResults.current = index + 1;
@@ -1531,7 +1564,8 @@ async function startWinTrend(review) {
       : (Number(review.my_score) > Number(review.opponent_score) ? 100 : 0);
     trendResults.points.push({ x: turns.length, mine: actual, theirs: 100 - actual, actual: true });
     trendResults.state = 'done';
-    trendResults.message = 'Win trend complete.';
+    const skipped = turns.filter(turn => !validAnalysisTurn(turn)).length;
+    trendResults.message = 'Win trend complete.' + (skipped ? ' ' + skipped + ' turns skipped because position data is missing.' : '');
     const saveError = await persistCompletedAnalysis();
     if (token !== trendRequestToken) return;
     if (saveError) trendResults.message += ' Save failed: ' + saveError;
@@ -1541,14 +1575,10 @@ async function startWinTrend(review) {
     trendResults.message = 'Could not build trend: ' + error.message;
   }
   refreshTrendPanel();
+  refreshPositionPanel();
 }
 
 async function startMoveQuality(review) {
-  if (trendResults && trendResults.state === 'running') {
-    moveQualityResults = { ...(moveQualityResults || {}), state: 'error', points: moveQualityResults && moveQualityResults.points || [], message: 'Stop the win trend before starting move-quality analysis.' };
-    refreshMoveQualityPanel();
-    return;
-  }
   const token = ++moveQualityRequestToken;
   moveQualityResults = { state: 'running', evaluation: 'static-equity-v1', points: [], current: 0, message: 'Preparing Quackle…' };
   if (previewBestMove) {
@@ -1558,7 +1588,6 @@ async function startMoveQuality(review) {
   refreshMoveQualityPanel();
   const turns = review.turns;
   try {
-    await loadQuackle();
     const frequencies = await loadWordFrequency().catch(() => null);
     if (token !== moveQualityRequestToken || activeGameId !== review.id) return;
     if (!frequencies) moveQualityResults.frequencyWarning = 'Word commonness could not load. Move quality is still available; re-analyze moves to retry adjusted performance.';
@@ -1574,17 +1603,8 @@ async function startMoveQuality(review) {
       } else if (!parsePlay(turn.action)?.length || !actionWord(turn.action)) {
         point = makeUnratedPoint(index, turn, 'Passes and tile exchanges have no played word to compare.');
       } else {
-        const result = await workerRequest('kibitz', {
-          gridJson: JSON.stringify(turn.grid),
-          rack: String(turn.rack),
-          playerScore: Number(turn.mover_score) || 0,
-          opponentScore: Number(turn.other_score) || 0,
-          numMoves: MOVE_COUNT
-        });
-        if (token !== moveQualityRequestToken || activeGameId !== review.id) return;
-        if (!result || result.error || result.simulated !== false || !Array.isArray(result.moves)) {
-          throw new Error('Quackle did not return move candidates for turn ' + (index + 1) + '.');
-        }
+        const result = await ensurePositionAnalysis(review, turn, 'candidates');
+        if (token !== moveQualityRequestToken || currentReview !== review) return;
         const moves = result.moves;
         const candidates = moves.filter(move => Number.isFinite(move.equity));
         const bestEquity = candidates.length ? Math.max(...candidates.map(move => move.equity)) : null;
@@ -1633,6 +1653,7 @@ async function startMoveQuality(review) {
     moveQualityResults.message = 'Could not analyze move quality: ' + error.message;
   }
   refreshMoveQualityPanel();
+  refreshPositionPanel();
 }
 
 function makeUnratedPoint(turnIndex, turn, reason) {
@@ -1698,7 +1719,8 @@ async function loadQuackle() {
     });
     quackleWorker.addEventListener('error', event => {
       stopWorker();
-      byId('engineStatus').textContent = event.message || 'Quackle worker failed.';
+      const status = byId('engineStatus');
+      if (status) status.textContent = event.message || 'Quackle worker failed.';
     });
     const result = await workerRequest('init');
     workerReady = true;
@@ -1708,68 +1730,72 @@ async function loadQuackle() {
   catch (error) { stopWorker(); throw error; }
 }
 
-async function analyzePosition(turn, button, status, output) {
-  button.disabled = true;
-  output.replaceChildren();
-  const began = performance.now();
-  try {
-    const rack = String(turn.rack || '');
-    if (!/^[A-Z?]{1,7}$/.test(rack)) throw new Error('The API did not provide a usable rack for this turn.');
-    if (!Array.isArray(turn.grid) || turn.grid.length !== 15 ||
-        !turn.grid.every(row => typeof row === 'string' && /^[A-Za-z.]{15}$/.test(row))) {
-      throw new Error('The API did not provide a valid 15×15 board for this turn.');
-    }
-    const bagCount = Number(turn.bag_count);
-    const finalTurnsRemaining = bagCount === 0 ? Number(turn.final_turns_remaining) : 0;
-    if (!Number.isInteger(bagCount) || bagCount < 0) throw new Error('The API did not provide a valid bag count for this turn.');
-    if (bagCount === 0 && finalTurnsRemaining !== 1 && finalTurnsRemaining !== 2) {
-      throw new Error('The final-turn count is missing for this position.');
-    }
-    status.textContent = 'Loading the Quackle engine and its dictionary…';
+async function ensurePositionAnalysis(review, turn, kind) {
+  const cache = positionCache;
+  const result = await cache.request(turn, kind, async () => {
+    if (!validAnalysisTurn(turn)) throw new Error('This turn is missing a valid board, rack, or bag count.');
     await loadQuackle();
-    const playToEnd = bagCount <= TERMINAL_BAG_LIMIT;
-    status.textContent = playToEnd
-      ? 'Generating candidate moves and simulating each to the Crossplay finish…'
-      : 'Generating candidate moves and running two-ply simulations…';
-    const result = await workerRequest('simulateKibitz', {
-      gridJson: JSON.stringify(turn.grid),
-      rack,
-      playerScore: Number(turn.mover_score) || 0,
-      opponentScore: Number(turn.other_score) || 0,
-      numMoves: MOVE_COUNT,
-      iterations: SIMULATION_ITERATIONS,
-      bagCount,
-      finalTurnsRemaining
-    });
-    if (!result || result.simulated !== true || !Array.isArray(result.moves)) {
-      throw new Error((result && result.error) || 'Quackle did not return a complete analysis.');
+    if (currentReview !== review) throw new Error('Game changed.');
+    const payload = {
+      gridJson: JSON.stringify(turn.grid), rack: String(turn.rack),
+      playerScore: Number(turn.mover_score) || 0, opponentScore: Number(turn.other_score) || 0,
+      numMoves: MOVE_COUNT, iterations: SIMULATION_ITERATIONS,
+      bagCount: Number(turn.bag_count),
+      finalTurnsRemaining: Number(turn.bag_count) === 0 ? Number(turn.final_turns_remaining) : 0
+    };
+    const result = await workerRequest(kind === 'simulation' ? 'simulateKibitz' : 'kibitz', payload);
+    if (!result || result.error || !Array.isArray(result.moves) || !result.moves.length) {
+      throw new Error(result?.error || 'Quackle did not return move candidates.');
     }
-    const completeMoves = result.moves.length > 0 && result.moves.every(move =>
-      move.samples === SIMULATION_ITERATIONS &&
-      (!playToEnd || move.terminalSamples === SIMULATION_ITERATIONS) &&
-      Number.isFinite(move.win) && move.win >= 0 && move.win <= 1
-    );
-    if (result.plies !== (playToEnd ? -1 : SIMULATION_PLIES) ||
-        result.playToEnd !== playToEnd ||
-        result.simulationMode !== (playToEnd ? 'play-to-end' : '2-ply') ||
-        result.winModel !== (playToEnd ? 'terminal' : 'bogowin') ||
-        result.bagCount !== bagCount ||
-        result.finalTurnsRemaining !== finalTurnsRemaining ||
-        result.iterationsRequested !== SIMULATION_ITERATIONS ||
-        result.iterationsCompleted !== SIMULATION_ITERATIONS ||
-        result.candidateCount !== result.moves.length ||
-        result.totalPlayaheads !== result.iterationsCompleted * result.moves.length ||
-        !completeMoves) {
-      throw new Error('Quackle returned incomplete simulation results.');
-    }
-    renderMoves(result.moves, result, output, turn);
-    const elapsed = ((performance.now() - began) / 1000).toFixed(1);
-    status.textContent = 'Finished ' + result.iterationsCompleted + ' simulations per move in ' + elapsed + 's.';
-  } catch (error) {
-    status.textContent = 'Analysis failed: ' + error.message;
-  } finally {
-    button.disabled = false;
+    if (kind === 'simulation') {
+      const playToEnd = payload.bagCount <= TERMINAL_BAG_LIMIT;
+      if (result.simulated !== true || result.plies !== (playToEnd ? -1 : SIMULATION_PLIES) ||
+          result.playToEnd !== playToEnd || result.simulationMode !== (playToEnd ? 'play-to-end' : '2-ply') ||
+          result.winModel !== (playToEnd ? 'terminal' : 'bogowin') || result.bagCount !== payload.bagCount ||
+          result.finalTurnsRemaining !== payload.finalTurnsRemaining ||
+          result.iterationsRequested !== SIMULATION_ITERATIONS || result.iterationsCompleted !== SIMULATION_ITERATIONS ||
+          result.candidateCount !== result.moves.length || result.totalPlayaheads !== SIMULATION_ITERATIONS * result.moves.length ||
+          !result.moves.every(move => move.samples === SIMULATION_ITERATIONS &&
+            (!playToEnd || move.terminalSamples === SIMULATION_ITERATIONS) &&
+            Number.isFinite(move.win) && move.win >= 0 && move.win <= 1)) {
+        throw new Error('Quackle returned incomplete simulation results.');
+      }
+    } else if (result.simulated !== false) throw new Error('Quackle did not return static move candidates.');
+    return result;
+  });
+  if (currentReview === review && positionCache === cache) {
+    // Retain unsaved entries for a later retry if a save fails.
+    cache.unsaved = { ...cache.unsaved, [cache.key(turn, kind)]: result };
+    const entries = cache.unsaved;
+    const error = await persistCompletedAnalysis(review, cache, entries);
+    if (!error) for (const key of Object.keys(entries)) delete cache.unsaved[key];
+    refreshPositionPanel();
   }
+  return result;
+}
+
+function renderPositionAnalysis(turn, button, status, output) {
+  const simulation = positionCache.get(turn, 'simulation');
+  const candidates = positionCache.get(turn, 'candidates');
+  const error = simulation ? null : (positionCache.errors.get(positionCache.key(turn, 'simulation')) ||
+    positionCache.errors.get(positionCache.key(turn, 'candidates')));
+  output.replaceChildren();
+  if (simulation || candidates) renderMoves((simulation || candidates).moves, simulation || candidates, output, turn);
+  status.textContent = simulation ? 'Ready · ' + simulation.iterationsCompleted + ' simulations per move.'
+    : error ? 'Analysis failed: ' + error
+    : !validAnalysisTurn(turn) ? 'This turn is missing a valid board, rack, or bag count.'
+    : candidates ? 'Move candidates ready · win estimates are being prepared in the background.'
+    : 'Analysis is queued in the background. You can keep reviewing the game.';
+  if (positionCache.saveError) status.textContent += ' Save failed: ' + positionCache.saveError;
+  button.classList.toggle('hidden', !error && !positionCache.saveError);
+  button.disabled = false;
+}
+
+function refreshPositionPanel() {
+  const panel = byId('reviewPanel').querySelector('.analysis-panel');
+  const turn = currentReview?.turns[currentTurnIndex];
+  if (panel && turn) renderPositionAnalysis(turn, panel.querySelector('.analysis-button'),
+    panel.querySelector('.analysis-status'), panel.querySelector('.position-output'));
 }
 
 function renderMoves(moves, result, output, turn) {
@@ -1793,7 +1819,9 @@ function renderMoves(moves, result, output, turn) {
   }
   table.append(body);
   output.append(table);
-  const note = result.playToEnd
+  const note = result.simulated !== true
+    ? 'Static equity candidates from move-quality analysis. Win estimates are prepared separately and reused here.'
+    : result.playToEnd
     ? 'Win estimates use ' + SIMULATION_ITERATIONS + ' sampled hidden racks and draws per move, played to the Crossplay finish.'
     : 'Win estimates use Quackle’s two-ply model with ' + SIMULATION_ITERATIONS + ' samples per move.';
   output.append(makeElement('p', 'analysis-note', note));
@@ -2096,8 +2124,12 @@ async function start() {
   }
 }
 
+setInterval(refreshGamesIfDue, 60 * 60 * 1000);
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden) refreshGamesIfDue();
+});
 window.addEventListener('popstate', () => location.reload());
-start();
+start().then(refreshGamesIfDue);
 </script>
 </body>
 </html>

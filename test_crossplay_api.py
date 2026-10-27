@@ -190,6 +190,26 @@ class CrossplayAPITest(unittest.TestCase):
         self.assertEqual(self.request('POST', 'games')[0], 405)
         self.assertEqual(self.request('GET', 'token')[0], 405)
 
+    def test_analysis_progress_is_reused_and_isolated_between_sessions(self):
+        self.connect()
+        review = self.request('GET', 'games/mockgame01/review')[1]
+        payload = {'analysis_version': 'quackle-equity-v1', 'turn_analyses': {
+            'synthetic-candidates': {'simulated': False, 'moves': [{'tiles': 'CAT'}]}}}
+        self.assertEqual(self.request('PUT', 'games/mockgame01/analysis', payload)[0], 200)
+        quality = {'state': 'done', 'points': []}
+        self.assertEqual(self.request('PUT', 'games/mockgame01/analysis', {
+            'analysis_version': 'quackle-equity-v1', 'move_quality': quality})[0], 200)
+        saved = self.request('GET', 'games/mockgame01/review')[1]['stored_analysis']
+        self.assertEqual(saved['turn_analyses'], payload['turn_analyses'])
+        self.assertEqual(saved['move_quality'], quality)
+        self.assertEqual(self.request('GET', 'shared/' + review['share_token'])[1]['stored_analysis'], saved)
+        owner_cookie = self.cookie
+        self.cookie = ''
+        self.connect()
+        self.assertIsNone(self.request('GET', 'games/mockgame01/review')[1]['stored_analysis'])
+        self.cookie = owner_cookie
+        self.assertEqual(self.request('GET', 'games/mockgame01/review')[1]['stored_analysis'], saved)
+
     def test_private_files_are_not_served(self):
         for path in ('/.git/config', '/%252egit/config', '/crossplay_server.py',
                      '/tools/fixtures/nyt.json', '/tools/mock_nyt.py', '/package.json'):
