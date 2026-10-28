@@ -97,12 +97,15 @@
   }
 
   function performance(point, rack) {
-    if (!point || point.category === 'unrated' || !Number.isFinite(point.loss) || point.loss < 0) return null;
-    const execution = 100 / (1 + point.loss / 10);
+    if (!point || point.category === 'unrated') return null;
+    const loss = point.evaluation === 'win-probability-v1' || Object.hasOwn(point, 'equityLoss')
+      ? point.equityLoss : point.loss;
+    if (!Number.isFinite(loss) || loss < 0) return null;
+    const execution = 100 / (1 + loss / 10);
     const context = point.opportunity;
     if (!rack || context?.version !== VERSION || !Number.isFinite(context.accessibleEquity) ||
         !Number.isFinite(point.playedEquity)) return { execution };
-    const adjustedLoss = Math.min(point.loss, Math.max(0, context.accessibleEquity - point.playedEquity));
+    const adjustedLoss = Math.min(loss, Math.max(0, context.accessibleEquity - point.playedEquity));
     return {
       execution,
       adjustedLoss,
