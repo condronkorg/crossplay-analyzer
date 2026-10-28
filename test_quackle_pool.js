@@ -93,3 +93,20 @@ test('stop rejects queued and running work and terminates workers', async () => 
   await assert.rejects(queued, /stopped/);
   assert.ok(log.workers[0].terminated);
 });
+
+test('foreground promotion selects the same queued task ahead of other games', async () => {
+  const { pool, log } = makePool(1);
+  const busy = pool.run('simulateReview', { name: 'busy' });
+  await settle();
+  const old = pool.run('simulateReview', { name: 'old' }, { priority: 2, taskKey: 'account/game/old' });
+  const viewed = pool.run('simulateReview', { name: 'viewed' }, { priority: 1, taskKey: 'account/game/viewed' });
+  assert.equal(pool.promote('other-account/game/viewed', 100), false);
+  assert.equal(pool.promote('account/game/viewed', 100), true);
+  reply(log, log.requests[0], 'busy');
+  await settle();
+  assert.equal(log.requests[0].payload.name, 'viewed');
+  reply(log, log.requests[0], 'viewed');
+  await settle();
+  reply(log, log.requests[0], 'old');
+  assert.deepEqual(await Promise.all([busy, old, viewed]), ['busy', 'old', 'viewed']);
+});

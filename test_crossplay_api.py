@@ -90,6 +90,25 @@ class CrossplayAPITest(unittest.TestCase):
         self.assertEqual(payload['games'][0]['my_score'], 10)
         self.assertNotIn('game_data', json.dumps(payload))
 
+    def test_game_pages_resume_without_omissions_and_keep_session_private(self):
+        self.assertEqual(self.request('GET', 'games?page_size=1')[0], 409)
+        self.connect()
+        seen, cursor = [], None
+        while True:
+            route = 'games?page_size=1' + ('&after=' + cursor if cursor else '')
+            status, page, _ = self.request('GET', route)
+            self.assertEqual(status, 200, page)
+            seen.extend(game['id'] for game in page['games'])
+            cursor = page['next_cursor']
+            if cursor is None:
+                break
+        self.assertEqual(seen, ['mockactive01', 'mockgame01', 'mockgame02'])
+        self.assertEqual(self.request('GET', 'games?page_size=101')[0], 400)
+        self.assertEqual(self.request('GET', 'games?page_size=1&after=bad!')[0], 400)
+        self.connect(EMPTY_COOKIE)
+        self.assertEqual(self.request('GET', 'games?page_size=1')[:2],
+                         (200, {'games': [], 'next_cursor': None}))
+
     def test_review_reconstructs_positions_racks_scores_and_blanks(self):
         self.connect()
         status, review, _ = self.request('GET', 'games/mockgame01/review')
@@ -209,6 +228,23 @@ class CrossplayAPITest(unittest.TestCase):
         self.assertIsNone(self.request('GET', 'games/mockgame01/review')[1]['stored_analysis'])
         self.cookie = owner_cookie
         self.assertEqual(self.request('GET', 'games/mockgame01/review')[1]['stored_analysis'], saved)
+
+    def test_review_win_results_merge_and_reload_without_replacing_saved_turns(self):
+        from test_background_analysis import review_analysis_entry
+
+        self.connect()
+        self.request('GET', 'games/mockgame01/review')
+        key, result = review_analysis_entry()
+        first = {'analysis_version': 'quackle-equity-v1', 'turn_analyses': {key: result}}
+        self.assertEqual(self.request('PUT', 'games/mockgame01/analysis', first)[0], 200)
+        second = {'analysis_version': 'quackle-equity-v1', 'turn_analyses': {
+            'old-static-result': {'simulated': False, 'moves': [{'equity': 5}]}}}
+        self.assertEqual(self.request('PUT', 'games/mockgame01/analysis', second)[0], 200)
+        saved = self.request('GET', 'games/mockgame01/review')[1]['stored_analysis']['turn_analyses']
+        self.assertEqual(saved, {**first['turn_analyses'], **second['turn_analyses']})
+        result['moves'][0]['win'] = 5
+        self.assertEqual(self.request('PUT', 'games/mockgame01/analysis', first)[0], 400)
+        self.assertEqual(self.request('GET', 'games/mockgame01/review')[1]['stored_analysis']['turn_analyses'], saved)
 
     def test_private_files_are_not_served(self):
         for path in ('/.git/config', '/%252egit/config', '/crossplay_server.py',

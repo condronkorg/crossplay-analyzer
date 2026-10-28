@@ -93,8 +93,8 @@ function simulate(module, payload, numMoves = payload.numMoves, iterations = pay
 
 function evaluateCustomMove(module, payload, simulateWin) {
   const { grid, key } = customMoveKey(payload);
-  // Ask for the complete legal list rather than the usual short list. The
-  // bundled engine has no binding for injecting a single simulation candidate.
+  // Validate and rank a custom placement against the complete legal list.
+  // Recorded game moves use the bounded simulateReview path below.
   const limit = 1000000;
   const generated = module.kibitz(payload.gridJson, payload.rack,
     payload.playerScore, payload.opponentScore, limit);
@@ -147,6 +147,52 @@ function evaluateCustomMove(module, payload, simulateWin) {
     best: result.moves.reduce((top, move) => move.equity > top.equity ? move : top, simulatedMove) };
 }
 
+function simulateRecordedMove(module, payload) {
+  const integerBetween = (value, min, max) => Number.isInteger(value) && value >= min && value <= max;
+  if (!integerBetween(payload.seed, 0, 0xffffffff)) throw new Error('Review seed must be an unsigned 32-bit integer.');
+  if (!integerBetween(payload.numMoves, 1, 15)) throw new Error('Review candidate count must be between 1 and 15.');
+  if (!integerBetween(payload.iterations, 1, 277)) throw new Error('Simulation iterations must be between 1 and 277.');
+  if (!integerBetween(payload.bagCount, 0, 100) || !integerBetween(payload.finalTurnsRemaining, 0, 2) ||
+      !Number.isInteger(payload.playerScore) || !Number.isInteger(payload.opponentScore)) {
+    throw new Error('Review scores, bag count, and final-turn state must be integers.');
+  }
+  const played = payload.played || {};
+  if (!['place', 'pass', 'exchange'].includes(played.action) || typeof played.tiles !== 'string' ||
+      (played.position !== undefined && typeof played.position !== 'string')) {
+    throw new Error('The recorded move must specify its action, position, and tiles.');
+  }
+  const result = module.simulateReviewMove(
+    payload.gridJson, payload.rack, payload.playerScore, payload.opponentScore,
+    payload.numMoves, payload.iterations, payload.bagCount, payload.finalTurnsRemaining,
+    { action: played.action, position: played.position || '', tiles: played.tiles }, payload.seed,
+  );
+  if (result.error) throw new Error(result.error);
+  const playToEnd = payload.bagCount <= 21;
+  const moveKey = move => `${move.action}:${move.position}:${move.tiles}`;
+  const validMove = move => move && move.samples === payload.iterations &&
+    (!playToEnd || move.terminalSamples === payload.iterations) &&
+    Number.isFinite(move.equity) && Number.isFinite(move.staticEquity) &&
+    Number.isFinite(move.win) && move.win >= 0 && move.win <= 1;
+  if (result.simulated !== true || result.seed !== payload.seed || result.samplingVersion !== 'paired-review-v1' ||
+      result.iterationsRequested !== payload.iterations || result.iterationsCompleted !== payload.iterations ||
+      result.bagCount !== payload.bagCount || result.finalTurnsRemaining !== payload.finalTurnsRemaining ||
+      result.plies !== (playToEnd ? -1 : 2) || result.playToEnd !== playToEnd ||
+      result.simulationMode !== (playToEnd ? 'play-to-end' : '2-ply') || result.winModel !== (playToEnd ? 'terminal' : 'bogowin') ||
+      !Array.isArray(result.moves) || !result.moves.length || result.moves.length > payload.numMoves + 1 ||
+      result.candidateCount !== result.moves.length || result.totalPlayaheads !== payload.iterations * result.moves.length ||
+      !result.moves.every(validMove) || !validMove(result.selected) || !validMove(result.best) ||
+      !result.moves.some(move => moveKey(move) === moveKey(result.selected)) ||
+      !result.moves.some(move => moveKey(move) === moveKey(result.best)) ||
+      result.best.win !== Math.max(...result.moves.map(move => move.win)) ||
+      !Array.isArray(result.staticMoves) || result.staticMoves.length !== result.moves.length ||
+      !result.staticMoves.every(move => Number.isFinite(move.equity) && result.moves.some(simulated =>
+        moveKey(move) === moveKey(simulated) && move.equity === simulated.staticEquity)) ||
+      result.bestStaticEquity !== Math.max(...result.staticMoves.map(move => move.equity))) {
+    throw new Error('Quackle returned incomplete recorded-move simulation results.');
+  }
+  return result;
+}
+
 self.addEventListener('message', async event => {
   const { id, type, payload = {} } = event.data || {};
   try {
@@ -157,6 +203,8 @@ self.addEventListener('message', async event => {
       result = { info: module.getEngineInfo() };
     } else if (type === 'evaluateMove' || type === 'simulateMove') {
       result = evaluateCustomMove(module, payload, type === 'simulateMove');
+    } else if (type === 'simulateReview') {
+      result = simulateRecordedMove(module, payload);
     } else if (type === 'kibitz') {
       result = module.kibitz(
         payload.gridJson,

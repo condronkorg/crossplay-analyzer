@@ -1,0 +1,292 @@
+diff --git a/sim.cpp b/sim.cpp
+index 6271bcd..265aafb 100644
+--- a/sim.cpp
++++ b/sim.cpp
+@@ -434,6 +434,8 @@ void Simulator::simulate(int plies, int iterations)
+ 	constants.levelCount = (int)((plies - constants.decimalTurns) / constants.playerCount);
+ 	constants.ignoreOppos = m_ignoreOppos;
+ 	constants.isLogging = isLogging();
++	constants.pairedSamples = m_pairedSamples;
++	constants.sampleSeed = m_sampleSeed;
+ 
+ 	if (isLogging() && !m_hasHeader)
+ 		writeLogHeader();
+@@ -668,8 +670,17 @@ void Simulator::simulateOnePosition(SimmedMoveMessage &message, const SimmedMove
+ {
+ 	Game game = constants.game;
+ 
+-	// Randomize here rather than once per iteration so that each
+-	// playahead sees an independent draw of oppo racks and tiles.
++	// Review comparisons use a deterministic trial seed for each candidate.
++	// The initial hidden rack and bag order are common. Later draws can diverge
++	// as different plays consume different tiles and random numbers.
++	if (constants.pairedSamples)
++	{
++		unsigned int seed = constants.sampleSeed + 0x9e3779b9u * (unsigned int)message.iteration;
++		seed = (seed ^ (seed >> 16)) * 0x85ebca6bu;
++		seed = (seed ^ (seed >> 13)) * 0xc2b2ae35u;
++		QUACKLE_DATAMANAGER->seedRandomNumbers(seed ^ (seed >> 16));
++	}
++	// Other callers retain independent draws for each playahead.
+ 	randomizeOppoRacks(game.currentPosition(), constants.partialOppoRack);
+ 	randomizeDrawingOrder(game.currentPosition());
+ 
+diff --git a/sim.h b/sim.h
+index b236a24..8d3464a 100644
+--- a/sim.h
++++ b/sim.h
+@@ -234,6 +234,8 @@ public:
+ 	int levelCount;
+ 	bool ignoreOppos;
+ 	bool isLogging;
++	bool pairedSamples = false;
++	unsigned int sampleSeed = 0;
+ };
+ 
+ class SimmedMoveMessageQueue
+@@ -309,6 +311,10 @@ public:
+ 	// to front of simmed move list and level values zeroed.
+ 	void setIncludedMoves(const MoveList &moves);
+ 
++	// Give each candidate the same initial hidden rack and bag order for a trial.
++	// Trial seeds do not depend on candidate order, count, or worker scheduling.
++	void setPairedSampleSeed(unsigned int seed) { m_pairedSamples = true; m_sampleSeed = seed; }
++
+ 	void makeSureConsideredMovesAreIncluded();
+ 	void moveConsideredMovesToBeginning(MoveList &moves) const;
+ 
+@@ -441,6 +447,8 @@ protected:
+ 
+ 	int m_iterations;
+ 	bool m_ignoreOppos;
++	bool m_pairedSamples = false;
++	unsigned int m_sampleSeed = 0;
+ 
+ 	std::vector<std::thread> m_threadPool;
+ 	// requested; m_threadPool stays empty until the first simulate()
+diff --git a/wasm/build.sh b/wasm/build.sh
+index c87b8ad..075eeee 100755
+--- a/wasm/build.sh
++++ b/wasm/build.sh
+@@ -79,6 +79,7 @@ em++ \
+     -s MAXIMUM_MEMORY=268435456 \
+     -s STACK_SIZE=1048576 \
+     -s NO_EXIT_RUNTIME=1 \
++    -s DISABLE_EXCEPTION_CATCHING=0 \
+     -s ENVIRONMENT=web,worker \
+     --bind \
+     --preload-file "$DATA_DIR/alphabets/crossplay.quackle_alphabet@/data/alphabets/crossplay.quackle_alphabet" \
+diff --git a/wasm/quackle_wasm.cpp b/wasm/quackle_wasm.cpp
+index 6de2970..3b5ac74 100644
+--- a/wasm/quackle_wasm.cpp
++++ b/wasm/quackle_wasm.cpp
+@@ -14,6 +14,7 @@
+ #include <iostream>
+ #include <algorithm>
+ #include <cctype>
++#include <stdexcept>
+ 
+ #include "alphabetparameters.h"
+ #include "boardparameters.h"
+@@ -549,6 +550,193 @@ emscripten::val simulateKibitz(std::string gridJson, std::string rackStr, int pl
+     return result;
+ }
+ 
++// Physical placements identify a play even when a one-tile play is written in
++// the other direction. Assigned blanks remain different from ordinary tiles.
++std::string physicalMoveKey(const Quackle::Move &move)
++{
++    if (move.action == Quackle::Move::Pass) return "pass";
++    if (move.action == Quackle::Move::Exchange)
++    {
++        std::string tiles = tilesToString(move.tiles());
++        std::sort(tiles.begin(), tiles.end());
++        return "exchange:" + tiles;
++    }
++    std::vector<std::string> placed;
++    int row = move.startrow, col = move.startcol;
++    for (auto letter : move.tiles())
++    {
++        if (letter != QUACKLE_PLAYED_THRU_MARK)
++            placed.push_back(std::to_string(row * 15 + col) + ":" + std::to_string((int)letter));
++        if (move.horizontal) ++col; else ++row;
++    }
++    std::sort(placed.begin(), placed.end());
++    std::string key = "place:";
++    for (const auto &tile : placed) key += tile + ";";
++    return key;
++}
++
++Quackle::Move recordedMove(Quackle::GamePosition &pos, const emscripten::val &played)
++{
++    const std::string action = played["action"].as<std::string>();
++    const std::string tiles = played["tiles"].as<std::string>();
++    const std::string square = played["position"].as<std::string>();
++    Quackle::Move move;
++    if (action == "pass")
++    {
++        if (!tiles.empty() || !square.empty()) throw std::invalid_argument("Pass must have no tiles or position");
++        move = Quackle::Move::createPassMove();
++    }
++    else if (action == "exchange")
++    {
++        if (!square.empty() || tiles.empty() || tiles.size() > 7)
++            throw std::invalid_argument("Exchange requires 1 to 7 recorded tiles and no position");
++        Quackle::LetterString letters;
++        for (char c : tiles)
++        {
++            if (c != '?' && (c < 'A' || c > 'Z'))
++                throw std::invalid_argument("Exchange tiles must be letters or unassigned blanks");
++            letters.push_back(c == '?' ? QUACKLE_BLANK_MARK : charToLetter(c));
++        }
++        std::sort(letters.begin(), letters.end());
++        move = Quackle::Move::createExchangeMove(letters, false);
++    }
++    else if (action == "place")
++    {
++        if (square.size() < 2 || square.size() > 3 || tiles.empty() || tiles.size() > 15)
++            throw std::invalid_argument("Recorded move needs a valid position and tiles");
++        const bool across = square[0] >= '0' && square[0] <= '9';
++        const char column = across ? square.back() : square.front();
++        const std::string rowText = across ? square.substr(0, square.size() - 1) : square.substr(1);
++        if (column < 'A' || column > 'O' || rowText.empty() || rowText[0] == '0' ||
++            !std::all_of(rowText.begin(), rowText.end(), [](char c) { return c >= '0' && c <= '9'; }))
++            throw std::invalid_argument("Recorded move position is outside the board");
++        int row = std::stoi(rowText) - 1, col = column - 'A';
++        const int startRow = row, startCol = col;
++        Quackle::LetterString letters;
++        int placedCount = 0;
++        for (char c : tiles)
++        {
++            if (row < 0 || row >= 15 || col < 0 || col >= 15)
++                throw std::invalid_argument("Recorded move runs outside the board");
++            const auto existing = pos.board().letter(row, col);
++            if (existing != QUACKLE_NULL_MARK)
++            {
++                if (c != '.' && QUACKLE_ALPHABET_PARAMETERS->clearBlankness(charToLetter(c)) !=
++                    QUACKLE_ALPHABET_PARAMETERS->clearBlankness(existing))
++                    throw std::invalid_argument("Recorded move conflicts with a board tile");
++                letters.push_back(QUACKLE_PLAYED_THRU_MARK);
++            }
++            else
++            {
++                const auto letter = charToLetter(c);
++                if (letter == QUACKLE_NULL_MARK)
++                    throw std::invalid_argument("Recorded move needs a letter on each empty square");
++                letters.push_back(letter);
++                ++placedCount;
++            }
++            if (across) ++col; else ++row;
++        }
++        if (!placedCount) throw std::invalid_argument("Recorded move places no tiles");
++        // Extend through adjacent existing letters so validation checks the full word.
++        int fullRow = startRow, fullCol = startCol;
++        while ((across ? fullCol > 0 : fullRow > 0) &&
++               pos.board().letter(fullRow - !across, fullCol - across) != QUACKLE_NULL_MARK)
++        {
++            fullRow -= !across;
++            fullCol -= across;
++            letters = QUACKLE_PLAYED_THRU_MARK + letters;
++        }
++        while (row < 15 && col < 15 && pos.board().letter(row, col) != QUACKLE_NULL_MARK)
++        {
++            letters.push_back(QUACKLE_PLAYED_THRU_MARK);
++            if (across) ++col; else ++row;
++        }
++        move = Quackle::Move::createPlaceMove(fullRow, fullCol, across, letters);
++    }
++    else throw std::invalid_argument("Recorded move must be a placement, pass, or exchange");
++
++    pos.ensureMovePrettiness(move);
++    if (pos.validateMove(move) != Quackle::GamePosition::ValidMove)
++        throw std::invalid_argument("Recorded move is not legal in Quackle's dictionary at this position");
++    pos.scoreMove(move);
++    return move;
++}
++
++emscripten::val simulateReviewMove(std::string gridJson, std::string rackStr, int playerScore, int oppScore,
++                                  int numMoves, int iterations, int bagCount, int finalTurnsRemaining,
++                                  emscripten::val played, unsigned int seed)
++{
++    emscripten::val result = emscripten::val::object();
++    result.set("moves", emscripten::val::array());
++    result.set("simulated", false);
++    result.set("seed", seed);
++    result.set("samplingVersion", std::string("paired-review-v1"));
++    try
++    {
++        if (!s_dm || !s_dm->isGood()) throw std::invalid_argument("Engine not initialized");
++        if (numMoves < 1 || numMoves > 15) throw std::invalid_argument("Review candidate count must be between 1 and 15");
++        if (iterations < 1 || iterations > 277) throw std::invalid_argument("Simulation iterations must be between 1 and 277");
++        s_dm->seedRandomNumbers(seed);
++        Quackle::Game game;
++        std::string error;
++        if (!prepareGame(gridJson, rackStr, playerScore, oppScore, numMoves,
++                         bagCount, finalTurnsRemaining, true, game, &error))
++            throw std::invalid_argument(error);
++        Quackle::GamePosition &pos = game.currentPosition();
++        const Quackle::Rack rack = pos.currentPlayer().rack();
++        Quackle::Move actual = recordedMove(pos, played);
++        const std::string actualKey = physicalMoveKey(actual);
++        Quackle::MoveList candidates = pos.moves();
++        bool found = false;
++        for (const auto &move : candidates)
++        {
++            if (physicalMoveKey(move) == actualKey) { actual = move; found = true; break; }
++        }
++        if (!found) candidates.push_back(actual);
++        const bool playToEnd = bagCount <= 21;
++        const int plies = playToEnd ? -1 : 2;
++        Quackle::Simulator simulator;
++        simulator.setThreadCount(0);
++        simulator.setPosition(pos);
++        simulator.setIncludedMoves(candidates);
++        simulator.setPairedSampleSeed(seed);
++        simulator.setIgnoreOppos(false);
++        simulator.simulate(plies, iterations);
++        const auto moves = simulator.moves(true, true);
++        auto serialized = serializeMoves(moves, rack, &simulator);
++        bool allTerminal = true;
++        double bestStaticEquity = candidates.front().equity;
++        for (const auto &move : candidates) bestStaticEquity = std::max(bestStaticEquity, move.equity);
++        for (size_t i = 0; i < moves.size(); ++i)
++        {
++            const auto &simmed = simulator.simmedMoveForMove(moves[i]);
++            serialized[(unsigned int)i].set("staticEquity", simmed.move.equity);
++            if (physicalMoveKey(moves[i]) == actualKey) result.set("selected", serialized[(unsigned int)i]);
++            if (serialized[(unsigned int)i]["terminalSamples"].as<int>() != iterations) allTerminal = false;
++        }
++        const int completed = simulator.iterations();
++        result.set("moves", serialized);
++        result.set("best", serialized[0]);
++        result.set("staticMoves", serializeMoves(candidates, rack, nullptr));
++        result.set("bestStaticEquity", bestStaticEquity);
++        result.set("simulated", completed == iterations && (!playToEnd || allTerminal));
++        result.set("iterationsRequested", iterations);
++        result.set("iterationsCompleted", completed);
++        result.set("candidateCount", (int)moves.size());
++        result.set("totalPlayaheads", completed * (int)moves.size());
++        result.set("bagCount", bagCount);
++        result.set("finalTurnsRemaining", finalTurnsRemaining);
++        result.set("plies", plies);
++        result.set("playToEnd", playToEnd);
++        result.set("simulationMode", std::string(playToEnd ? "play-to-end" : "2-ply"));
++        result.set("winModel", std::string(playToEnd ? "terminal" : "bogowin"));
++        result.set("error", playToEnd && !allTerminal
++            ? std::string("A sampled endgame did not reach the official Crossplay finish") : std::string(""));
++    }
++    catch (const std::exception &error) { result.set("error", std::string(error.what())); }
++    return result;
++}
++
+ bool isWordValid(std::string word)
+ {
+     if (!s_dm || !s_dm->isGood())
+@@ -587,6 +775,7 @@ EMSCRIPTEN_BINDINGS(quackle)
+     emscripten::function("initEngine", &initEngine);
+     emscripten::function("kibitz", &kibitz);
+     emscripten::function("simulateKibitz", &simulateKibitz);
++    emscripten::function("simulateReviewMove", &simulateReviewMove);
+     emscripten::function("isWordValid", &isWordValid);
+     emscripten::function("getEngineInfo", &getEngineInfo);
+ }

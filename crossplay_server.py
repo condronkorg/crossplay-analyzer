@@ -29,6 +29,7 @@ import argparse
 import base64
 import gzip
 import json
+import math
 import os
 import re
 import secrets
@@ -551,6 +552,29 @@ class Handler(SimpleHTTPRequestHandler):
         })
         return [row['summary'] for row in rows if isinstance(row.get('summary'), dict)]
 
+    def game_page_parameters(self):
+        query = parse_qs(urlsplit(self.path).query, keep_blank_values=True)
+        if 'page_size' not in query and 'after' not in query:
+            return None
+        sizes = query.get('page_size', [])
+        cursors = query.get('after', [])
+        if (len(sizes) != 1 or not re.fullmatch(r'[0-9]{1,3}', sizes[0])
+                or not 1 <= int(sizes[0]) <= 100 or len(cursors) > 1
+                or (cursors and not GAME_ID_RE.fullmatch(cursors[0]))):
+            raise CrossplayError('Use page_size from 1 to 100 and a valid after game ID.', 400)
+        return int(sizes[0]), cursors[0] if cursors else None
+
+    def persistent_games_page(self, user_id, page_size, after=None):
+        # Use an immutable unique ID; background saves change updated_at.
+        params = {'select': 'nyt_game_id,summary', 'user_id': 'eq.' + user_id,
+                  'order': 'nyt_game_id.asc', 'limit': str(page_size + 1)}
+        if after is not None:
+            params['nyt_game_id'] = 'gt.' + after
+        rows = self.supabase_data_request('GET', 'crossplay_games', params)
+        page = rows[:page_size]
+        return {'games': [row['summary'] for row in page if isinstance(row.get('summary'), dict)],
+                'next_cursor': page[-1]['nyt_game_id'] if len(rows) > page_size else None}
+
     def upsert_game_summaries(self, user_id, summaries):
         if not summaries:
             return
@@ -668,13 +692,164 @@ class Handler(SimpleHTTPRequestHandler):
             value = body.get(field)
             if field in body and (not isinstance(value, dict) or value.get('state') != 'done' or not isinstance(value.get('points'), list)):
                 raise CrossplayError('Only completed game analyses can be saved.', 400)
+        quality = body.get('move_quality')
+        if quality and quality.get('evaluation') == 'win-probability-v1':
+            Handler.validate_win_quality(quality)
         entries = body.get('turn_analyses', {})
         if not isinstance(entries, dict) or len(entries) > 512:
             raise CrossplayError('Invalid turn analysis cache.', 400)
         for key, result in entries.items():
-            if len(key) > 2048 or not isinstance(result, dict) or result.get('error') or not isinstance(result.get('moves'), list):
+            if not isinstance(key, str) or len(key) > 2048 or not isinstance(result, dict) or result.get('error') or not isinstance(result.get('moves'), list):
                 raise CrossplayError('Invalid turn analysis result.', 400)
+            try:
+                identity = json.loads(key)
+            except ValueError:
+                identity = None
+            is_review = isinstance(identity, list) and len(identity) > 1 and identity[1] == 'review'
+            if is_review or 'samplingVersion' in result:
+                Handler.validate_review_result(identity, result)
         return {field: body[field] for field in ('win_trend', 'move_quality', 'turn_analyses') if field in body}
+
+    @staticmethod
+    def finite_number(value):
+        try:
+            return type(value) in (int, float) and math.isfinite(value)
+        except OverflowError:
+            return False
+
+    @staticmethod
+    def recorded_move_matches(grid, action, swapped_tiles, move):
+        if move['action'] == 'pass':
+            return re.fullmatch(r'PASS(?:\s+-?\d+)?', action.strip(), re.IGNORECASE) is not None
+        if move['action'] == 'exchange':
+            return (re.fullmatch(r'(?:SWAP|EXCHANGE)(?:\s+-?\d+)?', action.strip(), re.IGNORECASE) is not None
+                    and bool(re.fullmatch(r'[A-Za-z?*_ ]{1,7}', swapped_tiles))
+                    and sorted(normalize_rack(swapped_tiles)) == sorted(move['tiles']))
+        try:
+            recorded = parse_play(action)
+        except ValueError:
+            return False
+        # Quackle uses '.' for an existing board tile, whereas NYT uses brackets.
+        across, down = ACROSS_RE.fullmatch(move['position']), DOWN_RE.fullmatch(move['position'])
+        if not recorded or (not across and not down) or not re.fullmatch(r'[A-Za-z.]{1,15}', move['tiles']):
+            return False
+        row = int(across[1] if across else down[2]) - 1
+        col = COLS.index(across[2] if across else down[1])
+        candidate = (row, col, 0 if across else 1, 1 if across else 0,
+                     [(letter, letter == '.') for letter in move['tiles']])
+
+        def placements(parsed):
+            row, col, dr, dc, tiles = parsed
+            placed = []
+            for index, (letter, existing) in enumerate(tiles):
+                r, c = row + dr * index, col + dc * index
+                if not (0 <= r < 15 and 0 <= c < 15):
+                    return None
+                board_letter = grid[r][c]
+                if board_letter == '.':
+                    if existing or letter == '.':
+                        return None
+                    placed.append((r, c, letter))
+                elif letter != '.' and letter.upper() != board_letter.upper():
+                    return None
+            return sorted(placed) or None
+
+        actual = placements(recorded)
+        return actual is not None and actual == placements(candidate)
+
+    @staticmethod
+    def validate_review_result(identity, result):
+        def invalid():
+            raise CrossplayError('Invalid win-probability analysis result.', 400)
+
+        if (not isinstance(identity, list) or len(identity) != 15
+                or identity[:2] != ['quackle-review-v1', 'review']
+                or identity[8:12] != [15, 277, 2, 21]
+                or identity[14] != 'paired-review-v1'
+                or not all(isinstance(value, str) for value in identity[12:14])):
+            invalid()
+        grid, rack, score, other, bag, final = identity[2:8]
+        if (not isinstance(grid, list) or len(grid) != 15
+                or not all(isinstance(row, str) and re.fullmatch(r'[A-Za-z.]{15}', row) for row in grid)
+                or not isinstance(rack, str) or not re.fullmatch(r'[A-Z?]{1,7}', rack)
+                or not all(Handler.finite_number(value) for value in (score, other))
+                or type(bag) is not int or not 0 <= bag <= 100 or type(final) is not int
+                or (final not in (1, 2) if bag == 0 else final != 0)):
+            invalid()
+        play_to_end = bag <= 21
+        moves = result.get('moves')
+        integer_fields = ('bagCount', 'finalTurnsRemaining', 'plies', 'iterationsRequested',
+                          'iterationsCompleted', 'candidateCount', 'totalPlayaheads')
+        if (not isinstance(moves, list) or not 1 <= len(moves) <= 16
+                or result.get('simulated') is not True
+                or result.get('samplingVersion') != 'paired-review-v1'
+                or type(result.get('seed')) is not int or not 0 <= result['seed'] < 2 ** 32
+                or not all(type(result.get(field)) is int for field in integer_fields)
+                or result.get('bagCount') != bag or result.get('finalTurnsRemaining') != final
+                or result.get('playToEnd') is not play_to_end
+                or result.get('simulationMode') != ('play-to-end' if play_to_end else '2-ply')
+                or result.get('winModel') != ('terminal' if play_to_end else 'bogowin')
+                or result.get('plies') != (-1 if play_to_end else 2)
+                or result.get('iterationsRequested') != 277 or result.get('iterationsCompleted') != 277
+                or result.get('candidateCount') != len(moves)
+                or result.get('totalPlayaheads') != 277 * len(moves)):
+            invalid()
+        for move in moves:
+            if (not isinstance(move, dict) or move.get('action') not in ('place', 'pass', 'exchange')
+                    or not all(isinstance(move.get(field), str) for field in ('position', 'tiles'))
+                    or not all(Handler.finite_number(move.get(field)) for field in ('win', 'equity', 'staticEquity'))
+                    or not 0 <= move['win'] <= 1 or type(move.get('samples')) is not int or move['samples'] != 277
+                    or (play_to_end and (type(move.get('terminalSamples')) is not int or move['terminalSamples'] != 277))):
+                invalid()
+        if (result.get('selected') not in moves or result.get('best') not in moves
+                or result['best']['win'] != max(move['win'] for move in moves)):
+            invalid()
+        if not Handler.recorded_move_matches(grid, identity[12], identity[13], result['selected']):
+            invalid()
+        static_moves = result.get('staticMoves')
+        if not isinstance(static_moves, list) or len(static_moves) != len(moves):
+            invalid()
+        for move in moves:
+            matches = [candidate for candidate in static_moves if isinstance(candidate, dict)
+                       and all(candidate.get(field) == move[field] for field in ('action', 'position', 'tiles'))]
+            if (len(matches) != 1 or not Handler.finite_number(matches[0].get('equity'))
+                    or matches[0]['equity'] != move['staticEquity']):
+                invalid()
+        if (not Handler.finite_number(result.get('bestStaticEquity'))
+                or result['bestStaticEquity'] != max(move['equity'] for move in static_moves)):
+            invalid()
+
+    @staticmethod
+    def validate_win_quality(quality):
+        def invalid():
+            raise CrossplayError('Invalid win-probability move quality.', 400)
+
+        if len(quality['points']) > 512:
+            invalid()
+        for point in quality['points']:
+            if not isinstance(point, dict):
+                invalid()
+            if point.get('category') == 'unrated':
+                if (point.get('loss') is not None or not isinstance(point.get('reason'), str)
+                        or not point['reason'] or point.get('playedWin') is not None or point.get('bestWin') is not None):
+                    invalid()
+                continue
+            fields = ('playedWin', 'bestWin', 'loss', 'playedEquity', 'bestEquity')
+            if (not all(Handler.finite_number(point.get(field)) for field in fields)
+                    or not 0 <= point['playedWin'] <= point['bestWin'] <= 1):
+                invalid()
+            played_move = point.get('playedMove')
+            action = played_move.get('action') if isinstance(played_move, dict) else None
+            equity_loss = point.get('equityLoss')
+            if equity_loss is None:
+                if action not in ('pass', 'exchange'):
+                    invalid()
+            elif not Handler.finite_number(equity_loss) or equity_loss < 0:
+                invalid()
+            loss = max(0, point['bestWin'] - point['playedWin']) * 100
+            category = 'best' if loss < 2 else 'inaccuracy' if loss < 5 else 'mistake' if loss < 10 else 'blunder'
+            if abs(point['loss'] - loss) > 1e-8 or point.get('category') != category:
+                invalid()
 
     def saved_review_status(self, user_id, game_id):
         # Saves happen during analysis, so read only the status rather than the whole review.
@@ -867,7 +1042,17 @@ class Handler(SimpleHTTPRequestHandler):
                 return self.send_json(200, me)
             if route == 'games':
                 games = client.recent_games()
-                return self.send_json(200, {'games': [summarize_game(g, me['user_id']) for g in games]})
+                summaries = [summarize_game(g, me['user_id']) for g in games]
+                page = self.game_page_parameters()
+                if page is None:
+                    return self.send_json(200, {'games': summaries})
+                page_size, after = page
+                remaining = sorted((game for game in summaries if after is None or game['id'] > after),
+                                   key=lambda game: game['id'])
+                return self.send_json(200, {
+                    'games': remaining[:page_size],
+                    'next_cursor': remaining[page_size - 1]['id'] if len(remaining) > page_size else None,
+                })
             match = re.match(r'^games/([^/]+)/review$', route)
             if match:
                 game_id = match.group(1).lower()
@@ -892,6 +1077,9 @@ class Handler(SimpleHTTPRequestHandler):
                 return self.send_json(409, {'error': 'Connect your NYT cookie before loading your account.'})
             return self.send_json(200, client.me())
         if route == 'games' and method == 'GET':
+            page = self.game_page_parameters()
+            if page is not None:
+                return self.send_json(200, self.persistent_games_page(user_id, *page))
             return self.send_json(200, {'games': self.persistent_games(user_id)})
         if route == 'games/refresh' and method == 'POST':
             body = self.read_json_body() if int(self.headers.get('Content-Length') or 0) else {}

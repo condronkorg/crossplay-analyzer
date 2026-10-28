@@ -112,3 +112,12 @@ test('legacy, partial and absent analysis do not imply perfect adjusted performa
   assert.equal(legacy.adjusted, null);
   assert.equal(luck.performance({ category: 'unrated', loss: 0 }, { percentile: 50 }), null);
 });
+
+test('win-probability grades keep static equity separate for luck-adjusted performance', () => {
+  const point = { category: 'blunder', evaluation: 'win-probability-v1', loss: 20,
+    equityLoss: 5, playedEquity: 25, opportunity: opportunity([{ word: 'CAT', equity: 30 }]) };
+  const result = luck.performance(point, { percentile: 50 });
+  assert.equal(result.execution, 100 / 1.5);
+  assert.equal(result.adjustedLoss, 5);
+  assert.equal(luck.performance({ ...point, equityLoss: null }, { percentile: 50 }), null);
+});

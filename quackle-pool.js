@@ -21,10 +21,10 @@
 
     // Higher priorities run first; equal priorities run in request order.
     // Aborting a signal only cancels work that has not reached a worker yet.
-    run(type, payload = {}, { priority = 0, signal, onStart } = {}) {
+    run(type, payload = {}, { priority = 0, signal, onStart, taskKey } = {}) {
       return new Promise((resolve, reject) => {
         if (signal?.aborted) return reject(abortError());
-        const task = { type, payload, priority, order: ++this.sequence, resolve, reject, signal, onStart };
+        const task = { type, payload, priority, order: ++this.sequence, resolve, reject, signal, onStart, taskKey };
         if (signal) {
           task.onAbort = () => {
             const index = this.queue.indexOf(task);
@@ -37,6 +37,15 @@
         this.queue.push(task);
         this.schedule();
       });
+    }
+
+    // A viewed turn can join and promote an existing background request.
+    promote(taskKey, priority) {
+      const task = this.queue.find(task => task.taskKey === taskKey);
+      if (!task || !taskKey) return false;
+      task.priority = Math.max(task.priority, priority);
+      this.schedule();
+      return true;
     }
 
     schedule() {

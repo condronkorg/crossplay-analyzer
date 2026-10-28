@@ -109,9 +109,9 @@ class ReviewBrowserTest(unittest.TestCase):
         self.page.get_by_role('button', name='Refresh', exact=True).click()
         expect(self.page.locator('.game-card')).to_have_count(2)
         self.page.reload()
-        expect(self.page.get_by_role('heading', name='Demo Player vs Demo Cedar', exact=True)).to_be_visible()
-        expect(self.page.locator('#sharedBanner')).to_be_visible()
-        self.page.get_by_role('link', name='View your games', exact=True).click()
+        expect(self.page.get_by_role('heading', name='vs Demo Cedar', exact=True)).to_be_visible()
+        expect(self.page.locator('#sharedBanner')).to_be_hidden()
+        self.assertIn('?review=mockgame01', self.page.url)
         expect(self.page.locator('#connectionState')).to_have_text('NYT connected as Demo Player')
         expect(self.page.locator('.game-card')).to_have_count(2)
         cookies = self.context.cookies()
@@ -181,6 +181,17 @@ class ReviewBrowserTest(unittest.TestCase):
         if analysis is None:
             analysis = json.loads((Path(__file__).parent / 'tools/fixtures/review-analysis.json').read_text())
 
+        quality = analysis.get('move_quality', {})
+        if quality and 'evaluation' not in quality:
+            quality['evaluation'] = 'win-probability-v1'
+            for point in quality.get('points', []):
+                if point.get('loss') is not None:
+                    loss = point['loss']
+                    point.update(playedWin=(50 - loss) / 100, bestWin=.5, equityLoss=loss,
+                                 evaluation='win-probability-v1',
+                                 category='best' if loss < 2 else 'inaccuracy' if loss < 5 else 'mistake' if loss < 10 else 'blunder')
+        self.page.evaluate("reviewQueue?.contexts.delete('mockgame01')")
+
         def review_route(route):
             response = route.fetch()
             review = response.json()
@@ -202,7 +213,7 @@ class ReviewBrowserTest(unittest.TestCase):
         expect(self.stat('Highest-scoring play')).to_contain_text('5 pts')
         expect(self.stat('Highest-scoring play')).to_contain_text('CAT')
         expect(self.stat('Best moves').locator('.dashboard-stat-value')).to_have_text('—')
-        expect(self.stat('Avg. equity lost').locator('.dashboard-stat-value')).to_have_text('—')
+        expect(self.stat('Avg. win chance lost').locator('.dashboard-stat-value')).to_have_text('—')
         expect(self.page.locator('.quality-empty')).to_be_visible()
         expect(self.page.locator('.score-point')).to_have_count(6)
         self.page.locator('.score-point').first.focus()
@@ -219,15 +230,15 @@ class ReviewBrowserTest(unittest.TestCase):
         self.use_saved_analysis()
         self.open_game()
         expect(self.stat('Best moves').locator('.dashboard-stat-value')).to_have_text('1 / 2')
-        expect(self.stat('Avg. equity lost').locator('.dashboard-stat-value')).to_have_text('3.0')
-        expect(self.stat('Avg. equity lost')).to_contain_text('2 of your 3 turns rated')
+        expect(self.stat('Avg. win chance lost').locator('.dashboard-stat-value')).to_have_text('3.0 pp')
+        expect(self.stat('Avg. win chance lost')).to_contain_text('2 of your 3 turns rated')
         expect(self.page.locator('.quality-summary')).to_contain_text('1 Best')
         expect(self.page.locator('.quality-summary')).not_to_contain_text('Blunder')
         expect(self.page.locator('.quality-summary')).to_contain_text('1 unrated')
         expect(self.page.locator('.quality-point')).to_have_count(3)
         expect(self.page.locator('.insight')).to_have_count(1)
         expect(self.page.locator('.insight')).to_contain_text('Turn 3 · SCAT')
-        expect(self.page.locator('.insight')).to_contain_text('5.6 equity')
+        expect(self.page.locator('.insight')).to_contain_text('5.6 pp')
         self.page.locator('.insight').click()
         expect(self.page.get_by_role('combobox', name='Select game turn')).to_have_value('2')
         expect(self.page.locator('.turn-meta')).to_contain_text('Mistake')
@@ -237,7 +248,7 @@ class ReviewBrowserTest(unittest.TestCase):
         expect(self.page.get_by_role('combobox', name='Select game turn')).to_have_value('0')
         expect(self.page.locator('.quality-point').first).to_be_focused()
         self.page.get_by_role('button', name='Review game against Demo River').click()
-        expect(self.stat('Avg. equity lost').locator('.dashboard-stat-value')).to_have_text('—')
+        expect(self.stat('Avg. win chance lost').locator('.dashboard-stat-value')).to_have_text('—')
         expect(self.page.locator('.insight')).to_have_count(0)
         expect(self.page.locator('.review-heading')).to_contain_text('Lost by 6 points')
 
@@ -287,7 +298,7 @@ class ReviewBrowserTest(unittest.TestCase):
                 {'turnIndex': 1, 'category': 'best', 'loss': 0.0}]}}
         self.use_saved_analysis(analysis)
         self.open_game()
-        expect(self.stat('Avg. equity lost').locator('.dashboard-stat-value')).to_have_text('—')
+        expect(self.stat('Avg. win chance lost').locator('.dashboard-stat-value')).to_have_text('—')
         expect(self.page.locator('.insights-panel')).to_contain_text('No rated turns yet')
         expect(self.page.locator('.insights-panel')).to_contain_text('Analysis is incomplete')
         expect(self.page.locator('.insights-panel')).not_to_contain_text('Every rated move')
@@ -329,11 +340,11 @@ class ReviewBrowserTest(unittest.TestCase):
         self.page.get_by_role('button', name='Start walkthrough', exact=True).click()
         turns = self.page.get_by_role('combobox', name='Select game turn')
         expect(turns).to_have_value('0')
-        expect(self.page.locator('.turn-coach')).to_contain_text('Best · 0.4 equity lost')
+        expect(self.page.locator('.turn-coach')).to_contain_text('Best · 0.4 percentage points lost')
         expect(self.page.get_by_role('button', name='← Previous flagged move')).to_be_disabled()
         self.page.get_by_role('button', name='Next flagged move →').click()
         expect(turns).to_have_value('2')
-        expect(self.page.locator('.turn-coach')).to_contain_text('Mistake · 5.6 equity lost')
+        expect(self.page.locator('.turn-coach')).to_contain_text('Mistake · 5.6 percentage points lost')
         expect(self.page.get_by_role('button', name='Next flagged move →')).to_be_disabled()
         self.page.get_by_role('checkbox', name='Only your flagged moves').check()
         expect(self.page.locator('.turn-row')).to_have_count(1)
@@ -407,44 +418,48 @@ class ReviewBrowserTest(unittest.TestCase):
         self.page.unroute('**/api/crossplay/games/mockgame01/review')
         self.use_saved_analysis({'version': 'quackle-equity-v1', 'move_quality': {
             'state': 'stopped', 'points': [
-                {'turnIndex': 2, 'category': 'blunder', 'loss': 9.5},
+                {'turnIndex': 2, 'category': 'blunder', 'loss': 10.5},
                 {'turnIndex': 0, 'category': 'inaccuracy', 'loss': 2.0}]}})
         self.page.get_by_role('button', name='Review game against Demo Cedar').click()
         self.page.get_by_role('button', name='Start walkthrough', exact=True).click()
-        expect(self.page.locator('.turn-coach')).to_contain_text('Inaccuracy · 2.0 equity lost')
+        expect(self.page.locator('.turn-coach')).to_contain_text('Inaccuracy · 2.0 percentage points lost')
         self.page.get_by_role('button', name='Next flagged move →').click()
-        expect(self.page.locator('.turn-coach')).to_contain_text('Blunder · 9.5 equity lost')
+        expect(self.page.locator('.turn-coach')).to_contain_text('Blunder · 10.5 percentage points lost')
         expect(self.page.locator('.turn-coach')).to_contain_text('Re-analyze moves to add')
         expect(self.page.get_by_role('button', name='Preview best move', exact=True)).to_have_count(0)
         self.page.get_by_role('checkbox', name='Only your flagged moves').check()
         expect(self.page.locator('.turn-row')).to_have_count(2)
         expect(self.page.locator('.turn-row .quality-chip').last).to_have_text('Blunder')
 
+    def install_review_worker(self, delay=0):
+        worker = r"""
+          self.onmessage = ({data: {id, type, payload: p}}) => {
+            if (type === 'init') return self.postMessage({id, result: {}});
+            if (type !== 'simulateReview') return self.postMessage({id, error: 'Unexpected request: ' + type});
+            const selected = {...p.played, score: 5, leave: 'ERSU', equity: 2, staticEquity: 2,
+              win: p.rack === 'ACERSTU' ? .3 : p.rack === '?EINRSU' ? .43 : .5, samples: p.iterations};
+            const best = p.rack === 'ACERSTU' || p.rack === '?EINRSU'
+              ? {...selected, position: p.rack === 'ACERSTU' ? '8G' : '8F',
+                 tiles: p.rack === 'ACERSTU' ? 'ACT' : 'S...', win: .5, equity: 12, staticEquity: 12} : selected;
+            const end = p.bagCount <= 21;
+            if (end) { selected.terminalSamples = p.iterations; best.terminalSamples = p.iterations; }
+            const moves = selected === best ? [selected] : [best, selected];
+            const result = {simulated: true, moves, selected, best, seed: p.seed, samplingVersion: 'paired-review-v1',
+              staticMoves: moves.map(move => ({...move, equity: move.staticEquity})), bestStaticEquity: best.staticEquity,
+              plies: end ? -1 : 2, playToEnd: end, simulationMode: end ? 'play-to-end' : '2-ply', winModel: end ? 'terminal' : 'bogowin',
+              bagCount: p.bagCount, finalTurnsRemaining: p.finalTurnsRemaining,
+              iterationsRequested: p.iterations, iterationsCompleted: p.iterations, candidateCount: moves.length,
+              totalPlayaheads: moves.length * p.iterations};
+            setTimeout(() => self.postMessage({id, result}), DELAY);
+          };
+        """.replace('DELAY', str(delay))
+        self.page.route('**/quackle-worker.js', lambda route: route.fulfill(
+            content_type='application/javascript', body=worker))
+
     def test_grading_saves_comparisons_and_does_not_match_wrong_blank(self):
         # Deterministic worker replies exercise grading and persistence, separately
         # from the real WASM tests. All boards and candidates are synthetic.
-        worker = """
-          self.onmessage = ({data: {id, type, payload}}) => {
-            if (type === 'evaluateMove') {
-              // The blank s play is outside the returned candidates.
-              return self.postMessage({id, result: {simulated: false, staticRank: 4, legalMoveCount: 120,
-                selected: {position: '8F', tiles: 's...', score: 5, leave: 'EINRU?', equity: 3},
-                best: {position: '8F', tiles: 'S...', score: 5, leave: '?EINRU', equity: 10}}});
-            }
-            let moves = [];
-            if (type !== 'init') {
-              if (payload.rack === 'ACERSTU') moves = [
-                {position: '8G', tiles: 'ACT', score: 5, leave: 'ERSU', equity: 12},
-                {position: '8G', tiles: 'CAT', score: 5, leave: 'ERSU', equity: 2}];
-              else if (payload.rack === '?EINRSU') moves = [
-                {position: '8F', tiles: 'S...', score: 5, leave: '?EINRU', equity: 10}];
-              else moves = [{position: 'H8', tiles: '.RE', score: 4, leave: 'ADINO', equity: 8}];
-            }
-            self.postMessage({id, result: {simulated: false, moves}});
-          };
-        """
-        self.page.route('**/quackle-worker.js', lambda route: route.fulfill(
-            content_type='application/javascript', body=worker))
+        self.install_review_worker()
         saved = []
 
         def save(route):
@@ -453,7 +468,7 @@ class ReviewBrowserTest(unittest.TestCase):
 
         self.page.route('**/api/crossplay/games/mockgame01/analysis', save)
         self.page.evaluate('window.evaluatedMoves = []; const request = workerRequest; workerRequest = (type, payload, options) => {'
-                           ' if (type === "evaluateMove") evaluatedMoves.push(payload.customMove);'
+                           ' if (type === "simulateReview") evaluatedMoves.push(payload.played);'
                            ' return request(type, payload, options); }; undefined')
         self.open_game()
         self.page.get_by_role('button', name='Analyze move quality', exact=True).click()
@@ -462,40 +477,34 @@ class ReviewBrowserTest(unittest.TestCase):
         self.assertTrue(completed)
         points = completed[-1]['move_quality']['points']
         self.assertEqual(points[0]['category'], 'blunder')
-        self.assertEqual(points[0]['loss'], 10)
+        self.assertAlmostEqual(points[0]['loss'], 20)
         self.assertEqual(points[0]['bestMove']['word'], 'ACT')
         self.assertEqual(points[0]['playedMove']['leave'], 'ERSU')
         # An S tile must not match the assigned blank s used in the actual game,
         # so the played move is evaluated directly instead.
-        self.assertEqual(self.page.evaluate('evaluatedMoves'),
-                         [{'word': 'sCAT', 'square': 'F8', 'direction': 'across'}])
+        self.assertIn({'action': 'place', 'position': '8F', 'tiles': 's...'}, self.page.evaluate('evaluatedMoves'))
         self.assertEqual(points[2]['category'], 'mistake')
-        self.assertEqual(points[2]['loss'], 7)
+        self.assertAlmostEqual(points[2]['loss'], 7)
         self.assertEqual(points[2]['playedMove']['tiles'], 's...')
-        self.assertEqual((points[2]['candidateRank'], points[2]['candidateCount']), (4, 120))
+        self.assertEqual(points[2]['candidateCount'], 2)
         self.assertEqual(points[2]['bestMove']['tiles'], 'S...')
         for point in points[3:]:
-            self.assertEqual(point['category'], 'unrated')
-            self.assertIn('Passes and tile exchanges', point['reason'])
+            self.assertEqual(point['category'], 'best')
+            self.assertEqual(point['playedWin'], .5)
+            self.assertIsNone(point['equityLoss'])
         self.page.get_by_role('button', name='Start walkthrough', exact=True).click()
-        expect(self.page.locator('.turn-coach')).to_contain_text('Blunder · 10.0 equity lost')
+        expect(self.page.locator('.turn-coach')).to_contain_text('Blunder · 20.0 percentage points lost')
         expect(self.page.locator('.move-comparison')).to_contain_text('ACT · 8G')
         # Reloading the saved API representation must restore its comparison.
         self.use_saved_analysis({'version': completed[-1]['analysis_version'],
                                  'move_quality': completed[-1]['move_quality']})
         self.page.get_by_role('button', name='Review game against Demo Cedar').click()
         self.page.get_by_role('combobox', name='Select game turn').select_option('2')
-        expect(self.page.locator('.turn-coach')).to_contain_text('Mistake · 7.0 equity lost')
+        expect(self.page.locator('.turn-coach')).to_contain_text('Mistake · 7.0 percentage points lost')
         expect(self.page.get_by_role('button', name='Preview best move', exact=True)).to_be_enabled()
 
     def test_older_saved_grades_are_regraded_and_unevaluable_plays_stay_unrated(self):
-        worker = """
-          self.onmessage = ({data: {id, type, payload}}) => {
-            if (type === 'evaluateMove') return self.postMessage({id, error: 'This move is not legal in Quackle’s dictionary at this position.'});
-            if (type !== 'kibitz') return self.postMessage({id, result: type === 'init' ? {} : {error: 'Not simulated in this test.'}});
-            self.postMessage({id, result: {simulated: false, moves: [{position: '8G', tiles: 'TAX', score: 9, leave: 'CERSU', equity: 20}]}});
-          };
-        """
+        worker = "self.onmessage = ({data: {id, type}}) => self.postMessage(type === 'init' ? {id, result: {}} : {id, error: 'This move is not legal in Quackle’s dictionary at this position.'});"
         self.page.route('**/quackle-worker.js', lambda route: route.fulfill(
             content_type='application/javascript', body=worker))
         self.use_saved_analysis({'version': 'quackle-equity-v1', 'move_quality': {
@@ -505,7 +514,7 @@ class ReviewBrowserTest(unittest.TestCase):
         self.page.evaluate('startBackgroundAnalysis = window.automaticAnalysis; undefined')
         self.open_game()
         expect(self.page.locator('.quality-panel .trend-status')).to_contain_text('Your review is ready')
-        self.assertEqual(self.page.evaluate('moveQualityResults.evaluation'), 'static-equity-v2')
+        self.assertEqual(self.page.evaluate('moveQualityResults.evaluation'), 'win-probability-v1')
         reason = self.page.evaluate('moveQualityResults.points[0].reason')
         self.assertTrue(reason.startswith('Quackle could not evaluate the played move: This move is not legal'), reason)
 
@@ -515,20 +524,171 @@ class ReviewBrowserTest(unittest.TestCase):
         expect(self.page.locator('.quality-panel .trend-status')).to_contain_text(
             'Your review is ready', timeout=120_000)
         expect(self.page.locator('.quality-point')).to_have_count(3)
-        expect(self.page.locator('.quality-summary')).to_contain_text('unrated')
+        self.assertTrue(self.page.evaluate('moveQualityResults.points.every(point => Number.isFinite(point.playedWin))'))
         expect(self.page.locator('.insights-panel')).to_contain_text('of your 3 turns rated')
         expect(self.page.get_by_role('button', name='Re-analyze moves', exact=True)).to_be_enabled()
         # The selected turn is the opponent's final pass; its badge updates too.
-        expect(self.page.locator('.turn-meta .quality-chip')).to_have_text('Unrated')
+        expect(self.page.locator('.turn-meta .quality-chip')).not_to_have_text('Unrated')
         self.page.get_by_role('button', name='Start walkthrough', exact=True).click()
         expect(self.page.locator('.move-comparison')).to_be_visible()
         self.assertTrue(self.page.evaluate('Boolean(moveQualityResults.points[0].bestMove.tiles)'))
         points = self.page.evaluate('moveQualityResults.points')
         word_points = [point for point in points if point['turnIndex'] in (0, 1, 2)]
         self.assertTrue(all(point['opportunity']['version'] == 1 for point in word_points))
-        self.assertTrue(all(point['reason'].startswith('Passes and tile exchanges')
+        self.assertTrue(all(point['playedMove']['action'] in ('pass', 'exchange')
                             for point in points if point['turnIndex'] in (3, 4, 5)))
         expect(self.page.locator('.luck-panel')).to_contain_text('3 of your 3 racks estimated')
+
+    def test_background_checks_other_games_and_reuses_saved_turns_after_reload(self):
+        self.install_review_worker(delay=15)
+        self.page.evaluate('startBackgroundAnalysis = window.automaticAnalysis; undefined')
+        self.connect()
+        expect(self.page.locator('#backgroundStatus')).to_contain_text('2/2 games', timeout=15_000)
+        states = self.page.evaluate('Array.from(reviewQueue.contexts.values(), c => ({id:c.review.id, keys:Object.keys(c.cache.results).length, points:c.quality.points.length}))')
+        self.assertEqual({state['id'] for state in states}, {'mockgame01', 'mockgame02'})
+        self.assertTrue(all(state['keys'] == state['points'] == 6 for state in states))
+        self.page.evaluate('Promise.all(Array.from(reviewQueue.contexts.values(), c => flushAnalysisSave(c.review, c.cache)))')
+        self.page.get_by_role('button', name='Review game against Demo Cedar').click()
+        self.page.get_by_role('button', name='Review game against Demo River').click()
+        expect(self.page.locator('#engineStatus')).to_contain_text('277 simulations per move')
+        self.context.add_init_script("window.engineCalls=[]; const post=Worker.prototype.postMessage; Worker.prototype.postMessage=function(data,...rest){engineCalls.push(data.type); return post.call(this,data,...rest);};")
+        self.page.goto(self.base_url)
+        expect(self.page.locator('#backgroundStatus')).to_contain_text('2/2 games', timeout=15_000)
+        self.assertEqual(self.page.evaluate('engineCalls'), [])
+
+    def test_retry_turn_updates_the_grade_trend_and_saved_summary(self):
+        self.install_review_worker()
+        saved = []
+        self.page.route('**/api/crossplay/games/mockgame01/analysis',
+                        lambda route: (saved.append(route.request.post_data_json), route.fulfill(json={'saved': True})))
+        self.open_game()
+        self.page.evaluate("""window.retryCalls = 0; window.failRecordedMove = true;
+          const request = workerRequest;
+          workerRequest = (type, payload, options) => {
+            if (type === 'simulateReview' && payload.rack === 'ACERSTU') {
+              retryCalls++;
+              if (failRecordedMove) return Promise.reject(new Error('Temporary engine failure.'));
+            }
+            return request(type, payload, options);
+          }; undefined""")
+        self.page.get_by_role('button', name='Analyze move quality', exact=True).click()
+        expect(self.page.locator('.quality-panel .trend-status')).to_contain_text('Your review is ready')
+        self.page.evaluate('flushAnalysisSave()')
+        self.page.wait_for_function('reviewQueue.running === 0')
+        self.page.get_by_role('combobox', name='Select game turn').select_option('0')
+        expect(self.page.locator('.turn-coach')).to_contain_text('This turn is unrated')
+        self.page.evaluate('failRecordedMove = false')
+        self.page.get_by_role('button', name='Retry this turn', exact=True).click()
+        expect(self.page.locator('.turn-coach')).to_contain_text('Blunder · 20.0 percentage points lost')
+        self.page.evaluate('flushAnalysisSave()')
+        self.page.wait_for_function('reviewQueue.running === 0')
+        self.assertEqual(self.page.evaluate('retryCalls'), 2)
+        completed = [value for value in saved if 'move_quality' in value]
+        self.assertEqual(completed[-1]['move_quality']['points'][0]['category'], 'blunder')
+        self.assertEqual(len(completed[-1]['win_trend']['points']), 7)
+
+    def test_navigation_during_turn_retry_saves_each_game_to_its_own_id(self):
+        self.install_review_worker()
+        saved = {'mockgame01': [], 'mockgame02': []}
+        for game_id in saved:
+            def save(route):
+                key = route.request.url.split('/')[-2]
+                saved[key].append(route.request.post_data_json)
+                route.fulfill(json={'saved': True})
+            self.page.route('**/api/crossplay/games/' + game_id + '/analysis', save)
+        self.open_game()
+        self.page.evaluate("""window.failRetry = true; const request = workerRequest;
+          workerRequest = (type,payload,options) => {
+            if (type === 'simulateReview' && options.taskKey.includes(':mockgame01:') && payload.rack === 'ACERSTU') {
+              if (failRetry) return Promise.reject(new Error('Temporary engine failure.'));
+              return new Promise(resolve => { window.releaseTurnRetry = () => resolve(request(type,payload,options)); });
+            }
+            return request(type,payload,options);
+          }; undefined""")
+        self.page.get_by_role('button', name='Analyze move quality', exact=True).click()
+        expect(self.page.locator('.quality-panel .trend-status')).to_contain_text('Your review is ready')
+        self.page.evaluate('flushAnalysisSave()')
+        self.page.wait_for_function('reviewQueue.running === 0')
+        self.page.get_by_role('combobox', name='Select game turn').select_option('0')
+        self.page.evaluate('failRetry = false')
+        self.page.get_by_role('button', name='Retry this turn', exact=True).click()
+        self.page.get_by_role('button', name='Review game against Demo River').click()
+        expect(self.page.get_by_role('heading', name='vs Demo River', exact=True)).to_be_visible()
+        self.page.evaluate("positionCache.unsaved = {navigationSentinel: {moves: []}}; releaseTurnRetry(); undefined")
+        self.page.wait_for_function("reviewQueue.contexts.get('mockgame01').quality.points[0].category === 'blunder' && reviewQueue.running === 0")
+        self.page.evaluate('Promise.all(Array.from(reviewQueue.contexts.values(), context => flushAnalysisSave(context.review, context.cache)))')
+        self.assertFalse(any('navigationSentinel' in value['turn_analyses'] for value in saved['mockgame01']))
+        self.assertTrue(any('navigationSentinel' in value['turn_analyses'] for value in saved['mockgame02']))
+        completed = [value for value in saved['mockgame01'] if 'move_quality' in value]
+        self.assertEqual(completed[-1]['move_quality']['points'][0]['category'], 'blunder')
+
+    def test_partial_saved_results_resume_only_the_missing_move(self):
+        self.install_review_worker()
+        self.open_game()
+        self.page.get_by_role('button', name='Analyze move quality', exact=True).click()
+        expect(self.page.locator('.quality-panel .trend-status')).to_contain_text('Your review is ready')
+        self.page.evaluate('flushAnalysisSave()')
+        self.page.wait_for_function('reviewQueue.running === 0')
+        stored = self.page.evaluate("({version: ANALYSIS_VERSION, turn_analyses: positionCache.results, move_quality: moveQualityResults})")
+        stored['turn_analyses'].pop(next(iter(stored['turn_analyses'])))
+        self.use_saved_analysis(stored)
+        self.page.evaluate("window.resumeCalls=[]; const request=workerRequest; workerRequest=(type,payload,options)=>{resumeCalls.push({type,key:options.taskKey}); return request(type,payload,options);}; startBackgroundAnalysis=window.automaticAnalysis; undefined")
+        self.page.get_by_role('button', name='Review game against Demo Cedar').click()
+        expect(self.page.locator('.quality-panel .trend-status')).to_contain_text('Your review is ready')
+        self.assertEqual(self.page.evaluate("resumeCalls.filter(call => call.key.includes(':mockgame01:')).map(call => call.type)"), ['simulateReview'])
+        self.assertEqual(self.page.evaluate('Object.keys(positionCache.results).length'), 6)
+
+    def test_auth_failure_keeps_unsaved_results_and_account_reset_discards_old_work(self):
+        self.install_review_worker(delay=100)
+        self.open_game()
+        result = self.page.evaluate("""async () => {
+          const cache = positionCache;
+          cache.unsaved = {sentinel: {moves: []}};
+          persistenceEnabled = true; signedInUser = {id:'first',email:'first@example.test'};
+          cache.owner = analysisOwner();
+          CrossplayAuth.accessToken = async () => null;
+          CrossplayAuth.getSession = () => null;
+          await flushAnalysisSave(currentReview, cache);
+          const retained = Boolean(cache.unsaved.sentinel) && Boolean(cache.saveError);
+          signedInUser = {id:'second',email:'second@example.test'};
+          const oldOwner = cache.owner;
+          await flushAnalysisSave(currentReview, cache);
+          clearAccountUi('Changed account');
+          return {retained,changed:oldOwner !== analysisOwner(),queue:reviewQueue};
+        }""")
+        self.assertEqual(result, {'retained': True, 'changed': True, 'queue': None})
+
+    def test_late_game_list_cannot_cross_a_local_session_reset(self):
+        self.open_game()
+        result = self.page.evaluate("""async () => {
+          const request = api;
+          let release;
+          api = async path => path === 'games' ? await new Promise(resolve => { release = resolve; }) : request(path);
+          const pending = loadGames();
+          clearAccountUi('New local account');
+          updateAccountUi('New player');
+          games = [{id:'new-game',status:'completed',opponent:'New opponent'}];
+          renderGames();
+          release({games:[{id:'old-game',status:'completed',opponent:'Old opponent'}]});
+          await pending;
+          api = request;
+          return games.map(game => game.id);
+        }""")
+        self.assertEqual(result, ['new-game'])
+        expect(self.page.get_by_role('button', name='Review game against New opponent')).to_be_visible()
+        expect(self.page.get_by_role('button', name='Refresh', exact=True)).to_be_enabled()
+
+    def test_replacing_local_cookie_clears_old_background_contexts(self):
+        self.install_review_worker(delay=100)
+        self.open_game()
+        owner = self.page.evaluate('analysisOwner()')
+        self.page.get_by_role('button', name='Manage connection', exact=True).click()
+        self.page.get_by_role('textbox', name='NYT-S cookie').fill(EMPTY_COOKIE)
+        self.page.get_by_role('button', name='Replace cookie', exact=True).click()
+        expect(self.page.locator('#gameCount')).to_have_text('0 finished')
+        self.assertNotEqual(owner, self.page.evaluate('analysisOwner()'))
+        self.assertEqual(self.page.evaluate('reviewQueue ? reviewQueue.contexts.size : 0'), 0)
+        expect(self.page.locator('.turn-row')).to_have_count(0)
 
     def test_automatic_analysis_with_bundled_quackle_is_saved_and_reused(self):
         self.page.evaluate('startBackgroundAnalysis = window.automaticAnalysis; prepareViewedTurn = window.automaticViewedTurn; undefined')
@@ -542,7 +702,7 @@ class ReviewBrowserTest(unittest.TestCase):
         self.open_game()
         expect(self.page.locator('.quality-panel .trend-status')).to_contain_text('Your review is ready', timeout=120_000)
         expect(self.page.locator('#trendStatus')).to_contain_text('Win trend complete', timeout=120_000)
-        # Only opened turns get the full simulation; the trend uses short estimates.
+        # Every recorded move has a full simulation, reused by details and trend.
         expect(self.page.locator('#engineStatus')).to_contain_text('277 simulations per move', timeout=120_000)
         self.page.get_by_role('combobox', name='Select game turn').select_option('0')
         expect(self.page.locator('#engineStatus')).to_contain_text('277 simulations per move', timeout=120_000)
@@ -550,11 +710,11 @@ class ReviewBrowserTest(unittest.TestCase):
         expect(self.page.get_by_role('button', name='Retry this turn', exact=True)).to_be_hidden()
         kinds = self.page.evaluate('Object.keys(positionCache.results).map(key => JSON.parse(key)[1])')
         self.assertEqual({kind: kinds.count(kind) for kind in set(kinds)},
-                         {'candidates': 3, 'trend': 6, 'simulation': 2})
+                         {'review': 6})
         self.page.evaluate('flushAnalysisSave()')
-        results = self.page.evaluate('JSON.stringify(positionCache.results)')
+        results = self.page.evaluate('positionCache.results')
         saved_keys = [key for snapshot in saved for key in snapshot['turn_analyses']]
-        self.assertEqual(sorted(saved_keys), sorted(json.loads(results)), 'Each engine result is saved exactly once')
+        self.assertEqual(sorted(saved_keys), sorted(results), 'Each engine result is saved exactly once')
         self.assertLess(len(saved), len(saved_keys), 'Engine results are batched into fewer saves')
         self.assertEqual(sum('move_quality' in snapshot for snapshot in saved), 1)
         self.assertEqual(sum('win_trend' in snapshot for snapshot in saved), 1)
@@ -563,13 +723,13 @@ class ReviewBrowserTest(unittest.TestCase):
         self.page.evaluate('workerRequest = () => { throw new Error("Repeated engine work"); }; undefined')
         self.page.get_by_role('button', name='Review game against Demo Cedar').click()
         expect(self.page.locator('#engineStatus')).to_contain_text('277 simulations per move')
-        self.assertEqual(self.page.evaluate('JSON.stringify(positionCache.results)'), results)
+        self.assertEqual(self.page.evaluate('positionCache.results'), results)
         self.page.evaluate('flushAnalysisSave()')
         self.assertEqual(len(saved), save_count)
         self.page.reload()
-        expect(self.page.locator('#sharedBanner')).to_be_visible()
+        expect(self.page.locator('#sharedBanner')).to_be_hidden()
         expect(self.page.locator('#engineStatus')).to_contain_text('277 simulations per move')
-        self.assertEqual(self.page.evaluate('JSON.stringify(positionCache.results)'), results)
+        self.assertEqual(self.page.evaluate('positionCache.results'), results)
 
     def enter_custom_move(self, word, square, direction='across'):
         self.page.get_by_role('textbox', name='Custom move word', exact=True).fill(word)
@@ -692,12 +852,12 @@ class ReviewBrowserTest(unittest.TestCase):
         self.page.locator('.luck-breakdown summary').click()
         expect(self.page.locator('.luck-table')).to_contain_text('ACT · Common')
         first_points = self.page.evaluate('moveQualityResults.points')
-        self.assertEqual(self.page.evaluate('moveQualityResults.evaluation'), 'static-equity-v2')
+        self.assertEqual(self.page.evaluate('moveQualityResults.evaluation'), 'win-probability-v1')
         self.page.get_by_role('button', name='Re-analyze moves', exact=True).click()
         expect(self.page.locator('.quality-panel .trend-status')).to_contain_text(
             'Your review is ready', timeout=120_000)
         self.assertEqual(self.page.evaluate('moveQualityResults.points'), first_points,
-                         'Move quality must not inherit luck from random simulations')
+                         'Seeded win results and separate static performance must be reused')
 
 
 if __name__ == '__main__':

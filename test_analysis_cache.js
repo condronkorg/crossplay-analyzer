@@ -79,3 +79,38 @@ test('cancelled requests are not errors, and only unstarted ones are replaced', 
   assert.equal(await second, await first);
   assert.equal(calls, 1);
 });
+
+test('review results include the recorded action and paired sampling version in their identity', () => {
+  const cache = new AnalysisCache();
+  const played = { ...turn, action: 'CAT 8G 10', swapped_tiles: null };
+  const key = cache.key(played, 'review');
+  assert.deepEqual(JSON.parse(key), ['quackle-review-v1', 'review', played.grid, played.rack,
+    0, 0, 86, 0, 15, 277, 2, 21, 'CAT 8G 10', '', 'paired-review-v1']);
+  assert.notEqual(key, cache.key({ ...played, action: 'CAT 8H 10' }, 'review'));
+  assert.notEqual(key, cache.key({ ...played, action: 'cAT 8G 10' }, 'review'));
+  assert.notEqual(cache.key({ ...played, action: 'SWAP 0', swapped_tiles: 'AB' }, 'review'),
+    cache.key({ ...played, action: 'SWAP 0', swapped_tiles: 'AE' }, 'review'));
+  assert.notEqual(key, cache.key(played, 'simulation'));
+  assert.equal(cache.seed(played), new AnalysisCache().seed(played));
+  assert.notEqual(cache.seed(played), cache.seed({ ...played, other_score: 50 }));
+  assert.ok(Number.isInteger(cache.seed(played)) && cache.seed(played) >= 0 && cache.seed(played) <= 0xffffffff);
+});
+
+test('a viewed turn promotes pending background work without a duplicate computation', async () => {
+  const cache = new AnalysisCache();
+  let finish;
+  let calls = 0;
+  const promotions = [];
+  const first = cache.request(turn, 'review', () => {
+    calls++;
+    return new Promise(resolve => { finish = resolve; });
+  }, undefined, { priority: 1, onPromote: priority => promotions.push(priority) });
+  await Promise.resolve();
+  const second = cache.request(turn, 'review', () => { calls++; }, undefined, { priority: 100 });
+  const third = cache.request(turn, 'review', () => { calls++; }, undefined, { priority: 2 });
+  finish({ moves: [] });
+  assert.equal(await first, await second);
+  assert.equal(await first, await third);
+  assert.equal(calls, 1);
+  assert.deepEqual(promotions, [100]);
+});
