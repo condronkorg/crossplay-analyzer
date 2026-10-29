@@ -114,7 +114,18 @@
   .trend-legend span { display: inline-flex; align-items: center; gap: 6px; }
   .trend-swatch { display: inline-block; width: 14px; height: 3px; border-radius: 2px; }
   .estimate-details { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--line); color: var(--muted); font-size: 11px; }
-  .estimate-details .trend-panel { padding: 12px 0 0; border: 0; border-radius: 0; }
+  .win-evaluation { display: grid; grid-template-columns: 42px minmax(0, 1fr); gap: 16px; margin: 15px 0; }
+  .win-bar { position: relative; height: 180px; overflow: hidden; border: 1px solid #262626; border-radius: 5px; background: #181818; }
+  .win-bar-white { position: absolute; bottom: 0; width: 100%; background: #fff; }
+  .win-bar-pending { display: grid; place-items: center; border: 1px dashed #a5ada6; background: #edf0eb; color: var(--muted); }
+  .win-reading { display: flex; flex-direction: column; justify-content: space-between; gap: 12px; min-width: 0; }
+  .win-player { display: flex; align-items: center; flex-wrap: wrap; gap: 7px; font-size: 11px; overflow-wrap: anywhere; }
+  .win-player strong { margin-left: auto; font-size: 16px; font-variant-numeric: tabular-nums; }
+  .win-color { width: 12px; height: 12px; flex: 0 0 12px; border: 1px solid #262626; border-radius: 2px; background: #181818; }
+  .win-you .win-color { background: #fff; }
+  .win-estimate-state { color: var(--ink); font-size: 12px; font-weight: 650; }
+  .win-turn-label { margin-top: 5px; color: var(--muted); font-size: 11px; }
+  .estimate-level { margin: 0 0 7px; color: var(--muted); font-size: 10px; font-weight: 650; }
   .quality-summary { display: flex; flex-wrap: wrap; gap: 6px; margin: 10px 0; }
   .quality-count, .quality-chip { display: inline-flex; align-items: center; gap: 5px; padding: 3px 7px; border-radius: 5px; font-size: 10px; font-weight: 650; white-space: nowrap; }
   .quality-best { color: #246947; background: #e2efdf; }
@@ -255,6 +266,7 @@
     .review-heading h2 { font-size: 21px; }
     .dashboard-charts { grid-template-columns: 1fr; gap: 14px; }
     .trend-chart svg text { font-size: 17px; }
+    .win-bar { height: 140px; }
     .dashboard-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
     .dashboard-stat { padding: 15px; }
     .review-heading { padding: 19px; flex-wrap: wrap; gap: 21px; }
@@ -354,11 +366,13 @@ const COLUMNS = 'ABCDEFGHIJKLMNO';
 const MOVE_COUNT = 15;
 const SIMULATION_PLIES = 2;
 const SIMULATION_ITERATIONS = 277;
+const PREVIEW_MOVE_COUNT = 5;
+const PREVIEW_ITERATIONS = 64;
 const TERMINAL_BAG_LIMIT = 21;
 // Legacy cache settings remain distinct from the full recorded-move simulations.
 const TREND_MOVE_COUNT = 1;
 const TREND_ITERATIONS = 80;
-// The open turn runs before grading, and grading before the win trend.
+// The open turn runs before background estimates and refinement.
 const ANALYSIS_PRIORITY = { view: 100, candidates: 2, trend: 1 };
 const ANALYSIS_SAVE_DELAY = 4000;
 // Keep win-probability grades separate from older static-equity grades.
@@ -389,6 +403,7 @@ let nytConfigured = false;
 let viewingSharedGame = false;
 let reviewRequestToken = 0;
 const POSITION_PARAMETERS = { moveCount: MOVE_COUNT, iterations: SIMULATION_ITERATIONS,
+  previewMoveCount: PREVIEW_MOVE_COUNT, previewIterations: PREVIEW_ITERATIONS,
   plies: SIMULATION_PLIES, terminalBagLimit: TERMINAL_BAG_LIMIT,
   trendMoveCount: TREND_MOVE_COUNT, trendIterations: TREND_ITERATIONS };
 let positionCache = new AnalysisCache({}, POSITION_PARAMETERS);
@@ -611,15 +626,19 @@ function makeReviewContext(review, owner, shared = false) {
   const stored = review.stored_analysis?.version === ANALYSIS_VERSION ? review.stored_analysis : {};
   const cache = new AnalysisCache({}, POSITION_PARAMETERS);
   for (const turn of review.turns) {
-    const key = cache.key(turn, 'review');
-    const result = stored.turn_analyses?.[key];
-    if (CrossplayReview.validResult(result, turn, cache.seed(turn))) cache.results[key] = result;
+    for (const kind of ['review', 'preview']) {
+      const key = cache.key(turn, kind);
+      const result = stored.turn_analyses?.[key];
+      if (CrossplayReview.validResult(result, turn, cache.seed(turn),
+        kind === 'preview' ? PREVIEW_ITERATIONS : SIMULATION_ITERATIONS,
+        kind === 'preview' ? PREVIEW_MOVE_COUNT : MOVE_COUNT)) cache.results[key] = result;
+    }
   }
   cache.owner = owner;
   cache.shared = shared;
   const savedQuality = stored.move_quality;
   const quality = savedQuality?.evaluation === MOVE_QUALITY_EVALUATION && ['done', 'running', 'stopped', 'error'].includes(savedQuality.state) && Array.isArray(savedQuality.points) &&
-    savedQuality.points.every(point => Number.isInteger(point.turnIndex) && review.turns[point.turnIndex] &&
+    savedQuality.points.every(point => !point.provisional && Number.isInteger(point.turnIndex) && review.turns[point.turnIndex] &&
       (point.category === 'unrated' ? point.loss === null :
       Number.isFinite(point.playedWin) && Number.isFinite(point.bestWin) && point.playedWin >= 0 && point.bestWin <= 1 &&
       point.bestWin >= point.playedWin && Math.abs(point.loss - (point.bestWin - point.playedWin) * 100) < 1e-6 &&
@@ -628,13 +647,14 @@ function makeReviewContext(review, owner, shared = false) {
   const complete = quality?.state === 'done' && trend?.state === 'done' && quality.points.length === review.turns.length &&
     new Set(quality.points.map(point => point.turnIndex)).size === review.turns.length && !quality.points.some(point => point.retryable) && quality.points.every(point => point.category === 'unrated' ||
       cache.get(review.turns[point.turnIndex], 'review')?.selected.win === point.playedWin);
-  return { review, cache, owner, shared, quality, trend, states: review.turns.map(() => complete ? 'done' : 'pending') };
+  return { review, cache, owner, shared, quality, trend, states: review.turns.map(() => complete ? 'done' : 'pending-preview') };
 }
 function getReviewQueue() {
   if (reviewQueue) return reviewQueue;
   const owner = analysisOwner();
   const queue = new CrossplayReview.ReviewQueue({
-    concurrency: Math.max(1, Math.min(2, quacklePoolSize())),
+    preview: true,
+    concurrency: Math.max(1, Math.min(2, quacklePoolSize() - 1)),
     load: async id => makeReviewContext(await api('games/' + encodeURIComponent(id) + '/review',
       { expectedOwner: owner, signal: queue.controller.signal }), owner),
     run: analyzeReviewTurn,
@@ -660,16 +680,17 @@ function syncVisibleContext(context) {
 function updateBackgroundStatus() {
   const queue = reviewQueue;
   if (!queue || viewingSharedGame) return;
-  let moves = 0, total = 0, done = 0, unrated = 0, failed = queue.errors.size;
+  let moves = 0, early = 0, total = 0, done = 0, unrated = 0, failed = queue.errors.size;
   for (const context of queue.contexts.values()) {
     moves += context.states.filter(state => state === 'done').length;
+    early += (context.quality?.points || []).filter(point => point.provisional && Number.isFinite(point.playedWin)).length;
     total += context.states.length;
     unrated += (context.quality?.points || []).filter(point => point.category === 'unrated').length;
     if (context.states.every(state => state === 'done')) done++;
     if (context.cache.saveError || context.error || context.quality?.points.some(point => point.retryable)) failed++;
   }
   const gameCount = queue.orderedIds().length;
-  const note = gameCount ? 'Background analysis: ' + done + '/' + gameCount + ' games · ' + moves + '/' + total + ' loaded moves checked' + (unrated ? ' · ' + unrated + ' unrated' : '') + '. Keep this page open to continue.' : '';
+  const note = gameCount ? 'Background analysis: ' + done + '/' + gameCount + ' games · ' + moves + '/' + total + ' loaded moves checked' + (early ? ' · ' + early + ' early estimates awaiting full analysis' : '') + (unrated ? ' · ' + unrated + ' unrated' : '') + '. Keep this page open to continue.' : '';
   const errors = [catalogError, ...queue.errors.values()].filter(Boolean);
   byId('backgroundStatus').textContent = note + (failed ? ' ' + failed + ' games need a retry.' : '') + (errors.length ? ' ' + errors[0] : '');
   byId('retryBackground').classList.toggle('hidden', !failed && !catalogError);
@@ -1014,7 +1035,7 @@ function renderReview() {
   analyzeButton.addEventListener('click', async () => {
     analyzeButton.disabled = true;
     try {
-      await ensurePositionAnalysis(review, turn, 'simulation', { priority: ANALYSIS_PRIORITY.view + ++viewRequestSequence });
+      await ensurePositionAnalysis(review, turn, 'preview', { priority: ANALYSIS_PRIORITY.view + ++viewRequestSequence });
       const context = contextFor(review);
       if (!context) return;
       if (context.quality) context.quality.state = 'running';
@@ -1034,7 +1055,7 @@ function renderReview() {
   body.append(turnPanel);
 
   const sidebar = makeElement('div', 'walkthrough-sidebar');
-  sidebar.append(makeTurnCoach(turn, qualityPoint), makeTurnList(review));
+  sidebar.append(makeTrendPanel(review), makeTurnCoach(turn, qualityPoint), makeTurnList(review));
   body.append(sidebar, analysis);
   root.append(body);
 }
@@ -1137,6 +1158,7 @@ function makeTurnCoach(turn, point) {
     panel.append(makeElement('h3', '', 'This turn is unrated'), makeElement('p', '', point.reason || 'The played move could not be matched to an engine candidate.'),
       makeElement('p', 'analysis-note', 'Unrated turns are excluded from mistake counts and averages.'));
   } else {
+    panel.append(makeElement('p', 'estimate-level', point.provisional ? 'Early estimate' : 'Full estimate'));
     panel.append(makeElement('h3', '', qualityLabel(point.category) + ' · ' + point.loss.toFixed(1) + ' percentage points lost'));
     panel.append(makeElement('p', '', point.category === 'best'
       ? 'This play is within 2 percentage points of the best sampled alternative.'
@@ -1169,7 +1191,9 @@ function makeTurnCoach(turn, point) {
   } else if (Number.isFinite(point.loss)) {
     panel.append(makeElement('p', 'analysis-note', 'This saved review has no move comparison. Re-analyze moves to add the best alternative.'));
   }
-  panel.append(makeElement('p', 'analysis-note', 'Grades compare estimated win chances for the recorded move and the best sampled alternative. The estimates use 277 samples per move and are approximate; small differences can be sampling noise.'));
+  panel.append(makeElement('p', 'analysis-note', 'Grades compare estimated win chances for the recorded move and the best sampled alternative. ' +
+    (Number.isFinite(point.samples) ? 'This estimate uses ' + point.samples + ' samples per move. ' : '') +
+    'Small differences can be sampling noise.' + (point.provisional ? ' The grade can change when the full estimate is ready.' : '')));
   return panel;
 }
 
@@ -1331,9 +1355,7 @@ function makeScorePanel(review) {
     item.append(swatch, document.createTextNode(label));
     legend.append(item);
   }
-  const details = makeElement('details', 'estimate-details');
-  details.append(makeElement('summary', '', 'Explore estimated win chances'), makeTrendPanel(review));
-  panel.append(chart, legend, details);
+  panel.append(chart, legend);
   return panel;
 }
 
@@ -1481,6 +1503,7 @@ function makeMoveQualityPanel(review) {
   if (moveQualityResults && moveQualityResults.points && moveQualityResults.points.length) {
     const personal = personalQualityPoints(review);
     const rated = personal.filter(point => Number.isFinite(point.loss));
+    if (rated.some(point => point.provisional)) panel.append(makeElement('p', 'estimate-level', 'Includes early estimates · grades can change as analysis continues'));
     const summary = makeElement('div', 'quality-summary');
     for (const category of ['best', 'inaccuracy', 'mistake', 'blunder']) {
       const count = rated.filter(point => point.category === category).length;
@@ -1504,7 +1527,7 @@ function makeMoveQualityPanel(review) {
   }
   panel.append(makeElement('p', 'analysis-note', 'Loss is measured in percentage points (pp) of estimated win chance. For example, 60% versus 45% is a loss of 15 pp. Lower is better.'));
   const methodology = makeElement('details', 'estimate-details');
-  methodology.append(makeElement('summary', '', 'How move quality is measured'), makeElement('p', 'analysis-note', 'Only your turns are shown here; both players are analyzed. Loss compares the recorded move with the highest win estimate among Quackle’s top ' + MOVE_COUNT + ' static candidates plus the recorded move. Provisional bands: Best <2 pp; Inaccuracy 2–<5; Mistake 5–<10; Blunder ≥10. Placements, passes, and legal exchanges are included. Missing or invalid moves remain unrated. Each move uses 277 samples with the same initial hidden rack and bag samples for alternatives. Above 21 bag tiles the engine uses two-ply play and its win model; at 21 or fewer it plays to the Crossplay finish. Ties count as half a win. These are engine estimates, not a calibrated prediction of human play.'));
+  methodology.append(makeElement('summary', '', 'How move quality is measured'), makeElement('p', 'analysis-note', 'Only your turns are shown here; both players are analyzed. Loss compares the recorded move with the highest win estimate among the sampled alternatives. Early estimates use fewer alternatives and samples, then full estimates compare Quackle’s top ' + MOVE_COUNT + ' static candidates plus the recorded move with ' + SIMULATION_ITERATIONS + ' samples each. Bands: Best <2 pp; Inaccuracy 2–<5; Mistake 5–<10; Blunder ≥10. Placements, passes, and legal exchanges are included. Missing or invalid moves remain unrated. Alternatives use the same initial hidden rack and bag samples. Above 21 bag tiles the engine uses two-ply play and its win model; at 21 or fewer it plays to the Crossplay finish. Ties count as half a win. These are engine estimates, not a calibrated prediction of human play.'));
   panel.append(methodology);
   return panel;
 }
@@ -1602,13 +1625,25 @@ function refreshTrendPanel() {
 
 function makeTrendPanel(review) {
   const panel = makeElement('section', 'panel trend-panel');
-  panel.append(makeElement('h3', '', 'Win chance through the game'));
+  panel.append(makeElement('h3', '', 'Win chance through the game'),
+    makeElement('p', 'panel-subtitle', 'Use the turn controls to follow each move.'));
+  let point = trendResults?.points?.find(item => !item.actual && item.x === currentTurnIndex);
+  if (!point && qualityPointForTurn(currentTurnIndex)?.category === 'unrated') point = { unavailable: true };
+  const result = gameResult(review);
+  if (currentTurnIndex === review.turns.length - 1 && boardView === 'after' && result.kind !== 'complete') {
+    const mine = result.kind === 'draw' ? 50 : result.kind === 'win' ? 100 : 0;
+    point = { mine, theirs: 100 - mine, actual: true };
+  }
+  const chart = makeElement('div', 'trend-chart');
+  chart.id = 'trendChart';
+  chart.append(drawTrendChart(point, review));
+  panel.append(chart);
   const controls = makeElement('div', 'trend-controls');
-  const button = makeElement('button', 'analysis-button', trendResults && trendResults.state === 'running' ? 'Stop trend' :
-    (trendResults && trendResults.state === 'done' ? 'Rebuild win trend' : 'Build win trend'));
+  const button = makeElement('button', 'analysis-button', trendResults?.state === 'running' ? 'Pause analysis' :
+    trendResults?.state === 'done' ? 'Rebuild estimates' : 'Start analysis');
   button.type = 'button';
   button.addEventListener('click', () => {
-    if (trendResults && trendResults.state === 'running') {
+    if (trendResults?.state === 'running') {
       pauseReviewAnalysis(review);
       return;
     }
@@ -1617,71 +1652,48 @@ function makeTrendPanel(review) {
   controls.append(button);
   panel.append(controls);
   const status = makeElement('div', 'trend-status', trendResults
-    ? trendResults.message || (trendResults.state === 'running' ? 'Preparing Quackle…' : '')
-    : 'The trend appears as background move estimates finish.');
+    ? trendResults.message || (trendResults.state === 'running' ? 'Preparing estimates…' : '')
+    : 'Estimates appear as background analysis finishes.');
   status.id = 'trendStatus';
   panel.append(status);
-  if (trendResults && trendResults.points && trendResults.points.length) {
-    const chart = makeElement('div', 'trend-chart');
-    chart.id = 'trendChart';
-    chart.append(drawTrendChart(trendResults.points, review.turns.length));
-    panel.append(chart);
-    const legend = makeElement('div', 'trend-legend');
-    const mine = makeElement('span');
-    const mineSwatch = makeElement('i', 'trend-swatch');
-    mineSwatch.style.background = '#2b7954';
-    mine.append(mineSwatch, document.createTextNode(review.my_name || 'You'));
-    const theirs = makeElement('span');
-    const theirsSwatch = makeElement('i', 'trend-swatch');
-    theirsSwatch.style.background = '#b88755';
-    theirs.append(theirsSwatch, document.createTextNode(review.opponent || 'Opponent'));
-    legend.append(mine, theirs);
-    panel.append(legend);
-  }
-  panel.append(makeElement('p', 'analysis-note', 'Each estimate starts from the board and rack before the numbered turn and uses the recorded move. The chart shows your chance, including on your opponent’s turns. The final point is the actual result. All estimates use ' + SIMULATION_ITERATIONS + ' samples per move and are approximate. The trend reuses move-quality results.'));
+  panel.append(makeElement('p', 'analysis-note', point?.actual
+    ? 'The final position shows the game result. A draw splits the bar equally.'
+    : 'White shows your chance; black shows your opponent’s. The estimate uses the recorded move and the board and rack before that turn. Early estimates can change as analysis continues.'));
   return panel;
 }
 
-function drawTrendChart(points, totalTurns) {
-  const width = 760, height = 260;
-  const margin = { top: 16, right: 20, bottom: 37, left: 46 };
-  const plotWidth = width - margin.left - margin.right;
-  const plotHeight = height - margin.top - margin.bottom;
-  const xMax = Math.max(1, totalTurns);
-  const x = value => margin.left + value / xMax * plotWidth;
-  const y = value => margin.top + (100 - value) / 100 * plotHeight;
-  const svg = svgElement('svg', { viewBox: `0 0 ${width} ${height}`, role: 'img', 'aria-label': 'Estimated player win chance by completed turns' });
-
-  for (let value = 0; value <= 100; value += 25) {
-    const gridLine = svgElement('line', { x1: margin.left, x2: width - margin.right, y1: y(value), y2: y(value), stroke: '#e0e7dc', 'stroke-width': 1 });
-    svg.append(gridLine);
-    const label = svgElement('text', { x: margin.left - 8, y: y(value) + 4, fill: '#64736c', 'font-size': 11, 'text-anchor': 'end' });
-    label.textContent = value + '%';
-    svg.append(label);
-  }
-  const tickCount = Math.min(5, xMax);
-  for (let i = 0; i <= tickCount; i++) {
-    const value = Math.round(xMax * i / tickCount);
-    const label = svgElement('text', { x: x(value), y: height - 22, fill: '#64736c', 'font-size': 11, 'text-anchor': 'middle' });
-    label.textContent = value === totalTurns ? 'Result' : String(value + 1);
-    svg.append(label);
-  }
-  const xLabel = svgElement('text', { x: margin.left + plotWidth / 2, y: height - 1, fill: '#64736c', 'font-size': 10, 'text-anchor': 'middle' });
-  xLabel.textContent = 'Turn: estimate before the recorded move';
-  svg.append(xLabel);
-
-  for (const [key, color] of [['mine', '#2b7954'], ['theirs', '#b88755']]) {
-    const values = points.map(point => `${x(point.x)},${y(point[key])}`).join(' ');
-    if (points.length > 1) svg.append(svgElement('polyline', { points: values, fill: 'none', stroke: color, 'stroke-width': 2.5, 'stroke-linejoin': 'round', 'stroke-linecap': 'round' }));
-    for (const point of points) {
-      const dot = svgElement('circle', { cx: x(point.x), cy: y(point[key]), r: point.actual ? 4 : 2.5, fill: color, stroke: point.actual ? '#fff' : 'none', 'stroke-width': 1 });
-      const title = svgElement('title');
-      title.textContent = (point.actual ? 'Final result' : 'Before turn ' + point.turn + ', recorded move') + ' · ' + (key === 'mine' ? 'You' : 'Opponent') + ': ' + point[key].toFixed(1) + '%';
-      dot.append(title);
-      svg.append(dot);
-    }
-  }
-  return svg;
+function drawTrendChart(point, review) {
+  const known = Number.isFinite(point?.mine);
+  const mine = known ? Math.max(0, Math.min(100, point.mine)) : null;
+  const you = viewingSharedGame ? review.my_name || 'Player' : 'You';
+  const opponent = review.opponent || 'Opponent';
+  const state = point?.actual ? 'Final result' : known ? (point.provisional ? 'Early estimate' : 'Full estimate')
+    : point?.unavailable ? 'Estimate unavailable' : 'Waiting for estimate';
+  const turnLabel = 'Turn ' + (currentTurnIndex + 1) + ' of ' + review.turns.length + (point?.actual ? '' : ' · Recorded move');
+  const chart = makeElement('div', 'win-evaluation');
+  const bar = makeElement('div', 'win-bar' + (known ? '' : ' win-bar-pending'));
+  bar.setAttribute('role', 'img');
+  bar.setAttribute('aria-label', state + '. ' + turnLabel + (known
+    ? '. ' + you + ': ' + mine.toFixed(1) + '%. ' + opponent + ': ' + (100 - mine).toFixed(1) + '%.'
+    : '. No estimate available.'));
+  if (known) {
+    const white = makeElement('div', 'win-bar-white');
+    white.style.height = mine + '%';
+    bar.append(white);
+  } else bar.textContent = '—';
+  const reading = makeElement('div', 'win-reading');
+  const player = (name, value, className) => {
+    const row = makeElement('div', 'win-player ' + className);
+    const swatch = makeElement('i', 'win-color');
+    swatch.setAttribute('aria-hidden', 'true');
+    row.append(swatch, makeElement('span', '', name), makeElement('strong', '', value === null ? '—' : value.toFixed(1) + '%'));
+    return row;
+  };
+  const detail = makeElement('div', 'win-detail');
+  detail.append(makeElement('div', 'win-estimate-state', state), makeElement('div', 'win-turn-label', turnLabel));
+  reading.append(player(opponent, known ? 100 - mine : null, 'win-opponent'), detail, player(you, mine, 'win-you'));
+  chart.append(bar, reading);
+  return chart;
 }
 
 function validAnalysisTurn(turn) {
@@ -1717,55 +1729,80 @@ function startMoveQuality(review) {
   return Promise.resolve();
 }
 
-async function analyzeReviewTurn(context, index) {
+async function analyzeReviewTurn(context, index, phase = 'review', options = {}) {
   const { review, cache, owner } = context;
   if (owner !== analysisOwner()) throw accountChanged();
-  if (!context.quality || context.quality.state !== 'running') {
+  const turn = review.turns[index];
+  const fullPointReady = () => phase === 'preview' && cache.get(turn, 'review') &&
+    context.quality?.points.some(value => value.turnIndex === index && !value.provisional &&
+      value.playedWin === cache.get(turn, 'review').selected.win);
+  if (fullPointReady()) return { complete: true };
+  const savedPoint = context.quality?.points.find(value => value.turnIndex === index);
+  if (phase === 'preview' && context.quality?.state === 'done' && savedPoint && !savedPoint.provisional) {
+    // A failed full pass stays retryable; an early result cannot complete it.
+    return { complete: savedPoint.category === 'unrated' && !savedPoint.retryable };
+  }
+  if (!context.quality) {
     context.quality = { state: 'running', evaluation: MOVE_QUALITY_EVALUATION, points: [], current: 0, message: 'Preparing win estimates…' };
   }
-  const turn = review.turns[index];
+  if (!context.paused) context.quality.state = 'running';
   let point;
   if (!validAnalysisTurn(turn)) point = makeUnratedPoint(index, turn, 'Missing a valid board, rack, or bag count.');
   else {
     try {
-      const result = await ensurePositionAnalysis(review, turn, 'review', { priority: currentReview === review ? 5 : 1 });
+      const requested = await ensurePositionAnalysis(review, turn, phase, { priority: currentReview === review ? 5 : 1, ...options });
       if (owner !== analysisOwner()) throw accountChanged();
+      if (fullPointReady()) return { complete: true };
+      // A full result can arrive while a visible-turn preview is still running.
+      const result = cache.get(turn, 'review') || requested;
       const loss = Math.max(0, result.best.win - result.selected.win) * 100;
       const staticLoss = Math.max(0, result.bestStaticEquity - result.selected.staticEquity);
       point = {
         turnIndex: index, turn: index + 1, mine: Boolean(turn.mine), action: turn.action,
         evaluation: MOVE_QUALITY_EVALUATION, category: qualityBand(loss), loss,
         playedWin: result.selected.win, bestWin: result.best.win, samples: result.iterationsCompleted,
+        provisional: result.iterationsCompleted !== SIMULATION_ITERATIONS,
         equityLoss: result.selected.action === 'place' ? staticLoss : null,
         playedEquity: result.selected.staticEquity, bestEquity: result.bestStaticEquity,
         playedMove: reviewMove(turn, result.selected), bestMove: reviewMove(turn, result.best),
         candidateCount: result.moves.length
       };
-      const frequencies = await loadWordFrequency().catch(() => null);
-      if (frequencies && result.selected.action === 'place') {
-        point.opportunity = CrossplayLuck.opportunityContext(turn, result.staticMoves, frequencies, candidateWord);
-      } else if (!frequencies) context.quality.frequencyWarning = 'Word commonness could not load. Move quality is still available; re-analyze moves to retry adjusted performance.';
+      if (!point.provisional) {
+        const frequencies = await loadWordFrequency().catch(() => null);
+        if (frequencies && result.selected.action === 'place') {
+          point.opportunity = CrossplayLuck.opportunityContext(turn, result.staticMoves, frequencies, candidateWord);
+        } else if (!frequencies) context.quality.frequencyWarning = 'Word commonness could not load. Move quality is still available; re-analyze moves to retry adjusted performance.';
+      }
     } catch (error) {
       if (error.name === 'AbortError' || owner !== analysisOwner()) throw error;
       point = makeUnratedPoint(index, turn, 'Quackle could not evaluate the played move: ' + error.message);
       point.retryable = true;
+      point.provisional = phase === 'preview';
     }
   }
   if (owner !== analysisOwner()) throw accountChanged();
+  if (fullPointReady()) return { complete: true };
+  const existing = context.quality.points.find(value => value.turnIndex === index);
+  if (point.provisional && existing && !existing.provisional) {
+    return { complete: Boolean(cache.get(turn, 'review')) };
+  }
   context.quality.points = context.quality.points.filter(value => value.turnIndex !== index).concat(point).sort((a, b) => a.turnIndex - b.turnIndex);
   context.quality.current = context.quality.points.length;
-  context.quality.message = 'Estimated ' + context.quality.current + ' of ' + review.turns.length + ' moves. You can keep reviewing.';
+  const fullCount = context.quality.points.filter(value => !value.provisional).length;
+  context.quality.message = 'Estimated ' + context.quality.current + ' of ' + review.turns.length + ' moves · ' + fullCount + ' fully checked. You can keep reviewing.';
   context.trend = deriveWinTrend(context);
   if (context.paused) {
     context.quality.state = context.trend.state = 'stopped';
     context.quality.message = context.trend.message = 'Analysis paused. A running move can finish and save.';
   }
   syncVisibleContext(context);
+  return { complete: !point.provisional };
 }
 function deriveWinTrend(context, done = false) {
   const points = (context.quality?.points || []).filter(point => Number.isFinite(point.playedWin)).map(point => {
     const mine = context.review.turns[point.turnIndex].mine ? point.playedWin * 100 : (1 - point.playedWin) * 100;
-    return { x: point.turnIndex, turn: point.turnIndex + 1, mine, theirs: 100 - mine, actual: false };
+    return { x: point.turnIndex, turn: point.turnIndex + 1, mine, theirs: 100 - mine, actual: false,
+      provisional: Boolean(point.provisional), samples: point.samples };
   });
   if (done) {
     const mine = Number(context.review.my_score) === Number(context.review.opponent_score) ? 50 : Number(context.review.my_score) > Number(context.review.opponent_score) ? 100 : 0;
@@ -1776,6 +1813,7 @@ function deriveWinTrend(context, done = false) {
 }
 async function finishReviewAnalysis(context) {
   if (context.owner !== analysisOwner()) return;
+  if (context.quality?.points.some(point => point.provisional)) return;
   if (!context.quality) context.quality = { evaluation: MOVE_QUALITY_EVALUATION, points: [] };
   context.quality.state = 'done';
   context.quality.message = 'Move-quality analysis complete · ' + context.quality.points.filter(point => Number.isFinite(point.loss)).length + ' of ' + context.review.turns.length + ' moves rated.';
@@ -1826,7 +1864,11 @@ async function ensurePositionAnalysis(review, turn, kind, options = {}) {
   const context = contextFor(review);
   if (!context || context.owner !== analysisOwner()) throw accountChanged();
   const cache = context.cache;
-  kind = kind === 'candidates' ? kind : 'review';
+  const signal = reviewQueue.controller.signal;
+  kind = ['candidates', 'preview'].includes(kind) ? kind : 'review';
+  if (kind === 'preview' && cache.get(turn, 'review')) return cache.get(turn, 'review');
+  const moveCount = kind === 'preview' ? PREVIEW_MOVE_COUNT : MOVE_COUNT;
+  const iterations = kind === 'preview' ? PREVIEW_ITERATIONS : SIMULATION_ITERATIONS;
   const key = cache.key(turn, kind);
   const taskKey = context.owner + ':' + review.id + ':' + key;
   const priority = options.priority || 0;
@@ -1835,20 +1877,20 @@ async function ensurePositionAnalysis(review, turn, kind, options = {}) {
     const payload = {
       gridJson: JSON.stringify(turn.grid), rack: String(turn.rack),
       playerScore: Number(turn.mover_score) || 0, opponentScore: Number(turn.other_score) || 0,
-      numMoves: MOVE_COUNT, iterations: SIMULATION_ITERATIONS,
+      numMoves: moveCount, iterations,
       bagCount: Number(turn.bag_count), finalTurnsRemaining: Number(turn.bag_count) === 0 ? Number(turn.final_turns_remaining) : 0,
       played: CrossplayReview.playedMove(turn), seed: cache.seed(turn)
     };
     const result = await workerRequest(kind === 'candidates' ? 'kibitz' : 'simulateReview', payload,
-      { priority, signal: reviewQueue.controller.signal, taskKey, onStart });
+      { priority, signal, taskKey, onStart });
     if (context.owner !== analysisOwner()) throw accountChanged();
     if (!result || result.error || !Array.isArray(result.moves) || !result.moves.length) throw new Error(result?.error || 'Quackle did not return move candidates.');
-    if (kind === 'review') {
-      if (!CrossplayReview.validResult(result, turn, payload.seed, SIMULATION_ITERATIONS, MOVE_COUNT)) throw new Error('Quackle returned incomplete simulation results.');
+    if (kind !== 'candidates') {
+      if (!CrossplayReview.validResult(result, turn, payload.seed, iterations, moveCount)) throw new Error('Quackle returned incomplete simulation results.');
     }
     recordEngineResult(review, cache, key, result);
     return result;
-  }, reviewQueue.controller.signal, { priority, onPromote: value => quacklePool?.promote(taskKey, value) });
+  }, signal, { priority, onPromote: value => quacklePool?.promote(taskKey, value) });
   if (currentReview === review) refreshPositionPanel();
   return result;
 }
@@ -1856,14 +1898,20 @@ async function ensurePositionAnalysis(review, turn, kind, options = {}) {
 // A visible turn promotes shared work without cancelling the account's background queue.
 function prepareViewedTurn() {
   const review = currentReview;
-  const turn = review?.turns[currentTurnIndex];
-  const key = turn && validAnalysisTurn(turn) ? positionCache.key(turn, 'review') : null;
+  const index = currentTurnIndex;
+  const turn = review?.turns[index];
+  const context = review && contextFor(review);
+  const key = turn && validAnalysisTurn(turn) ? positionCache.key(turn, 'preview') : null;
   if (viewedTurnRequest?.key === key && viewedTurnRequest.review === review) return;
   viewedTurnRequest = null;
-  if (!key || positionCache.get(turn, 'review') || positionCache.errors.has(key)) return;
+  if (!key || !context || positionCache.errors.has(key)) return;
+  const cached = positionCache.get(turn, 'review') || positionCache.get(turn, 'preview');
+  if (context.paused && !cached) return;
+  const point = context.quality?.points.find(value => value.turnIndex === index);
+  if (cached && point?.samples === cached.iterationsCompleted) return;
   const request = { key, review };
   viewedTurnRequest = request;
-  ensurePositionAnalysis(review, turn, 'review', { priority: ANALYSIS_PRIORITY.view + ++viewRequestSequence })
+  analyzeReviewTurn(context, index, 'preview', { priority: ANALYSIS_PRIORITY.view + ++viewRequestSequence })
     .catch(() => {}).finally(() => {
       if (viewedTurnRequest === request) viewedTurnRequest = null;
       if (currentReview === review) refreshPositionPanel();
@@ -1871,14 +1919,18 @@ function prepareViewedTurn() {
 }
 
 function renderPositionAnalysis(turn, button, status, output) {
-  const simulation = positionCache.get(turn, 'review');
+  const full = positionCache.get(turn, 'review');
+  const simulation = full || positionCache.get(turn, 'preview');
   const candidates = positionCache.get(turn, 'candidates');
-  const simulating = positionCache.pending.has(positionCache.key(turn, 'review'));
-  const error = simulation || simulating ? null : (positionCache.errors.get(positionCache.key(turn, 'review')) ||
+  const simulating = ['review', 'preview'].some(kind => positionCache.pending.has(positionCache.key(turn, kind)));
+  const error = full || simulating ? null : (positionCache.errors.get(positionCache.key(turn, 'review')) ||
+    positionCache.errors.get(positionCache.key(turn, 'preview')) ||
     positionCache.errors.get(positionCache.key(turn, 'candidates')));
   output.replaceChildren();
   if (simulation || candidates) renderMoves((simulation || candidates).moves, simulation || candidates, output, turn);
-  status.textContent = simulation ? 'Ready · ' + simulation.iterationsCompleted + ' simulations per move.'
+  status.textContent = simulation ? (full ? 'Full estimate' : 'Early estimate') + ' · ' + simulation.iterationsCompleted + ' simulations per move.' +
+    (!full ? (error ? ' Full estimate failed: ' + error : moveQualityResults?.state === 'stopped'
+      ? ' Full analysis is paused.' : ' Full analysis continues in the background.') : '')
     : error ? 'Analysis failed: ' + error
     : !validAnalysisTurn(turn) ? 'This turn is missing a valid board, rack, or bag count.'
     : simulating && candidates ? 'Move candidates ready · simulating win chances for this turn…'
@@ -1918,11 +1970,13 @@ function renderMoves(moves, result, output, turn) {
   }
   table.append(body);
   output.append(table);
+  const early = result.provisional || result.iterationsCompleted < SIMULATION_ITERATIONS;
   const note = result.simulated !== true
     ? 'Static equity candidates from move-quality analysis. Win estimates are prepared separately and reused here.'
-    : result.playToEnd
-    ? 'Win estimates use ' + SIMULATION_ITERATIONS + ' sampled hidden racks and draws per move, played to the Crossplay finish.'
-    : 'Win estimates use Quackle’s two-ply model with ' + SIMULATION_ITERATIONS + ' samples per move.';
+    : (early ? 'Early estimate. ' : 'Full estimate. ') + (result.playToEnd
+      ? 'Win estimates use ' + result.iterationsCompleted + ' sampled hidden racks and draws per move, played to the Crossplay finish.'
+      : 'Win estimates use Quackle’s two-ply model with ' + result.iterationsCompleted + ' samples per move.') +
+      (early ? ' Values and grades can change when full analysis finishes.' : '');
   output.append(makeElement('p', 'analysis-note', note));
   renderWordInsight(turn, moves, output);
 }

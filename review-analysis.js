@@ -75,8 +75,8 @@
   }
 
   class ReviewQueue {
-    constructor({ load, run, complete = () => {}, change = () => {}, concurrency = 2 }) {
-      Object.assign(this, { load, run, complete, change, concurrency });
+    constructor({ load, run, complete = () => {}, change = () => {}, concurrency = 2, preview = false }) {
+      Object.assign(this, { load, run, complete, change, concurrency, preview });
       this.contexts = new Map();
       this.loading = new Map();
       this.errors = new Map();
@@ -97,6 +97,7 @@
       const promise = Promise.resolve().then(() => this.load(id)).then(context => {
         if (this.closed) throw Object.assign(new Error('Account changed.'), { name: 'AbortError' });
         context.states ||= context.review.turns.map(() => 'pending');
+        if (this.preview) context.states = context.states.map(state => state === 'pending' ? 'pending-preview' : state);
         context.paused = false;
         this.contexts.set(id, context);
         this.errors.delete(id);
@@ -118,16 +119,18 @@
           continue;
         }
         if (context.paused) continue;
-        const index = context.states.indexOf('pending');
+        const phase = this.preview && context.states.includes('pending-preview') ? 'preview' : 'review';
+        const index = context.states.indexOf(phase === 'preview' ? 'pending-preview' : 'pending');
         if (index >= 0) {
-          context.states[index] = 'running';
+          context.states[index] = phase === 'preview' ? 'running-preview' : 'running';
           return async () => {
             let succeeded = false;
-            try { await this.run(context, index); succeeded = true; }
+            let result;
+            try { result = await this.run(context, index, phase); succeeded = true; }
             catch (error) {
               if (!this.closed && !this.controller.signal.aborted) context.error = error.message;
             } finally {
-              context.states[index] = succeeded ? 'done' : 'error';
+              context.states[index] = succeeded ? (phase === 'preview' && result?.complete !== true ? 'pending' : 'done') : 'error';
               if (!this.closed && context.states.every(state => state === 'done')) await this.complete(context);
             }
           };
@@ -158,7 +161,7 @@
         if (context) {
           context.paused = false;
           context.error = null;
-          context.states = context.states.map(state => state === 'running' ? state : 'pending');
+          context.states = context.states.map(state => ['running', 'running-preview'].includes(state) ? state : this.preview ? 'pending-preview' : 'pending');
         }
       }
       this.pump();
@@ -168,7 +171,7 @@
       if (!context || index < 0 || index >= context.states.length) return;
       context.paused = false;
       context.error = null;
-      if (context.states[index] !== 'running') context.states[index] = 'pending';
+      if (!['running', 'running-preview'].includes(context.states[index])) context.states[index] = this.preview ? 'pending-preview' : 'pending';
       this.pump();
     }
     close() { this.closed = true; this.controller.abort(); }

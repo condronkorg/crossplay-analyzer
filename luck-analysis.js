@@ -97,7 +97,7 @@
   }
 
   function performance(point, rack) {
-    if (!point || point.category === 'unrated') return null;
+    if (!point || point.provisional || point.category === 'unrated') return null;
     const loss = point.evaluation === 'win-probability-v1' || Object.hasOwn(point, 'equityLoss')
       ? point.equityLoss : point.loss;
     if (!Number.isFinite(loss) || loss < 0) return null;

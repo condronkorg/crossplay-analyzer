@@ -9,22 +9,23 @@ from unittest.mock import Mock
 from crossplay_server import ANALYSIS_VERSION, CrossplayError, Handler
 
 
-def review_analysis_entry():
-    key = json.dumps(['quackle-review-v1', 'review', ['.' * 15] * 15, 'CATERS?',
-                      0, 0, 86, 0, 15, 277, 2, 21, 'CAT 8G 10', '',
+def review_analysis_entry(kind='review'):
+    move_count, iterations = (5, 64) if kind == 'preview' else (15, 277)
+    key = json.dumps(['quackle-review-v1', kind, ['.' * 15] * 15, 'CATERS?',
+                      0, 0, 86, 0, move_count, iterations, 2, 21, 'CAT 8G 10', '',
                       'paired-review-v1'], separators=(',', ':'))
     moves = [
         {'action': 'place', 'position': '8G', 'tiles': 'CAT', 'score': 10,
-         'equity': 11, 'staticEquity': 12, 'win': .4, 'samples': 277, 'terminalSamples': 0},
+         'equity': 11, 'staticEquity': 12, 'win': .4, 'samples': iterations, 'terminalSamples': 0},
         {'action': 'place', 'position': '8G', 'tiles': 'CATS', 'score': 15,
-         'equity': 17, 'staticEquity': 18, 'win': .6, 'samples': 277, 'terminalSamples': 0},
+         'equity': 17, 'staticEquity': 18, 'win': .6, 'samples': iterations, 'terminalSamples': 0},
     ]
     static_moves = [{**move, 'equity': move['staticEquity']} for move in moves]
     result = {'simulated': True, 'samplingVersion': 'paired-review-v1', 'seed': 123,
               'moves': moves, 'selected': moves[0], 'best': moves[1],
               'staticMoves': static_moves, 'bestStaticEquity': 18,
-              'iterationsRequested': 277, 'iterationsCompleted': 277,
-              'candidateCount': 2, 'totalPlayaheads': 554,
+              'iterationsRequested': iterations, 'iterationsCompleted': iterations,
+              'candidateCount': 2, 'totalPlayaheads': iterations * 2,
               'bagCount': 86, 'finalTurnsRemaining': 0, 'playToEnd': False,
               'simulationMode': '2-ply', 'plies': 2, 'winModel': 'bogowin'}
     return key, result
@@ -97,6 +98,83 @@ class BackgroundAnalysisTest(unittest.TestCase):
         self.assertEqual(handler.saved_game_analysis('account-a', 'game0001')['turn_analyses'], {key: result})
         query = handler.supabase_data_request.call_args.args[2]
         self.assertEqual(query['user_id'], 'eq.account-a')
+
+    def test_preview_and_full_results_round_trip_as_distinct_cache_entries(self):
+        preview_key, preview = review_analysis_entry('preview')
+        full_key, full = review_analysis_entry()
+        snapshots = []
+        for key, result in ((preview_key, preview), (full_key, full)):
+            self.handler.save_game_analysis('account-a', 'game0001', {
+                'analysis_version': ANALYSIS_VERSION, 'turn_analyses': {key: result}})
+            call = self.handler.supabase_data_request.call_args
+            self.assertEqual(call.args, ('POST', 'rpc/save_crossplay_analysis'))
+            snapshot = call.kwargs['payload']['snapshot']
+            self.assertEqual(snapshot, {'turn_analyses': {key: result}})
+            snapshots.append(snapshot)
+        combined = {**snapshots[0]['turn_analyses'], **snapshots[1]['turn_analyses']}
+        self.handler.validate_game_analysis({'analysis_version': ANALYSIS_VERSION, 'turn_analyses': combined})
+        handler = object.__new__(Handler)
+        handler.supabase_data_request = Mock(return_value=[{
+            'analysis_version': ANALYSIS_VERSION, 'turn_analyses': combined}])
+        saved = handler.saved_game_analysis('account-a', 'game0001')['turn_analyses']
+        self.assertEqual(saved, {preview_key: preview, full_key: full})
+        self.assertEqual(saved[preview_key]['iterationsCompleted'], 64)
+        self.assertEqual(saved[full_key]['iterationsCompleted'], 277)
+
+    def test_preview_results_require_the_preview_profile_and_complete_metadata(self):
+        preview_key, preview = review_analysis_entry('preview')
+        full_key, full = review_analysis_entry()
+        for key, result in ((preview_key, full), (full_key, preview)):
+            with self.subTest(key=key), self.assertRaises(CrossplayError):
+                self.handler.validate_game_analysis({'analysis_version': ANALYSIS_VERSION, 'turn_analyses': {key: result}})
+        for change in (
+                lambda result: result.update(iterationsCompleted=63),
+                lambda result: result.update(totalPlayaheads=64),
+                lambda result: result.update(candidateCount=3),
+                lambda result: result.update(samplingVersion='old'),
+                lambda result: result.pop('samplingVersion'),
+                lambda result: result.update(best=result['selected']),
+                lambda result: result['moves'][0].update(samples=277),
+                lambda result: result['moves'][0].update(tiles='cAT'),
+                lambda result: result['staticMoves'][0].update(equity=999)):
+            key, result = review_analysis_entry('preview')
+            change(result)
+            with self.subTest(change=change), self.assertRaises(CrossplayError):
+                self.handler.validate_game_analysis({'analysis_version': ANALYSIS_VERSION, 'turn_analyses': {key: result}})
+        for index, value in ((0, 'quackle-position-v1'), (1, 'other'), (8, 15), (9, 277), (10, 1), (11, 20)):
+            identity = json.loads(preview_key)
+            identity[index] = value
+            with self.subTest(index=index), self.assertRaises(CrossplayError):
+                self.handler.validate_game_analysis({
+                    'analysis_version': ANALYSIS_VERSION, 'turn_analyses': {json.dumps(identity): preview}})
+
+    def test_preview_and_full_profiles_limit_candidates_and_require_terminal_samples(self):
+        for kind, maximum in (('preview', 6), ('review', 16)):
+            key, result = review_analysis_entry(kind)
+            for count in (maximum, maximum + 1):
+                extended = copy.deepcopy(result)
+                for index in range(count - len(extended['moves'])):
+                    extended['moves'].append({**extended['moves'][1], 'position': f'{index + 1}A'})
+                extended['staticMoves'] = [{**move, 'equity': move['staticEquity']} for move in extended['moves']]
+                extended['candidateCount'] = count
+                extended['totalPlayaheads'] = count * extended['iterationsRequested']
+                body = {'analysis_version': ANALYSIS_VERSION, 'turn_analyses': {key: extended}}
+                with self.subTest(kind=kind, count=count):
+                    if count == maximum:
+                        self.handler.validate_game_analysis(body)
+                    else:
+                        with self.assertRaises(CrossplayError):
+                            self.handler.validate_game_analysis(body)
+            identity = json.loads(key)
+            identity[6:8] = [0, 1]
+            result.update(bagCount=0, finalTurnsRemaining=1, playToEnd=True,
+                          simulationMode='play-to-end', plies=-1, winModel='terminal')
+            body = {'analysis_version': ANALYSIS_VERSION, 'turn_analyses': {json.dumps(identity): result}}
+            with self.subTest(kind=kind), self.assertRaises(CrossplayError):
+                self.handler.validate_game_analysis(body)
+            for move in result['moves']:
+                move['terminalSamples'] = result['iterationsRequested']
+            self.handler.validate_game_analysis(body)
 
     def test_review_probabilities_reject_invalid_or_incomplete_values(self):
         changes = [
@@ -188,6 +266,19 @@ class BackgroundAnalysisTest(unittest.TestCase):
             invalid['move_quality']['points'][0].update(change)
             with self.subTest(change=change), self.assertRaises(CrossplayError):
                 self.handler.validate_game_analysis(invalid)
+
+    def test_completed_win_quality_rejects_provisional_rated_and_unrated_points(self):
+        for point in ({'category': 'blunder', 'playedWin': .4, 'bestWin': .6, 'loss': 20,
+                       'equityLoss': 6, 'playedEquity': 12, 'bestEquity': 18},
+                      {'category': 'unrated', 'loss': None, 'reason': 'No valid rack.'}):
+            quality = {'state': 'done', 'evaluation': 'win-probability-v1', 'points': [point]}
+            body = {'analysis_version': ANALYSIS_VERSION, 'move_quality': quality}
+            self.handler.validate_game_analysis(body)
+            point['provisional'] = False
+            self.handler.validate_game_analysis(body)
+            point['provisional'] = True
+            with self.subTest(category=point['category']), self.assertRaises(CrossplayError):
+                self.handler.validate_game_analysis(body)
 
     def test_pass_and_exchange_win_results_do_not_require_equity_performance(self):
         for action, notation, tiles in (('pass', 'PASS 0', ''), ('exchange', 'SWAP 0', 'CA')):

@@ -120,4 +120,5 @@ test('win-probability grades keep static equity separate for luck-adjusted perfo
   assert.equal(result.execution, 100 / 1.5);
   assert.equal(result.adjustedLoss, 5);
   assert.equal(luck.performance({ ...point, equityLoss: null }, { percentile: 50 }), null);
+  assert.equal(luck.performance({ ...point, provisional: true }, { percentile: 50 }), null);
 });

@@ -5,7 +5,7 @@
     constructor(saved = {}, parameters = {}) {
       this.results = { ...saved };
       this.parameters = { moveCount: 15, iterations: 277, plies: 2, terminalBagLimit: 21,
-        trendMoveCount: 1, trendIterations: 80, ...parameters };
+        trendMoveCount: 1, trendIterations: 80, previewMoveCount: 5, previewIterations: 64, ...parameters };
       this.pending = new Map();
       this.errors = new Map();
     }
@@ -14,18 +14,19 @@
     // legacy keys intact for custom move analysis and existing saved results.
     key(turn, kind) {
       const p = this.parameters;
-      const sampled = ['simulation', 'trend', 'review'].includes(kind);
-      const values = [kind === 'review' ? 'quackle-review-v1' : 'quackle-position-v1', kind, turn.grid, turn.rack,
+      const review = kind === 'review' || kind === 'preview';
+      const sampled = review || kind === 'simulation' || kind === 'trend';
+      const values = [review ? 'quackle-review-v1' : 'quackle-position-v1', kind, turn.grid, turn.rack,
         Number(turn.mover_score) || 0, Number(turn.other_score) || 0,
         Number(turn.bag_count), Number(turn.bag_count) === 0 ? Number(turn.final_turns_remaining) : 0,
-        kind === 'trend' ? p.trendMoveCount : p.moveCount,
-        kind === 'simulation' || kind === 'review' ? p.iterations : kind === 'trend' ? p.trendIterations : 0,
+        kind === 'preview' ? p.previewMoveCount : kind === 'trend' ? p.trendMoveCount : p.moveCount,
+        kind === 'preview' ? p.previewIterations : kind === 'simulation' || kind === 'review' ? p.iterations : kind === 'trend' ? p.trendIterations : 0,
         sampled ? p.plies : 0, sampled ? p.terminalBagLimit : 0];
-      if (kind === 'review') values.push(String(turn.action || ''), String(turn.swapped_tiles || ''), 'paired-review-v1');
+      if (review) values.push(String(turn.action || ''), String(turn.swapped_tiles || ''), 'paired-review-v1');
       return JSON.stringify(values);
     }
 
-    // FNV-1a over the review key gives repeatable samples across workers/reloads.
+    // Both profiles use the full review seed, so preview samples match its prefix.
     seed(turn) {
       let hash = 2166136261;
       for (const character of this.key(turn, 'review')) {

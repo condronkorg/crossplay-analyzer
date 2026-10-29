@@ -705,7 +705,7 @@ class Handler(SimpleHTTPRequestHandler):
                 identity = json.loads(key)
             except ValueError:
                 identity = None
-            is_review = isinstance(identity, list) and len(identity) > 1 and identity[1] == 'review'
+            is_review = isinstance(identity, list) and len(identity) > 1 and identity[1] in ('review', 'preview')
             if is_review or 'samplingVersion' in result:
                 Handler.validate_review_result(identity, result)
         return {field: body[field] for field in ('win_trend', 'move_quality', 'turn_analyses') if field in body}
@@ -763,10 +763,12 @@ class Handler(SimpleHTTPRequestHandler):
             raise CrossplayError('Invalid win-probability analysis result.', 400)
 
         if (not isinstance(identity, list) or len(identity) != 15
-                or identity[:2] != ['quackle-review-v1', 'review']
-                or identity[8:12] != [15, 277, 2, 21]
+                or identity[0] != 'quackle-review-v1' or identity[1] not in ('review', 'preview')
                 or identity[14] != 'paired-review-v1'
                 or not all(isinstance(value, str) for value in identity[12:14])):
+            invalid()
+        move_count, iterations = (5, 64) if identity[1] == 'preview' else (15, 277)
+        if identity[8:12] != [move_count, iterations, 2, 21]:
             invalid()
         grid, rack, score, other, bag, final = identity[2:8]
         if (not isinstance(grid, list) or len(grid) != 15
@@ -780,7 +782,7 @@ class Handler(SimpleHTTPRequestHandler):
         moves = result.get('moves')
         integer_fields = ('bagCount', 'finalTurnsRemaining', 'plies', 'iterationsRequested',
                           'iterationsCompleted', 'candidateCount', 'totalPlayaheads')
-        if (not isinstance(moves, list) or not 1 <= len(moves) <= 16
+        if (not isinstance(moves, list) or not 1 <= len(moves) <= move_count + 1
                 or result.get('simulated') is not True
                 or result.get('samplingVersion') != 'paired-review-v1'
                 or type(result.get('seed')) is not int or not 0 <= result['seed'] < 2 ** 32
@@ -790,16 +792,16 @@ class Handler(SimpleHTTPRequestHandler):
                 or result.get('simulationMode') != ('play-to-end' if play_to_end else '2-ply')
                 or result.get('winModel') != ('terminal' if play_to_end else 'bogowin')
                 or result.get('plies') != (-1 if play_to_end else 2)
-                or result.get('iterationsRequested') != 277 or result.get('iterationsCompleted') != 277
+                or result.get('iterationsRequested') != iterations or result.get('iterationsCompleted') != iterations
                 or result.get('candidateCount') != len(moves)
-                or result.get('totalPlayaheads') != 277 * len(moves)):
+                or result.get('totalPlayaheads') != iterations * len(moves)):
             invalid()
         for move in moves:
             if (not isinstance(move, dict) or move.get('action') not in ('place', 'pass', 'exchange')
                     or not all(isinstance(move.get(field), str) for field in ('position', 'tiles'))
                     or not all(Handler.finite_number(move.get(field)) for field in ('win', 'equity', 'staticEquity'))
-                    or not 0 <= move['win'] <= 1 or type(move.get('samples')) is not int or move['samples'] != 277
-                    or (play_to_end and (type(move.get('terminalSamples')) is not int or move['terminalSamples'] != 277))):
+                    or not 0 <= move['win'] <= 1 or type(move.get('samples')) is not int or move['samples'] != iterations
+                    or (play_to_end and (type(move.get('terminalSamples')) is not int or move['terminalSamples'] != iterations))):
                 invalid()
         if (result.get('selected') not in moves or result.get('best') not in moves
                 or result['best']['win'] != max(move['win'] for move in moves)):
@@ -827,7 +829,7 @@ class Handler(SimpleHTTPRequestHandler):
         if len(quality['points']) > 512:
             invalid()
         for point in quality['points']:
-            if not isinstance(point, dict):
+            if not isinstance(point, dict) or point.get('provisional') is True:
                 invalid()
             if point.get('category') == 'unrated':
                 if (point.get('loss') is not None or not isinstance(point.get('reason'), str)

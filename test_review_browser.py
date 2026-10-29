@@ -456,6 +456,144 @@ class ReviewBrowserTest(unittest.TestCase):
         self.page.route('**/quackle-worker.js', lambda route: route.fulfill(
             content_type='application/javascript', body=worker))
 
+    def test_preview_updates_visible_estimate_then_full_result_replaces_it(self):
+        self.install_review_worker()
+        self.open_game()
+        result = self.page.evaluate("""async () => {
+          currentTurnIndex = 0; boardView = 'before'; renderReview();
+          const context = contextFor(currentReview);
+          const calls = [], request = workerRequest;
+          workerRequest = (type, payload, options) => {
+            calls.push({iterations: payload.iterations, count: payload.numMoves, seed: payload.seed});
+            return request(type, payload, options);
+          };
+          await analyzeReviewTurn(context, 0, 'preview');
+          const early = structuredClone(context.quality.points[0]);
+          const earlyLabel = document.querySelector('.win-estimate-state').textContent;
+          const savedPreview = {version: ANALYSIS_VERSION, turn_analyses: structuredClone(context.cache.results)};
+          const resumed = makeReviewContext({...currentReview, stored_analysis: savedPreview}, analysisOwner());
+          await analyzeReviewTurn(context, 0, 'review');
+          const complete = await analyzeReviewTurn(context, 0, 'preview');
+          return {early, earlyLabel, full: context.quality.points[0], calls, complete,
+            resumed: Boolean(resumed.cache.get(currentReview.turns[0], 'preview')),
+            keys: Object.keys(context.cache.results).map(key => JSON.parse(key)[1])};
+        }""")
+        self.assertTrue(result['early']['provisional'])
+        self.assertEqual(result['early']['samples'], 64)
+        self.assertEqual(result['earlyLabel'], 'Early estimate')
+        self.assertFalse(result['full']['provisional'])
+        self.assertEqual(result['full']['samples'], 277)
+        self.assertEqual([(call['iterations'], call['count']) for call in result['calls']], [(64, 5), (277, 15)])
+        self.assertEqual(result['calls'][0]['seed'], result['calls'][1]['seed'])
+        self.assertTrue(result['complete']['complete'])
+        self.assertTrue(result['resumed'])
+        self.assertCountEqual(result['keys'], ['preview', 'review'])
+        expect(self.page.locator('.win-estimate-state')).to_have_text('Full estimate')
+
+    def test_late_preview_cannot_replace_a_full_result(self):
+        self.install_review_worker(delay='p.iterations === 64 ? 250 : 0')
+        self.open_game()
+        result = self.page.evaluate("""async () => {
+          const context = contextFor(currentReview);
+          await Promise.all([analyzeReviewTurn(context, 0, 'preview'), analyzeReviewTurn(context, 0, 'review')]);
+          return {points: context.quality.points, trend: context.trend.points};
+        }""")
+        self.assertEqual(len(result['points']), 1)
+        self.assertEqual(result['points'][0]['samples'], 277)
+        self.assertFalse(result['points'][0]['provisional'])
+        self.assertFalse(result['trend'][0]['provisional'])
+
+    def test_saved_previews_resume_full_analysis_without_repeating_the_early_pass(self):
+        self.install_review_worker()
+        self.open_game()
+        stored = self.page.evaluate("""async () => {
+          const context = contextFor(currentReview);
+          for (let index = 0; index < currentReview.turns.length; index++) await analyzeReviewTurn(context, index, 'preview');
+          await flushAnalysisSave();
+          return {version: ANALYSIS_VERSION, turn_analyses: context.cache.results};
+        }""")
+        self.use_saved_analysis(stored)
+        self.page.evaluate("""window.resumeCalls = []; const request = workerRequest;
+          workerRequest = (type, payload, options) => {
+            if (options.taskKey.includes(':mockgame01:')) resumeCalls.push(payload.iterations);
+            return request(type, payload, options);
+          }; startBackgroundAnalysis = window.automaticAnalysis; undefined""")
+        self.page.get_by_role('button', name='Review game against Demo Cedar').click()
+        expect(self.page.locator('.quality-panel .trend-status')).to_contain_text('Your review is ready')
+        self.assertEqual(self.page.evaluate('resumeCalls'), [277] * 6)
+        self.assertTrue(self.page.evaluate('moveQualityResults.points.every(point => !point.provisional && point.samples === 277)'))
+
+    def test_late_visible_preview_preserves_completed_review_and_final_result(self):
+        self.install_review_worker()
+        self.open_game()
+        result = self.page.evaluate("""async () => {
+          const context = contextFor(currentReview), request = workerRequest;
+          let release;
+          workerRequest = (type, payload, options) => payload.iterations === 64
+            ? new Promise(resolve => { release = () => resolve(request(type, payload, options)); })
+            : request(type, payload, options);
+          const pending = analyzeReviewTurn(context, 0, 'preview');
+          while (!release) await new Promise(resolve => setTimeout(resolve, 0));
+          for (let index = 0; index < currentReview.turns.length; index++) await analyzeReviewTurn(context, index, 'review');
+          await finishReviewAnalysis(context);
+          const message = context.quality.message;
+          release(); await pending;
+          await analyzeReviewTurn(context, 0, 'preview');
+          return {quality: context.quality.state, trend: context.trend.state,
+            final: context.trend.points.at(-1).actual, sameMessage: context.quality.message === message};
+        }""")
+        self.assertEqual(result, {'quality': 'done', 'trend': 'done', 'final': True, 'sameMessage': True})
+
+    def test_visible_turn_preview_updates_grade_without_waiting_for_background(self):
+        self.install_review_worker()
+        self.open_game()
+        self.page.evaluate("prepareViewedTurn = window.automaticViewedTurn; currentTurnIndex = 0; boardView = 'before'; renderReview()")
+        expect(self.page.locator('.win-estimate-state')).to_have_text('Early estimate')
+        self.assertEqual(self.page.evaluate('moveQualityResults.points[0].samples'), 64)
+        self.assertEqual(self.page.evaluate('reviewQueue.running'), 0)
+
+    def test_late_preview_after_full_failure_keeps_review_complete_and_retryable(self):
+        self.install_review_worker()
+        self.open_game()
+        result = self.page.evaluate("""async () => {
+          const context = contextFor(currentReview), request = workerRequest;
+          let release;
+          workerRequest = (type, payload, options) => payload.iterations === 64
+            ? new Promise(resolve => { release = () => resolve(request(type, payload, options)); })
+            : payload.rack === 'ACERSTU' ? Promise.reject(new Error('Full analysis failed'))
+            : request(type, payload, options);
+          const pending = analyzeReviewTurn(context, 0, 'preview');
+          while (!release) await new Promise(resolve => setTimeout(resolve, 0));
+          for (let index = 0; index < currentReview.turns.length; index++) await analyzeReviewTurn(context, index, 'review');
+          await finishReviewAnalysis(context);
+          release(); await pending;
+          const retry = await analyzeReviewTurn(context, 0, 'preview');
+          return {quality: context.quality.state, trend: context.trend.state,
+            point: context.quality.points[0], retry};
+        }""")
+        self.assertEqual(result['quality'], 'done')
+        self.assertEqual(result['trend'], 'done')
+        self.assertEqual(result['point']['category'], 'unrated')
+        self.assertTrue(result['point']['retryable'])
+        self.assertFalse(result['point']['provisional'])
+        self.assertFalse(result['retry']['complete'])
+
+    def test_paused_review_does_not_start_new_preview_when_turn_changes(self):
+        self.install_review_worker()
+        self.open_game()
+        result = self.page.evaluate("""async () => {
+          const context = contextFor(currentReview);
+          await analyzeReviewTurn(context, 0, 'preview');
+          pauseReviewAnalysis(currentReview);
+          const calls = [], request = workerRequest;
+          workerRequest = (...args) => { calls.push(args[1].iterations); return request(...args); };
+          prepareViewedTurn = window.automaticViewedTurn;
+          currentTurnIndex = 1; boardView = 'before'; renderReview();
+          await new Promise(resolve => setTimeout(resolve, 100));
+          return {calls, points: context.quality.points.length, state: context.quality.state};
+        }""")
+        self.assertEqual(result, {'calls': [], 'points': 1, 'state': 'stopped'})
+
     def test_grading_saves_comparisons_and_does_not_match_wrong_blank(self):
         # Deterministic worker replies exercise grading and persistence, separately
         # from the real WASM tests. All boards and candidates are synthetic.
@@ -546,7 +684,7 @@ class ReviewBrowserTest(unittest.TestCase):
         expect(self.page.locator('#backgroundStatus')).to_contain_text('2/2 games', timeout=15_000)
         states = self.page.evaluate('Array.from(reviewQueue.contexts.values(), c => ({id:c.review.id, keys:Object.keys(c.cache.results).length, points:c.quality.points.length}))')
         self.assertEqual({state['id'] for state in states}, {'mockgame01', 'mockgame02'})
-        self.assertTrue(all(state['keys'] == state['points'] == 6 for state in states))
+        self.assertTrue(all(state['keys'] == 12 and state['points'] == 6 for state in states))
         self.page.evaluate('Promise.all(Array.from(reviewQueue.contexts.values(), c => flushAnalysisSave(c.review, c.cache)))')
         self.page.get_by_role('button', name='Review game against Demo Cedar').click()
         self.page.get_by_role('button', name='Review game against Demo River').click()
@@ -582,7 +720,7 @@ class ReviewBrowserTest(unittest.TestCase):
         expect(self.page.locator('.turn-coach')).to_contain_text('Blunder · 20.0 percentage points lost')
         self.page.evaluate('flushAnalysisSave()')
         self.page.wait_for_function('reviewQueue.running === 0')
-        self.assertEqual(self.page.evaluate('retryCalls'), 2)
+        self.assertEqual(self.page.evaluate('retryCalls'), 4)
         completed = [value for value in saved if 'move_quality' in value]
         self.assertEqual(completed[-1]['move_quality']['points'][0]['category'], 'blunder')
         self.assertEqual(len(completed[-1]['win_trend']['points']), 7)
@@ -601,7 +739,7 @@ class ReviewBrowserTest(unittest.TestCase):
           workerRequest = (type,payload,options) => {
             if (type === 'simulateReview' && options.taskKey.includes(':mockgame01:') && payload.rack === 'ACERSTU') {
               if (failRetry) return Promise.reject(new Error('Temporary engine failure.'));
-              return new Promise(resolve => { window.releaseTurnRetry = () => resolve(request(type,payload,options)); });
+              if (payload.iterations === 64) return new Promise(resolve => { window.releaseTurnRetry = () => resolve(request(type,payload,options)); });
             }
             return request(type,payload,options);
           }; undefined""")
@@ -630,13 +768,13 @@ class ReviewBrowserTest(unittest.TestCase):
         self.page.evaluate('flushAnalysisSave()')
         self.page.wait_for_function('reviewQueue.running === 0')
         stored = self.page.evaluate("({version: ANALYSIS_VERSION, turn_analyses: positionCache.results, move_quality: moveQualityResults})")
-        stored['turn_analyses'].pop(next(iter(stored['turn_analyses'])))
+        stored['turn_analyses'].pop(next(key for key in stored['turn_analyses'] if json.loads(key)[1] == 'review'))
         self.use_saved_analysis(stored)
         self.page.evaluate("window.resumeCalls=[]; const request=workerRequest; workerRequest=(type,payload,options)=>{resumeCalls.push({type,key:options.taskKey}); return request(type,payload,options);}; startBackgroundAnalysis=window.automaticAnalysis; undefined")
         self.page.get_by_role('button', name='Review game against Demo Cedar').click()
         expect(self.page.locator('.quality-panel .trend-status')).to_contain_text('Your review is ready')
         self.assertEqual(self.page.evaluate("resumeCalls.filter(call => call.key.includes(':mockgame01:')).map(call => call.type)"), ['simulateReview'])
-        self.assertEqual(self.page.evaluate('Object.keys(positionCache.results).length'), 6)
+        self.assertEqual(self.page.evaluate('Object.keys(positionCache.results).length'), 12)
 
     def test_auth_failure_keeps_unsaved_results_and_account_reset_discards_old_work(self):
         self.install_review_worker(delay=100)
@@ -710,7 +848,7 @@ class ReviewBrowserTest(unittest.TestCase):
         expect(self.page.get_by_role('button', name='Retry this turn', exact=True)).to_be_hidden()
         kinds = self.page.evaluate('Object.keys(positionCache.results).map(key => JSON.parse(key)[1])')
         self.assertEqual({kind: kinds.count(kind) for kind in set(kinds)},
-                         {'review': 6})
+                         {'preview': 6, 'review': 6})
         self.page.evaluate('flushAnalysisSave()')
         results = self.page.evaluate('positionCache.results')
         saved_keys = [key for snapshot in saved for key in snapshot['turn_analyses']]
