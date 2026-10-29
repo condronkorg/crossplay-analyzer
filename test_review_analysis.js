@@ -65,6 +65,13 @@ test('saved simulation validation rejects old units, incomplete samples, and the
     { ...result, selected: { ...selected, tiles: 'CAT' } },
     { ...result, selected: { ...selected, win: 40 } },
   ]) assert.equal(validResult(bad, turn, 42), false);
+  const preview = JSON.parse(JSON.stringify(result));
+  preview.iterationsRequested = preview.iterationsCompleted = 64;
+  preview.totalPlayaheads = 128;
+  for (const move of [...preview.moves, preview.selected, preview.best]) move.samples = 64;
+  assert.equal(validResult(preview, turn, 42, 64, 5), true);
+  assert.equal(validResult(preview, turn, 42), false);
+  assert.equal(validResult(result, turn, 42, 64, 5), false);
 });
 
 test('opening a completed cached context does not run engine work again', async () => {
@@ -121,5 +128,99 @@ test('a directly opened game remains queued when another game is selected', asyn
   queue.select('second');
   await tick();
   assert.deepEqual(calls, ['second', 'first']);
+  queue.close();
+});
+
+test('preview queue estimates every pending turn before full refinement and completes only at the end', async () => {
+  const calls = [], releases = [], completed = [];
+  const queue = new ReviewQueue({ preview: true, concurrency: 1,
+    load: async id => ({ review: { id, turns: [{}, {}, {}] }, states: ['done', 'pending', 'pending-preview'] }),
+    run: async (context, index, phase) => {
+      calls.push([index, phase]);
+      await new Promise(resolve => releases.push(resolve));
+    },
+    complete: context => completed.push(context.review.id)
+  });
+  queue.add([{ id: 'one', status: 'completed' }]); await tick();
+  assert.deepEqual(calls, [[1, 'preview']]);
+  assert.deepEqual(queue.contexts.get('one').states, ['done', 'running-preview', 'pending-preview']);
+  releases.shift()(); await tick();
+  assert.deepEqual(calls, [[1, 'preview'], [2, 'preview']]);
+  assert.equal(completed.length, 0);
+  releases.shift()(); await tick();
+  assert.deepEqual(calls[2], [1, 'review']);
+  assert.equal(completed.length, 0);
+  releases.shift()(); await tick();
+  assert.deepEqual(calls[3], [2, 'review']);
+  assert.equal(completed.length, 0);
+  releases.shift()(); await tick();
+  assert.deepEqual(completed, ['one']);
+  assert.deepEqual(queue.contexts.get('one').states, ['done', 'done', 'done']);
+  queue.close();
+});
+
+test('preview queue skips refinement when a final result is reused or the turn is permanently unrated', async () => {
+  const calls = [];
+  let completed = 0;
+  const queue = new ReviewQueue({ preview: true, concurrency: 1,
+    load: async id => ({ review: { id, turns: [{ cached: true }, { unrated: true }] } }),
+    run: async (context, index, phase) => { calls.push([index, phase]); return { complete: true }; },
+    complete: () => { completed++; }
+  });
+  queue.add([{ id: 'saved', status: 'completed' }]); await tick();
+  assert.deepEqual(calls, [[0, 'preview'], [1, 'preview']]);
+  assert.equal(completed, 1);
+  queue.close();
+});
+
+test('preview retry preserves running work and resumes failed turns from the preview phase', async () => {
+  const calls = [], releases = [];
+  const queue = new ReviewQueue({ preview: true, concurrency: 1,
+    load: async id => ({ review: { id, turns: [{}] } }),
+    run: async (context, index, phase) => {
+      calls.push(phase);
+      await new Promise((resolve, reject) => releases.push({ resolve, reject }));
+    }
+  });
+  queue.add([{ id: 'one', status: 'completed' }]); await tick();
+  queue.retry('one'); queue.retryTurn('one', 0); await tick();
+  assert.deepEqual(calls, ['preview']);
+  assert.equal(queue.contexts.get('one').states[0], 'running-preview');
+  releases.shift().reject(Object.assign(new Error('Session expired'), { name: 'AbortError' })); await tick();
+  assert.equal(queue.contexts.get('one').states[0], 'error');
+  assert.match(queue.contexts.get('one').error, /Session expired/);
+  await tick(); assert.equal(calls.length, 1);
+  queue.retryTurn('one', 0); await tick();
+  assert.deepEqual(calls, ['preview', 'preview']);
+  releases.shift().resolve(); await tick();
+  assert.deepEqual(calls, ['preview', 'preview', 'review']);
+  queue.retry('one'); queue.retryTurn('one', 0); await tick();
+  assert.equal(calls.length, 3);
+  assert.equal(queue.contexts.get('one').states[0], 'running');
+  releases.shift().reject(new Error('Engine failed')); await tick();
+  queue.retry('one'); await tick();
+  assert.deepEqual(calls, ['preview', 'preview', 'review', 'preview']);
+  queue.close(); releases.shift().resolve(); await tick();
+  assert.equal(calls.length, 4);
+});
+
+test('preview navigation keeps selected game priority and retains directly loaded games', async () => {
+  const calls = [], releases = [];
+  const queue = new ReviewQueue({ preview: true, concurrency: 1,
+    load: async id => ({ review: { id, turns: [{}] } }),
+    run: async (context, index, phase) => {
+      calls.push([context.review.id, phase]);
+      await new Promise(resolve => releases.push(resolve));
+    }
+  });
+  await queue.get('first'); await queue.get('second');
+  queue.select('first'); await tick();
+  queue.select('second'); releases.shift()(); await tick();
+  assert.deepEqual(calls, [['first', 'preview'], ['second', 'preview']]);
+  releases.shift()(); await tick();
+  assert.deepEqual(calls[2], ['second', 'review']);
+  releases.shift()(); await tick();
+  assert.deepEqual(calls[3], ['first', 'review']);
+  releases.shift()(); await tick();
   queue.close();
 });

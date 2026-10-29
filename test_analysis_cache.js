@@ -96,6 +96,31 @@ test('review results include the recorded action and paired sampling version in 
   assert.ok(Number.isInteger(cache.seed(played)) && cache.seed(played) >= 0 && cache.seed(played) <= 0xffffffff);
 });
 
+test('preview results use a separate profile without changing full review keys or paired seeds', async () => {
+  const cache = new AnalysisCache();
+  const played = { ...turn, action: 'CAT 8G 10' };
+  const fullKey = JSON.stringify(['quackle-review-v1', 'review', played.grid, played.rack,
+    0, 0, 86, 0, 15, 277, 2, 21, 'CAT 8G 10', '', 'paired-review-v1']);
+  assert.equal(cache.key(played, 'review'), fullKey);
+  assert.deepEqual(JSON.parse(cache.key(played, 'preview')), ['quackle-review-v1', 'preview',
+    played.grid, played.rack, 0, 0, 86, 0, 5, 64, 2, 21, 'CAT 8G 10', '', 'paired-review-v1']);
+  let fullSeed = 2166136261;
+  for (const character of fullKey) fullSeed = Math.imul(fullSeed ^ character.charCodeAt(0), 16777619);
+  assert.equal(cache.seed(played), fullSeed >>> 0);
+  const custom = new AnalysisCache({}, { previewMoveCount: 3, previewIterations: 32 });
+  assert.notEqual(custom.key(played, 'preview'), cache.key(played, 'preview'));
+  assert.equal(custom.key(played, 'review'), fullKey);
+  assert.equal(custom.seed(played), cache.seed(played));
+  const preview = { moves: [{ win: .4 }], iterationsCompleted: 64 };
+  const full = { moves: [{ win: .45 }], iterationsCompleted: 277 };
+  await cache.request(played, 'preview', async () => preview);
+  assert.equal(cache.get(played, 'review'), null);
+  await cache.request(played, 'review', async () => full);
+  const restored = new AnalysisCache(JSON.parse(JSON.stringify(cache.results)));
+  assert.deepEqual(restored.get(played, 'preview'), preview);
+  assert.deepEqual(restored.get(played, 'review'), full);
+});
+
 test('a viewed turn promotes pending background work without a duplicate computation', async () => {
   const cache = new AnalysisCache();
   let finish;
