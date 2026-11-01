@@ -92,6 +92,101 @@ class WinBarBrowserTest(unittest.TestCase):
         expect(self.page.locator('.turn-coach')).to_contain_text('277 samples per move')
         expect(self.page.locator('.quality-panel .estimate-level')).to_have_count(0)
 
+    def test_best_move_preview_uses_alternative_odds_for_both_players(self):
+        self.open_game()
+        points = [self.point(0, 0.75), self.point(1, 0.8)]
+        points[0].update(bestWin=0.9, bestMove={
+            'position': '8G', 'tiles': 'ACT', 'word': 'ACT', 'score': 5,
+        })
+        points[1].update(bestWin=0.95, bestMove={
+            'position': 'H8', 'tiles': '.RE', 'word': 'ARE', 'score': 4,
+        })
+        self.set_points(points)
+        panel = self.page.locator('.trend-panel')
+        turns = self.page.get_by_role('combobox', name='Select game turn')
+        cases = [('0', '75.0%', '90.0%', '10.0%'), ('1', '20.0%', '5.0%', '95.0%')]
+        for index, recorded, best, opponent in cases:
+            with self.subTest(turn=index):
+                turns.select_option(index)
+                expect(panel.locator('.win-you strong')).to_have_text(recorded)
+                self.page.get_by_role('button', name='Preview best move', exact=True).click()
+                expect(panel.locator('.win-you strong')).to_have_text(best)
+                expect(panel.locator('.win-opponent strong')).to_have_text(opponent)
+                expect(panel.locator('.win-turn-label')).to_contain_text('Best move preview')
+                expect(panel.get_by_role('img')).to_have_attribute('aria-label',
+                    f'Full estimate. Turn {int(index) + 1} of 6 · Best move preview. '
+                    f'You: {best}. Demo Cedar: {opponent}.')
+                proportion = panel.evaluate('''node => {
+                  const bar = node.querySelector('.win-bar');
+                  return node.querySelector('.win-bar-white').getBoundingClientRect().height / bar.clientHeight;
+                }''')
+                self.assertAlmostEqual(proportion, float(best.rstrip('%')) / 100, places=2)
+                self.page.get_by_role('button', name='Return to played move', exact=True).click()
+                expect(panel.locator('.win-you strong')).to_have_text(recorded)
+                expect(panel.locator('.win-turn-label')).to_contain_text('Recorded move')
+
+    def test_preview_refreshes_and_never_falls_back_to_recorded_odds(self):
+        self.open_game()
+        point = self.point(0, 0.625, provisional=True)
+        point.update(bestWin=0.8, bestMove={
+            'position': '8G', 'tiles': 'ACT', 'word': 'ACT', 'score': 5,
+        })
+        self.set_points([point])
+        self.page.get_by_role('combobox', name='Select game turn').select_option('0')
+        self.page.get_by_role('button', name='Preview best move', exact=True).click()
+        panel = self.page.locator('.trend-panel')
+        expect(panel.locator('.win-estimate-state')).to_have_text('Early estimate')
+        expect(panel.locator('.win-you strong')).to_have_text('80.0%')
+        self.page.evaluate('''() => {
+          Object.assign(moveQualityResults.points[0], {
+            bestWin: 0.9, provisional: false, samples: 277,
+            bestMove: {position: '8G', tiles: 'AT', word: 'AT', score: 2}
+          });
+          refreshMoveQualityPanel();
+          refreshTrendPanel();
+        }''')
+        expect(panel.locator('.win-estimate-state')).to_have_text('Full estimate')
+        expect(panel.locator('.win-you strong')).to_have_text('90.0%')
+        expect(self.page.locator('.board-preview-note')).to_contain_text('AT at 8G')
+        expect(self.page.locator('.board .tile')).to_have_count(2)
+        self.page.evaluate('''() => {
+          delete moveQualityResults.points[0].bestWin;
+          refreshTrendPanel();
+        }''')
+        expect(panel.locator('.win-estimate-state')).to_have_text('Estimate unavailable')
+        expect(panel.locator('.win-turn-label')).to_contain_text('Best move preview')
+        expect(panel.locator('.win-you strong')).to_have_text('—')
+        expect(panel.locator('.win-opponent strong')).to_have_text('—')
+        expect(panel.locator('.win-bar-white')).to_have_count(0)
+        self.page.get_by_role('button', name='Return to played move', exact=True).click()
+        expect(panel.locator('.win-you strong')).to_have_text('62.5%')
+
+    def test_last_turn_preview_does_not_inherit_the_final_result(self):
+        self.open_game()
+        point = self.point(5, 0.8)
+        point.update(bestWin=0.9, bestMove={
+            'position': '8F', 'tiles': '....S', 'word': 'SCATS', 'score': 6,
+        })
+        self.set_points([point])
+        panel = self.page.locator('.trend-panel')
+        for my_score, final_chance in [(20, '100.0%'), (14, '50.0%'), (10, '0.0%')]:
+            with self.subTest(my_score=my_score):
+                self.page.evaluate('''score => {
+                  currentReview.my_score = score;
+                  currentReview.opponent_score = 14;
+                  renderReview();
+                }''', my_score)
+                expect(panel.locator('.win-estimate-state')).to_have_text('Final result')
+                expect(panel.locator('.win-you strong')).to_have_text(final_chance)
+                self.page.get_by_role('button', name='Preview best move', exact=True).click()
+                expect(self.page.locator('.board-preview-note')).to_be_visible()
+                expect(panel.locator('.win-estimate-state')).to_have_text('Full estimate')
+                expect(panel.locator('.win-you strong')).to_have_text('10.0%')
+                expect(panel.locator('.win-opponent strong')).to_have_text('90.0%')
+                self.page.get_by_role('button', name='Return to played move', exact=True).click()
+                expect(panel.locator('.win-estimate-state')).to_have_text('Final result')
+                expect(panel.locator('.win-you strong')).to_have_text(final_chance)
+
     def test_mobile_bar_fits_and_preserves_turn_navigation(self):
         self.page.set_viewport_size({'width': 390, 'height': 844})
         self.open_game()

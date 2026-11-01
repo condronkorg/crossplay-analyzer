@@ -887,6 +887,16 @@ function renderBoard(grid, action) {
   return wrap;
 }
 
+function makeTurnBoard(turn, qualityPoint) {
+  const board = boardView === 'after' && Array.isArray(turn.grid_after) ? turn.grid_after : turn.grid;
+  const preview = previewBestMove && candidatePreview(turn, qualityPoint?.bestMove);
+  const legend = makeElement('div', 'board-legend' + (preview ? ' board-preview-note' : ''),
+    (preview ? 'Best move preview · ' + qualityPoint.bestMove.word + ' at ' + qualityPoint.bestMove.position + '. Return to played move to continue.'
+      : boardView === 'after' ? 'Board after this move.' : 'Board before this move.') +
+    ' Green outline marks newly placed tiles. Italic letters are assigned blanks.');
+  return [renderBoard(preview ? preview.grid : board, preview ? preview.action : turn.action), legend];
+}
+
 function renderReview() {
   if (customMoveController) customMoveController.dispose();
   customMoveController = null;
@@ -1017,13 +1027,7 @@ function renderReview() {
   const qualityPoint = qualityPointForTurn(currentTurnIndex);
   if (qualityPoint) meta.append(makeQualityBadge(qualityPoint, true));
   turnPanel.append(meta);
-  const board = boardView === 'after' && Array.isArray(turn.grid_after) ? turn.grid_after : turn.grid;
-  const preview = previewBestMove && candidatePreview(turn, qualityPoint?.bestMove);
-  turnPanel.append(renderBoard(preview ? preview.grid : board, preview ? preview.action : turn.action));
-  turnPanel.append(makeElement('div', 'board-legend' + (preview ? ' board-preview-note' : ''),
-    (preview ? 'Best move preview · ' + qualityPoint.bestMove.word + ' at ' + qualityPoint.bestMove.position + '. Return to played move to continue.'
-      : boardView === 'after' ? 'Board after this move.' : 'Board before this move.') +
-    ' Green outline marks newly placed tiles. Italic letters are assigned blanks.'));
+  turnPanel.append(...makeTurnBoard(turn, qualityPoint));
 
   const analysis = makeElement('section', 'panel analysis-panel');
   analysis.append(makeElement('h3', '', 'Quackle analysis for this position'));
@@ -1608,6 +1612,11 @@ function refreshMoveQualityPanel() {
       byId('reviewPanel').querySelector('.turn-list-panel').scrollTop = scrollTop;
     }
     byId('reviewPanel').querySelector('.turn-coach')?.replaceWith(makeTurnCoach(currentReview.turns[currentTurnIndex], qualityPointForTurn(currentTurnIndex)));
+    if (previewBestMove) {
+      const [board, legend] = makeTurnBoard(currentReview.turns[currentTurnIndex], qualityPointForTurn(currentTurnIndex));
+      byId('reviewPanel').querySelector('.turn-panel .board-scroll')?.replaceWith(board);
+      byId('reviewPanel').querySelector('.board-legend')?.replaceWith(legend);
+    }
     byId('reviewPanel').querySelector('.luck-panel')?.replaceWith(makeLuckPanel(currentReview));
   }
   const meta = byId('reviewPanel').querySelector('.turn-meta');
@@ -1627,10 +1636,19 @@ function makeTrendPanel(review) {
   const panel = makeElement('section', 'panel trend-panel');
   panel.append(makeElement('h3', '', 'Win chance through the game'),
     makeElement('p', 'panel-subtitle', 'Use the turn controls to follow each move.'));
+  const turn = review.turns[currentTurnIndex];
+  const qualityPoint = qualityPointForTurn(currentTurnIndex);
+  const preview = previewBestMove && candidatePreview(turn, qualityPoint?.bestMove);
   let point = trendResults?.points?.find(item => !item.actual && item.x === currentTurnIndex);
-  if (!point && qualityPointForTurn(currentTurnIndex)?.category === 'unrated') point = { unavailable: true };
+  if (preview) {
+    const known = Number.isFinite(qualityPoint.bestWin);
+    point = {
+      mine: known ? (turn.mine ? qualityPoint.bestWin : 1 - qualityPoint.bestWin) * 100 : null,
+      preview: true, provisional: qualityPoint.provisional, unavailable: !known
+    };
+  } else if (!point && qualityPoint?.category === 'unrated') point = { unavailable: true };
   const result = gameResult(review);
-  if (currentTurnIndex === review.turns.length - 1 && boardView === 'after' && result.kind !== 'complete') {
+  if (!preview && currentTurnIndex === review.turns.length - 1 && boardView === 'after' && result.kind !== 'complete') {
     const mine = result.kind === 'draw' ? 50 : result.kind === 'win' ? 100 : 0;
     point = { mine, theirs: 100 - mine, actual: true };
   }
@@ -1651,14 +1669,17 @@ function makeTrendPanel(review) {
   });
   controls.append(button);
   panel.append(controls);
-  const status = makeElement('div', 'trend-status', trendResults
+  const status = makeElement('div', 'trend-status', preview
+    ? 'Showing the best sampled alternative for this turn.' : trendResults
     ? trendResults.message || (trendResults.state === 'running' ? 'Preparing estimates…' : '')
     : 'Estimates appear as background analysis finishes.');
   status.id = 'trendStatus';
   panel.append(status);
   panel.append(makeElement('p', 'analysis-note', point?.actual
     ? 'The final position shows the game result. A draw splits the bar equally.'
-    : 'White shows your chance; black shows your opponent’s. The estimate uses the recorded move and the board and rack before that turn. Early estimates can change as analysis continues.'));
+    : 'White shows your chance; black shows your opponent’s. The estimate uses ' +
+      (preview ? 'the best move preview' : 'the recorded move') +
+      ' and the board and rack before that turn. Early estimates can change as analysis continues.'));
   return panel;
 }
 
@@ -1669,7 +1690,8 @@ function drawTrendChart(point, review) {
   const opponent = review.opponent || 'Opponent';
   const state = point?.actual ? 'Final result' : known ? (point.provisional ? 'Early estimate' : 'Full estimate')
     : point?.unavailable ? 'Estimate unavailable' : 'Waiting for estimate';
-  const turnLabel = 'Turn ' + (currentTurnIndex + 1) + ' of ' + review.turns.length + (point?.actual ? '' : ' · Recorded move');
+  const turnLabel = 'Turn ' + (currentTurnIndex + 1) + ' of ' + review.turns.length +
+    (point?.actual ? '' : point?.preview ? ' · Best move preview' : ' · Recorded move');
   const chart = makeElement('div', 'win-evaluation');
   const bar = makeElement('div', 'win-bar' + (known ? '' : ' win-bar-pending'));
   bar.setAttribute('role', 'img');
