@@ -953,6 +953,16 @@ function renderBoard(grid, action) {
   return wrap;
 }
 
+function makeTurnBoard(turn, qualityPoint) {
+  const board = boardView === 'after' && Array.isArray(turn.grid_after) ? turn.grid_after : turn.grid;
+  const preview = previewBestMove && candidatePreview(turn, qualityPoint?.bestMove);
+  const legend = makeElement('div', 'board-legend' + (preview ? ' board-preview-note' : ''),
+    (preview ? 'Best move preview · ' + qualityPoint.bestMove.word + ' at ' + qualityPoint.bestMove.position + '. Return to played move to continue.'
+      : boardView === 'after' ? 'Board after this move.' : 'Board before this move.') +
+    ' Green outline marks newly placed tiles. Italic letters are assigned blanks.');
+  return [renderBoard(preview ? preview.grid : board, preview ? preview.action : turn.action), legend];
+}
+
 function renderReview() {
   rememberReviewDetails();
   if (customMoveController) customMoveController.dispose();
@@ -1096,13 +1106,7 @@ function renderReview() {
   const qualityPoint = qualityPointForTurn(currentTurnIndex);
   if (qualityPoint) meta.append(makeQualityBadge(qualityPoint, true));
   turnPanel.append(meta);
-  const board = boardView === 'after' && Array.isArray(turn.grid_after) ? turn.grid_after : turn.grid;
-  const preview = previewBestMove && candidatePreview(turn, qualityPoint?.bestMove);
-  turnPanel.append(renderBoard(preview ? preview.grid : board, preview ? preview.action : turn.action));
-  turnPanel.append(makeElement('div', 'board-legend' + (preview ? ' board-preview-note' : ''),
-    (preview ? 'Best move preview · ' + qualityPoint.bestMove.word + ' at ' + qualityPoint.bestMove.position + '. Return to played move to continue.'
-      : boardView === 'after' ? 'Board after this move.' : 'Board before this move.') +
-    ' Green outline marks newly placed tiles. Italic letters are assigned blanks.'));
+  turnPanel.append(...makeTurnBoard(turn, qualityPoint));
   turnPanel.append(makeWalkthroughTools(review));
 
   const analysis = makeElement('section', 'panel analysis-panel');
@@ -1715,6 +1719,11 @@ function refreshMoveQualityPanel() {
       byId('reviewPanel').querySelector('.turn-list-panel').scrollTop = scrollTop;
     }
     byId('reviewPanel').querySelector('.turn-coach')?.replaceWith(makeTurnCoach(currentReview.turns[currentTurnIndex], qualityPointForTurn(currentTurnIndex)));
+    if (previewBestMove) {
+      const [board, legend] = makeTurnBoard(currentReview.turns[currentTurnIndex], qualityPointForTurn(currentTurnIndex));
+      byId('reviewPanel').querySelector('.turn-panel .board-scroll')?.replaceWith(board);
+      byId('reviewPanel').querySelector('.board-legend')?.replaceWith(legend);
+    }
     byId('reviewPanel').querySelector('.luck-panel')?.replaceWith(makeLuckPanel(currentReview));
   }
   const meta = byId('reviewPanel').querySelector('.turn-meta');
@@ -1741,16 +1750,25 @@ function refreshTrendPanel() {
 function makeTrendPanel(review) {
   const panel = makeElement('section', 'panel trend-panel');
   panel.append(makeElement('h3', '', 'Win chance through the game'));
+  const turn = review.turns[currentTurnIndex];
+  const qualityPoint = qualityPointForTurn(currentTurnIndex);
+  const preview = previewBestMove && candidatePreview(turn, qualityPoint?.bestMove);
   let point = trendResults?.points?.find(item => !item.actual && item.x === currentTurnIndex);
-  if (!point && qualityPointForTurn(currentTurnIndex)?.category === 'unrated') point = { unavailable: true };
+  if (preview) {
+    const known = Number.isFinite(qualityPoint.bestWin);
+    point = {
+      mine: known ? (turn.mine ? qualityPoint.bestWin : 1 - qualityPoint.bestWin) * 100 : null,
+      preview: true, provisional: qualityPoint.provisional, unavailable: !known
+    };
+  } else if (!point && qualityPoint?.category === 'unrated') point = { unavailable: true };
   const result = gameResult(review);
-  if (currentTurnIndex === review.turns.length - 1 && boardView === 'after' && result.kind !== 'complete') {
+  if (!preview && currentTurnIndex === review.turns.length - 1 && boardView === 'after' && result.kind !== 'complete') {
     const mine = result.kind === 'draw' ? 50 : result.kind === 'win' ? 100 : 0;
     point = { mine, theirs: 100 - mine, actual: true };
   }
   const chart = makeElement('div', 'trend-chart win-overview');
   chart.id = 'trendChart';
-  chart.append(drawTrendChart(point, review), drawWinHistory(trendResults?.points || [], review));
+  chart.append(drawTrendChart(point, review), drawWinHistory(trendResults?.points || [], review, Boolean(preview)));
   panel.append(chart);
   const controls = makeElement('div', 'trend-controls');
   const button = makeElement('button', 'analysis-button', trendResults?.state === 'running' ? 'Pause analysis' :
@@ -1766,19 +1784,22 @@ function makeTrendPanel(review) {
   controls.append(button);
   const settings = makeReviewDetails('trend', 'trend-settings', 'Estimate details and controls');
   settings.append(controls);
-  const status = makeElement('div', 'trend-status', trendResults
+  const status = makeElement('div', 'trend-status', preview
+    ? 'Showing the best sampled alternative for this turn.' : trendResults
     ? trendResults.message || (trendResults.state === 'running' ? 'Preparing estimates…' : '')
     : 'Estimates appear as background analysis finishes.');
   status.id = 'trendStatus';
   panel.append(status);
   settings.append(makeElement('p', 'analysis-note', point?.actual
     ? 'The final position shows the game result. A draw splits the bar equally. The chart shows recorded-move estimates from Turn 1 to the finish; gaps have no estimate.'
-    : 'White shows your chance; black shows your opponent’s. Each chart point estimates the recorded move from the board and rack before that turn. Turn 1 is the first move estimate. Gaps have no estimate. Early estimates can change.'));
+    : 'White shows your chance; black shows your opponent’s. The bar estimates ' +
+      (preview ? 'the best move preview' : 'the recorded move') +
+      '. Each chart point estimates the recorded move from the board and rack before that turn. Turn 1 is the first move estimate. Gaps have no estimate. Early estimates can change.'));
   panel.append(settings);
   return panel;
 }
 
-function drawWinHistory(estimates, review) {
+function drawWinHistory(estimates, review, preview = false) {
   const totalTurns = review.turns.length;
   const you = viewingSharedGame ? review.my_name || 'Player' : 'You';
   const known = new Map(estimates.filter(point => !point.actual && Number.isInteger(point.x) &&
@@ -1787,7 +1808,7 @@ function drawWinHistory(estimates, review) {
   const result = gameResult(review);
   if (result.kind !== 'complete') points.push({ x: totalTurns, actual: true,
     mine: result.kind === 'draw' ? 50 : result.kind === 'win' ? 100 : 0 });
-  const selected = currentTurnIndex === totalTurns - 1 && boardView === 'after' && result.kind !== 'complete'
+  const selected = !preview && currentTurnIndex === totalTurns - 1 && boardView === 'after' && result.kind !== 'complete'
     ? totalTurns : currentTurnIndex;
   const width = 560, height = 260;
   const margin = { top: 24, right: 48, bottom: 50, left: 80 };
@@ -1870,7 +1891,8 @@ function drawTrendChart(point, review) {
   const opponent = review.opponent || 'Opponent';
   const state = point?.actual ? 'Final result' : known ? (point.provisional ? 'Early estimate' : 'Full estimate')
     : point?.unavailable ? 'Estimate unavailable' : 'Waiting for estimate';
-  const turnLabel = 'Turn ' + (currentTurnIndex + 1) + ' of ' + review.turns.length + (point?.actual ? '' : ' · Recorded move');
+  const turnLabel = 'Turn ' + (currentTurnIndex + 1) + ' of ' + review.turns.length +
+    (point?.actual ? '' : point?.preview ? ' · Best move preview' : ' · Recorded move');
   const chart = makeElement('div', 'win-evaluation');
   const bar = makeElement('div', 'win-bar' + (known ? '' : ' win-bar-pending'));
   bar.setAttribute('role', 'img');
