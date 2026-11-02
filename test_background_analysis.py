@@ -321,6 +321,28 @@ class BackgroundAnalysisTest(unittest.TestCase):
                 result['selected']['tiles'] = 'AA'
                 self.assertFalse(Handler.recorded_move_matches(identity[2], identity[12], swapped, result['selected']))
 
+    def test_swap_placeholder_saves_only_matching_physical_tiles(self):
+        key, result = review_analysis_entry()
+        identity = json.loads(key)
+        identity[12:14] = ['swap -- 0', 'A?']
+        key = json.dumps(identity)
+        for move in (result['moves'][0], result['staticMoves'][0]):
+            move.update(action='exchange', position='', tiles='?A', score=0)
+        body = {'analysis_version': ANALYSIS_VERSION, 'turn_analyses': {key: result}}
+        self.handler.save_game_analysis('account-a', 'game0001', body)
+        snapshot = self.handler.supabase_data_request.call_args.kwargs['payload']['snapshot']
+        self.assertEqual(snapshot['turn_analyses'][key]['selected']['tiles'], '?A')
+        self.assertEqual(json.loads(next(iter(snapshot['turn_analyses'])))[12:14], ['swap -- 0', 'A?'])
+        for notation, swapped in (
+                ('swap -- 0', 'AA'), ('swap -- 0', ''),
+                ('swap - 0', 'A?'), ('swap --- 0', 'A?'),
+                ('swap --', 'A?'), ('swap -- 0 extra', 'A?')):
+            with self.subTest(notation=notation, swapped=swapped), self.assertRaises(CrossplayError):
+                identity[12:14] = [notation, swapped]
+                self.handler.validate_game_analysis({
+                    'analysis_version': ANALYSIS_VERSION,
+                    'turn_analyses': {json.dumps(identity): result}})
+
     def test_saved_game_pages_use_owner_and_stable_id_cursor(self):
         handler = object.__new__(Handler)
         rows = [{'nyt_game_id': f'game{index:04d}', 'summary': {'id': f'game{index:04d}'}}

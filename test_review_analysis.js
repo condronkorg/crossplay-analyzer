@@ -30,6 +30,19 @@ test('exchanges without usable tile details cannot become passes or guessed swap
   }
 });
 
+test('exchange position markers do not block the recorded swap or replace its tile list', () => {
+  for (const action of ['swap -- 0', ' EXCHANGE\t--\t-5 ']) {
+    assert.deepEqual(playedMove({ action, swapped_tiles: 'A?' }),
+      { action: 'exchange', position: '', tiles: 'A?' });
+    assert.throws(() => playedMove({ action }), { code: 'MISSING_EXCHANGE_TILES' });
+  }
+  for (const action of ['SWAP --', 'SWAP -- -- 0', 'SWAP -- 0 extra', 'SWAP AB 0']) {
+    assert.throws(() => playedMove({ action, swapped_tiles: 'A?' }), /recorded move/);
+  }
+  assert.deepEqual(playedMove({ action: 'SWAP 8H 19', swapped_tiles: 'A?' }),
+    { action: 'place', position: '8H', tiles: 'SWAP' });
+});
+
 test('quality bands use percentage points', () => {
   assert.deepEqual([0, 1.999, 2, 4.999, 5, 9.999, 10].map(qualityBand),
     ['best', 'best', 'inaccuracy', 'inaccuracy', 'mistake', 'mistake', 'blunder']);
