@@ -78,9 +78,15 @@ class ReviewBrowserTest(unittest.TestCase):
         self.page.get_by_role('textbox', name='NYT-S cookie').fill(cookie)
         self.page.get_by_role('button', name='Connect', exact=True).click()
 
+    def start_review(self, page=None):
+        page = page or self.page
+        expect(page.locator('.game-overview')).to_be_visible()
+        page.get_by_role('button', name='Start Review', exact=True).click()
+
     def open_game(self):
         self.connect()
         self.page.get_by_role('button', name='Review game against Demo Cedar').click()
+        self.start_review()
         expect(self.page.get_by_role('heading', name='vs Demo Cedar', exact=True)).to_be_visible()
 
     def test_connect_replay_refresh_reload_and_forget(self):
@@ -92,7 +98,7 @@ class ReviewBrowserTest(unittest.TestCase):
         expect(self.page.get_by_role('button', name='Review game against Demo Active')).to_have_count(0)
         expect(self.page.locator('.turn-row')).to_have_count(6)
         turns = self.page.get_by_role('combobox', name='Select game turn')
-        expect(turns).to_have_value('5')
+        expect(turns).to_have_value('0')
         turns.select_option('0')
         expect(self.page.locator('.turn-action')).to_have_text('Turn 1 · Demo Player · +5')
         expect(self.page.locator('.board .tile')).to_have_count(3)
@@ -109,7 +115,8 @@ class ReviewBrowserTest(unittest.TestCase):
         self.page.get_by_role('button', name='Refresh', exact=True).click()
         expect(self.page.locator('.game-card')).to_have_count(2)
         self.page.reload()
-        expect(self.page.get_by_role('heading', name='vs Demo Cedar', exact=True)).to_be_visible()
+        expect(self.page.locator('.game-overview')).to_be_visible()
+        expect(self.page.locator('.board')).to_have_count(0)
         expect(self.page.locator('#sharedBanner')).to_be_hidden()
         self.assertIn('?review=mockgame01', self.page.url)
         expect(self.page.locator('#connectionState')).to_have_text('NYT connected as Demo Player')
@@ -139,6 +146,7 @@ class ReviewBrowserTest(unittest.TestCase):
         guest.on('request', lambda request: shared_requests.append(request)
                  if '/api/crossplay/shared/' in request.url else None)
         guest.goto(share_url)
+        self.start_review(guest)
         expect(guest.get_by_role('heading', name='Demo Player vs Demo Cedar', exact=True)).to_be_visible()
         expect(guest.locator('.account')).to_be_hidden()
         expect(guest.locator('.turn-row')).to_have_count(6)
@@ -155,6 +163,7 @@ class ReviewBrowserTest(unittest.TestCase):
     def test_review_detail_fallback(self):
         self.connect()
         self.page.get_by_role('button', name='Review game against Demo River').click()
+        self.start_review()
         expect(self.page.get_by_role('heading', name='vs Demo River', exact=True)).to_be_visible()
         self.page.get_by_role('combobox', name='Select game turn').select_option('0')
         expect(self.page.locator('.turn-action')).to_have_text('Turn 1 · Demo River · +5')
@@ -259,6 +268,7 @@ class ReviewBrowserTest(unittest.TestCase):
         expect(self.page.get_by_role('combobox', name='Select game turn')).to_have_value('0')
         expect(self.page.locator('.quality-point').first).to_be_focused()
         self.page.get_by_role('button', name='Review game against Demo River').click()
+        self.start_review()
         expect(self.stat('Avg. win chance lost').locator('.dashboard-stat-value')).to_have_text('—')
         expect(self.page.locator('.insight')).to_have_count(0)
         expect(self.page.locator('.review-heading')).to_contain_text('Lost by 6 points')
@@ -280,6 +290,7 @@ class ReviewBrowserTest(unittest.TestCase):
         panel.get_by_role('button', name='Replay turn 3 from luck breakdown').click()
         expect(self.page.get_by_role('combobox', name='Select game turn')).to_have_value('2')
         self.page.get_by_role('button', name='Review game against Demo River').click()
+        self.start_review()
         expect(self.page.locator('.luck-panel')).to_contain_text('Use Analyze move quality above')
         expect(self.page.locator('.luck-stat').nth(1).locator('strong')).to_have_text('—')
 
@@ -327,6 +338,7 @@ class ReviewBrowserTest(unittest.TestCase):
         self.page.unroute('**/api/crossplay/games/mockgame01/review')
         self.use_saved_analysis(my_score=None, opponent_score=None)
         self.page.get_by_role('button', name='Review game against Demo Cedar').click()
+        self.start_review()
         expect(self.page.locator('.review-heading')).to_contain_text('Final scores unavailable')
         expect(self.page.locator('.review-heading')).not_to_contain_text('Draw')
         expect(self.page.locator('.score-value').first).to_have_text('—')
@@ -421,6 +433,7 @@ class ReviewBrowserTest(unittest.TestCase):
         expect(self.page.locator('.board-preview-note')).to_have_count(0)
         expect(self.page.locator('.board .tile')).to_have_count(6)
         self.page.get_by_role('button', name='Review game against Demo River').click()
+        self.start_review()
         expect(self.page.locator('.move-comparison')).to_have_count(0)
         expect(self.page.get_by_role('checkbox', name='Only your flagged moves')).not_to_be_checked()
 
@@ -441,6 +454,7 @@ class ReviewBrowserTest(unittest.TestCase):
                 {'turnIndex': 2, 'category': 'blunder', 'loss': 10.5},
                 {'turnIndex': 0, 'category': 'inaccuracy', 'loss': 2.0}]}})
         self.page.get_by_role('button', name='Review game against Demo Cedar').click()
+        self.start_review()
         self.open_statistics()
         self.page.get_by_role('button', name='Start walkthrough', exact=True).click()
         expect(self.page.locator('.turn-coach')).to_contain_text('Inaccuracy · 2.0 percentage points lost')
@@ -540,6 +554,7 @@ class ReviewBrowserTest(unittest.TestCase):
             return request(type, payload, options);
           }; startBackgroundAnalysis = window.automaticAnalysis; undefined""")
         self.page.get_by_role('button', name='Review game against Demo Cedar').click()
+        self.start_review()
         expect(self.page.locator('.quality-panel .trend-status')).to_contain_text('Your review is ready')
         self.assertEqual(self.page.evaluate('resumeCalls'), [277] * 6)
         self.assertTrue(self.page.evaluate('moveQualityResults.points.every(point => !point.provisional && point.samples === 277)'))
@@ -659,6 +674,7 @@ class ReviewBrowserTest(unittest.TestCase):
         self.use_saved_analysis({'version': completed[-1]['analysis_version'],
                                  'move_quality': completed[-1]['move_quality']})
         self.page.get_by_role('button', name='Review game against Demo Cedar').click()
+        self.start_review()
         self.page.get_by_role('combobox', name='Select game turn').select_option('2')
         expect(self.page.locator('.turn-coach')).to_contain_text('Mistake · 7.0 percentage points lost')
         expect(self.page.get_by_role('button', name='Preview best move', exact=True)).to_be_enabled()
@@ -752,10 +768,11 @@ class ReviewBrowserTest(unittest.TestCase):
         self.page.evaluate('Promise.all(Array.from(reviewQueue.contexts.values(), context => flushAnalysisSave(context.review, context.cache)))')
         self.context.add_init_script("window.engineCalls=[]; const post=Worker.prototype.postMessage; Worker.prototype.postMessage=function(data,...rest){engineCalls.push(data.type); return post.call(this,data,...rest);};")
         self.page.reload()
-        expect(self.page.get_by_role('heading', name='vs Demo Cedar', exact=True)).to_be_visible()
+        expect(self.page.locator('.game-overview')).to_be_visible()
         self.page.wait_for_function("currentReview?.id === 'mockgame01' && reviewQueue?.running === 0 && contextFor(currentReview)?.states.every(state => ['done', 'error'].includes(state))")
         self.assertEqual(self.page.evaluate('engineCalls'), [])
         self.assertEqual(self.page.evaluate('moveQualityResults.points[0]'), result['point'])
+        self.start_review()
         self.page.get_by_role('button', name='Show before move', exact=True).click()
         expect(self.page.locator('.win-estimate-state')).to_have_text('Full estimate')
 
@@ -832,6 +849,7 @@ class ReviewBrowserTest(unittest.TestCase):
         self.page.wait_for_function("currentReview?.id === 'mockgame01' && reviewQueue?.running === 0 && contextFor(currentReview)?.states.every(state => ['done', 'error'].includes(state))")
         self.assertEqual(self.page.evaluate('engineCalls'), [])
         self.assertEqual(self.page.evaluate('moveQualityResults.points[0]'), result['point'])
+        self.start_review()
         self.page.get_by_role('button', name='Show before move', exact=True).click()
         expect(self.page.locator('.win-you strong')).to_have_text('50.0%')
 
@@ -958,6 +976,7 @@ class ReviewBrowserTest(unittest.TestCase):
 
     def test_move_quality_refreshes_summary_with_real_engine(self):
         self.open_game()
+        self.page.get_by_role('button', name='Last ⇥', exact=True).click()
         self.open_statistics()
         self.page.get_by_role('button', name='Analyze move quality', exact=True).click()
         expect(self.page.locator('.quality-panel .trend-status')).to_contain_text(
@@ -988,7 +1007,9 @@ class ReviewBrowserTest(unittest.TestCase):
         self.assertTrue(all(state['keys'] == 12 and state['points'] == 6 for state in states))
         self.page.evaluate('Promise.all(Array.from(reviewQueue.contexts.values(), c => flushAnalysisSave(c.review, c.cache)))')
         self.page.get_by_role('button', name='Review game against Demo Cedar').click()
+        self.start_review()
         self.page.get_by_role('button', name='Review game against Demo River').click()
+        self.start_review()
         expect(self.page.locator('#engineStatus')).to_contain_text('277 simulations per move')
         self.context.add_init_script("window.engineCalls=[]; const post=Worker.prototype.postMessage; Worker.prototype.postMessage=function(data,...rest){engineCalls.push(data.type); return post.call(this,data,...rest);};")
         self.page.goto(self.base_url)
@@ -1054,6 +1075,7 @@ class ReviewBrowserTest(unittest.TestCase):
         self.page.evaluate('failRetry = false')
         self.page.get_by_role('button', name='Retry this turn', exact=True).click()
         self.page.get_by_role('button', name='Review game against Demo River').click()
+        self.start_review()
         expect(self.page.get_by_role('heading', name='vs Demo River', exact=True)).to_be_visible()
         self.page.evaluate("positionCache.unsaved = {navigationSentinel: {moves: []}}; releaseTurnRetry(); undefined")
         self.page.wait_for_function("reviewQueue.contexts.get('mockgame01').quality.points[0].category === 'blunder' && reviewQueue.running === 0")
@@ -1076,6 +1098,7 @@ class ReviewBrowserTest(unittest.TestCase):
         self.use_saved_analysis(stored)
         self.page.evaluate("window.resumeCalls=[]; const request=workerRequest; workerRequest=(type,payload,options)=>{resumeCalls.push({type,key:options.taskKey}); return request(type,payload,options);}; startBackgroundAnalysis=window.automaticAnalysis; undefined")
         self.page.get_by_role('button', name='Review game against Demo Cedar').click()
+        self.start_review()
         expect(self.page.locator('.quality-panel .trend-status')).to_contain_text('Your review is ready')
         self.assertEqual(self.page.evaluate("resumeCalls.filter(call => call.key.includes(':mockgame01:')).map(call => call.type)"), ['simulateReview'])
         self.assertEqual(self.page.evaluate('Object.keys(positionCache.results).length'), 12)
@@ -1164,11 +1187,13 @@ class ReviewBrowserTest(unittest.TestCase):
         save_count = len(saved)
         self.page.evaluate('workerRequest = () => { throw new Error("Repeated engine work"); }; undefined')
         self.page.get_by_role('button', name='Review game against Demo Cedar').click()
+        self.start_review()
         expect(self.page.locator('#engineStatus')).to_contain_text('277 simulations per move')
         self.assertEqual(self.page.evaluate('positionCache.results'), results)
         self.page.evaluate('flushAnalysisSave()')
         self.assertEqual(len(saved), save_count)
         self.page.reload()
+        self.start_review()
         expect(self.page.locator('#sharedBanner')).to_be_hidden()
         expect(self.page.locator('#engineStatus')).to_contain_text('277 simulations per move')
         self.assertEqual(self.page.evaluate('positionCache.results'), results)
