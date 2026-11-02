@@ -4,7 +4,7 @@
   function playedMove(turn) {
     const action = String(turn.action || '').trim();
     if (/^PASS(?:\s+-?\d+)?$/i.test(action)) return { action: 'pass', position: '', tiles: '' };
-    if (/^(SWAP|EXCHANGE)(?:\s+-?\d+)?$/i.test(action)) {
+    if (/^(SWAP|EXCHANGE)(?:\s+(?:--\s+)?-?\d+)?$/i.test(action)) {
       const tiles = [...String(turn.swapped_tiles || '')].map(tile => /[?*_ a-z]/.test(tile) ? '?' : tile).join('').toUpperCase();
       if (!/^[A-Z?]{1,7}$/.test(tiles)) {
         throw Object.assign(new Error('The recorded exchanged tiles are missing.'), { code: 'MISSING_EXCHANGE_TILES' });

@@ -139,6 +139,38 @@ class CrossplayAPITest(unittest.TestCase):
         self.assertFalse(review['turns'][0]['mine'])
         self.assertTrue(review['turns'][1]['mine'])
 
+    def test_swap_placeholder_imports_and_saves_win_probability(self):
+        from test_background_analysis import review_analysis_entry
+
+        fixture = json.loads((ROOT / 'tools/fixtures/nyt.json').read_text())
+        game = fixture['subscription']['msgs'][0]['recent-games']['games'][0]
+        game['game_data']['players'][1]['plays'][1]['action'] = 'swap -- 0'
+        self.connect()
+        with patch.object(CrossplayClient, 'game', return_value=game):
+            status, review, _ = self.request('GET', 'games/mockgame01/review')
+            self.assertEqual(status, 200, review)
+            turn = review['turns'][3]
+            self.assertEqual(turn['action'], 'swap -- 0')
+            self.assertEqual(turn['swapped_tiles'], 'UV')
+            self.assertEqual(turn['score'], 0)
+            self.assertEqual(turn['grid'], turn['grid_after'])
+
+            key, result = review_analysis_entry()
+            identity = json.loads(key)
+            identity[2:8] = [turn[field] for field in (
+                'grid', 'rack', 'mover_score', 'other_score', 'bag_count', 'final_turns_remaining')]
+            identity[12:14] = [turn['action'], turn['swapped_tiles']]
+            key = json.dumps(identity)
+            result['bagCount'] = turn['bag_count']
+            for moves in (result['moves'], result['staticMoves']):
+                moves[0].update(action='exchange', position='', tiles='UV', score=0)
+                moves[1].update(action='pass', position='', tiles='', score=0)
+            body = {'analysis_version': 'quackle-equity-v1', 'turn_analyses': {key: result}}
+            status, saved, _ = self.request('PUT', 'games/mockgame01/analysis', body)
+            self.assertEqual(status, 200, saved)
+            restored = self.request('GET', 'games/mockgame01/review')[1]
+            self.assertEqual(restored['stored_analysis']['turn_analyses'][key], result)
+
     def test_active_foreign_missing_and_invalid_games(self):
         self.connect()
         for game_id, expected in (('mockactive01', 403), ('mockforeign01', 403),

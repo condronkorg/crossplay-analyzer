@@ -759,6 +759,82 @@ class ReviewBrowserTest(unittest.TestCase):
         self.page.get_by_role('button', name='Show before move', exact=True).click()
         expect(self.page.locator('.win-estimate-state')).to_have_text('Full estimate')
 
+    def test_swap_placeholder_retries_saves_and_reuses_win_probability(self):
+        self.install_review_worker()
+        grid = ['.' * 15 for _ in range(15)]
+        review_changes = {
+            'turns': [{'index': 0, 'mine': True, 'action': 'swap -- 0', 'score': 0,
+                       'rack': 'AEIRST?', 'swapped_tiles': 'AE?', 'grid': grid, 'grid_after': grid,
+                       'bag_count': 86, 'final_turns_remaining': 0, 'mover_score': 12, 'other_score': 10}],
+            'my_score': 12, 'opponent_score': 10, 'turn_count': 1,
+        }
+        self.use_saved_analysis({
+            'version': 'quackle-equity-v1',
+            'move_quality': {'state': 'done', 'evaluation': 'win-probability-v1', 'points': [{
+                'turnIndex': 0, 'turn': 1, 'mine': True, 'action': 'swap -- 0',
+                'category': 'unrated', 'loss': None, 'retryable': True, 'provisional': False,
+                'reason': 'Quackle could not evaluate the played move: The recorded move could not be read.',
+            }]},
+        }, **review_changes)
+        saved = []
+        self.page.route('**/api/crossplay/games/mockgame01/analysis',
+                        lambda route: (saved.append(route.request.post_data_json),
+                                       route.fulfill(json={'saved': True})))
+        self.open_game()
+        self.page.evaluate("""async () => {
+          window.exchangeCalls = []; let failFirst = true; const request = workerRequest;
+          workerRequest = (type, payload, options) => {
+            if (options.taskKey.includes(':mockgame01:')) {
+              exchangeCalls.push({type, played: payload.played, iterations: payload.iterations});
+              if (failFirst) { failFirst = false; return Promise.reject(new Error('Synthetic temporary exchange failure')); }
+            }
+            return request(type, payload, options);
+          };
+          await analyzeReviewTurn(contextFor(currentReview), 0, 'preview');
+          refreshPositionPanel();
+        }""")
+        expect(self.page.locator('#engineStatus')).to_contain_text('Synthetic temporary exchange failure')
+        self.page.get_by_role('button', name='Retry this turn', exact=True).click()
+        self.page.wait_for_function("currentReview?.id === 'mockgame01' && reviewQueue?.running === 0 && contextFor(currentReview)?.states.every(state => ['done', 'error'].includes(state))")
+        result = self.page.evaluate("""() => {
+          const context = contextFor(currentReview), turn = currentReview.turns[0];
+          return {point: context.quality.points[0], calls: exchangeCalls,
+            validFullResult: CrossplayReview.validResult(context.cache.get(turn, 'review'), turn, context.cache.seed(turn))};
+        }""")
+        self.assertTrue(result['validFullResult'], result)
+        self.assertEqual(result['point']['playedWin'], 0.5)
+        self.assertFalse(result['point']['provisional'])
+        self.assertEqual(result['point']['samples'], 277)
+        self.assertEqual(result['calls'], [
+            {'type': 'simulateReview', 'played': {'action': 'exchange', 'position': '', 'tiles': 'AE?'},
+             'iterations': count} for count in (64, 64, 277)])
+        self.page.get_by_role('button', name='Show before move', exact=True).click()
+        expect(self.page.locator('.win-estimate-state')).to_have_text('Full estimate')
+        expect(self.page.locator('.win-you strong')).to_have_text('50.0%')
+        expect(self.page.get_by_role('button', name='Retry this turn', exact=True)).to_be_hidden()
+        self.page.evaluate('flushAnalysisSave()')
+        completed = [snapshot for snapshot in saved if 'move_quality' in snapshot]
+        self.assertTrue(completed)
+        self.assertEqual(completed[-1]['move_quality']['points'][0]['playedMove']['tiles'], 'AE?')
+        self.assertEqual(completed[-1]['move_quality']['points'][0]['playedWin'], 0.5)
+        self.assertEqual(completed[-1]['win_trend']['points'][0]['mine'], 50)
+        stored = {'version': completed[-1]['analysis_version'],
+                  'move_quality': completed[-1]['move_quality'], 'win_trend': completed[-1]['win_trend'],
+                  'turn_analyses': {key: value for snapshot in saved for key, value in snapshot['turn_analyses'].items()}}
+        # Complete the other synthetic game so a full reload needs no engine calls.
+        self.page.evaluate('window.automaticAnalysis()')
+        self.page.wait_for_function('reviewQueue.running === 0')
+        self.page.evaluate('Promise.all(Array.from(reviewQueue.contexts.values(), context => flushAnalysisSave(context.review, context.cache)))')
+        self.page.unroute('**/api/crossplay/games/mockgame01/review')
+        self.use_saved_analysis(stored, **review_changes)
+        self.context.add_init_script("window.engineCalls=[]; const post=Worker.prototype.postMessage; Worker.prototype.postMessage=function(data,...rest){engineCalls.push(data.type); return post.call(this,data,...rest);};")
+        self.page.reload()
+        self.page.wait_for_function("currentReview?.id === 'mockgame01' && reviewQueue?.running === 0 && contextFor(currentReview)?.states.every(state => ['done', 'error'].includes(state))")
+        self.assertEqual(self.page.evaluate('engineCalls'), [])
+        self.assertEqual(self.page.evaluate('moveQualityResults.points[0]'), result['point'])
+        self.page.get_by_role('button', name='Show before move', exact=True).click()
+        expect(self.page.locator('.win-you strong')).to_have_text('50.0%')
+
     def test_loaded_unrated_exchange_recovers_when_tile_details_arrive(self):
         self.install_review_worker()
         self.use_saved_unrated_exchange(None)
