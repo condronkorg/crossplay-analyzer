@@ -702,12 +702,17 @@ function makeReviewContext(review, owner, shared = false) {
   cache.owner = owner;
   cache.shared = shared;
   const savedQuality = stored.move_quality;
-  const quality = savedQuality?.evaluation === MOVE_QUALITY_EVALUATION && ['done', 'running', 'stopped', 'error'].includes(savedQuality.state) && Array.isArray(savedQuality.points) &&
+  let quality = savedQuality?.evaluation === MOVE_QUALITY_EVALUATION && ['done', 'running', 'stopped', 'error'].includes(savedQuality.state) && Array.isArray(savedQuality.points) &&
     savedQuality.points.every(point => !point.provisional && Number.isInteger(point.turnIndex) && review.turns[point.turnIndex] &&
       (point.category === 'unrated' ? point.loss === null :
       Number.isFinite(point.playedWin) && Number.isFinite(point.bestWin) && point.playedWin >= 0 && point.bestWin <= 1 &&
       point.bestWin >= point.playedWin && Math.abs(point.loss - (point.bestWin - point.playedWin) * 100) < 1e-6 &&
       point.category === qualityBand(point.loss))) ? savedQuality : null;
+  if (quality?.points.some(point => canAnalyzeUnratedExchange(review.turns[point.turnIndex], point))) {
+    const points = quality.points.filter(point => !canAnalyzeUnratedExchange(review.turns[point.turnIndex], point));
+    quality = { ...quality, points, current: points.length, state: 'running',
+      message: 'Resuming swaps with available exchanged tiles.' };
+  }
   const trend = quality ? deriveWinTrend({ review, quality }, quality.state === 'done') : null;
   const complete = quality?.state === 'done' && trend?.state === 'done' && quality.points.length === review.turns.length &&
     new Set(quality.points.map(point => point.turnIndex)).size === review.turns.length && !quality.points.some(point => point.retryable) && quality.points.every(point => point.category === 'unrated' ||
@@ -1929,6 +1934,12 @@ function validAnalysisTurn(turn) {
   return true;
 }
 
+function canAnalyzeUnratedExchange(turn, point) {
+  if (point?.category !== 'unrated' || !validAnalysisTurn(turn)) return false;
+  try { return CrossplayReview.playedMove(turn).action === 'exchange'; }
+  catch (_) { return false; }
+}
+
 function pauseReviewAnalysis(review) {
   const context = contextFor(review);
   if (!context) return;
@@ -1961,7 +1972,8 @@ async function analyzeReviewTurn(context, index, phase = 'review', options = {})
       value.playedWin === cache.get(turn, 'review').selected.win);
   if (fullPointReady()) return { complete: true };
   const savedPoint = context.quality?.points.find(value => value.turnIndex === index);
-  if (phase === 'preview' && context.quality?.state === 'done' && savedPoint && !savedPoint.provisional) {
+  if (phase === 'preview' && context.quality?.state === 'done' && savedPoint && !savedPoint.provisional &&
+      !canAnalyzeUnratedExchange(turn, savedPoint)) {
     // Keep alternatives available for unrated turns in a restored review.
     if (savedPoint.category === 'unrated' && !savedPoint.retryable && validAnalysisTurn(turn)) {
       await ensurePositionAnalysis(review, turn, 'candidates', options);
