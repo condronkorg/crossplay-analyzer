@@ -684,6 +684,13 @@ function makeReviewContext(review, owner, shared = false) {
   const stored = review.stored_analysis?.version === ANALYSIS_VERSION ? review.stored_analysis : {};
   const cache = new AnalysisCache({}, POSITION_PARAMETERS);
   for (const turn of review.turns) {
+    const candidateKey = cache.key(turn, 'candidates');
+    const candidates = stored.turn_analyses?.[candidateKey];
+    if (candidates && !candidates.error && Array.isArray(candidates.moves) && candidates.moves.length &&
+        candidates.moves.every(move => move && ['place', 'pass', 'exchange'].includes(move.action) &&
+          typeof move.position === 'string' && typeof move.tiles === 'string' && Number.isFinite(move.equity))) {
+      cache.results[candidateKey] = candidates;
+    }
     for (const kind of ['review', 'preview']) {
       const key = cache.key(turn, kind);
       const result = stored.turn_analyses?.[key];
@@ -1108,10 +1115,10 @@ function renderReview() {
   analyzeButton.addEventListener('click', async () => {
     analyzeButton.disabled = true;
     try {
-      await ensurePositionAnalysis(review, turn, 'preview', { priority: ANALYSIS_PRIORITY.view + ++viewRequestSequence });
       const context = contextFor(review);
       if (!context) return;
       if (context.quality) context.quality.state = 'running';
+      await analyzeReviewTurn(context, review.turns.indexOf(turn), 'preview', { priority: ANALYSIS_PRIORITY.view + ++viewRequestSequence });
       getReviewQueue().retryTurn(review.id, review.turns.indexOf(turn));
       await flushAnalysisSave(review, context.cache);
     } catch (_) { /* The position panel displays the error and retry action. */ }
@@ -1933,6 +1940,10 @@ async function analyzeReviewTurn(context, index, phase = 'review', options = {})
   if (fullPointReady()) return { complete: true };
   const savedPoint = context.quality?.points.find(value => value.turnIndex === index);
   if (phase === 'preview' && context.quality?.state === 'done' && savedPoint && !savedPoint.provisional) {
+    // Keep alternatives available for unrated turns in a restored review.
+    if (savedPoint.category === 'unrated' && !savedPoint.retryable && validAnalysisTurn(turn)) {
+      await ensurePositionAnalysis(review, turn, 'candidates', options);
+    }
     // A failed full pass stays retryable; an early result cannot complete it.
     return { complete: savedPoint.category === 'unrated' && !savedPoint.retryable };
   }
@@ -1969,9 +1980,16 @@ async function analyzeReviewTurn(context, index, phase = 'review', options = {})
       }
     } catch (error) {
       if (error.name === 'AbortError' || owner !== analysisOwner()) throw error;
-      point = makeUnratedPoint(index, turn, 'Quackle could not evaluate the played move: ' + error.message);
-      point.retryable = true;
-      point.provisional = phase === 'preview';
+      const missingExchangeTiles = error.code === 'MISSING_EXCHANGE_TILES';
+      if (missingExchangeTiles) {
+        // The board and rack can still be analyzed without guessing the swap.
+        await ensurePositionAnalysis(review, turn, 'candidates', options);
+        for (const kind of ['preview', 'review']) cache.errors.delete(cache.key(turn, kind));
+      }
+      point = makeUnratedPoint(index, turn, missingExchangeTiles ? error.message
+        : 'Quackle could not evaluate the played move: ' + error.message);
+      point.retryable = !missingExchangeTiles;
+      point.provisional = !missingExchangeTiles && phase === 'preview';
     }
   }
   if (owner !== analysisOwner()) throw accountChanged();
@@ -2072,9 +2090,9 @@ async function ensurePositionAnalysis(review, turn, kind, options = {}) {
       gridJson: JSON.stringify(turn.grid), rack: String(turn.rack),
       playerScore: Number(turn.mover_score) || 0, opponentScore: Number(turn.other_score) || 0,
       numMoves: moveCount, iterations,
-      bagCount: Number(turn.bag_count), finalTurnsRemaining: Number(turn.bag_count) === 0 ? Number(turn.final_turns_remaining) : 0,
-      played: CrossplayReview.playedMove(turn), seed: cache.seed(turn)
+      bagCount: Number(turn.bag_count), finalTurnsRemaining: Number(turn.bag_count) === 0 ? Number(turn.final_turns_remaining) : 0
     };
+    if (kind !== 'candidates') Object.assign(payload, { played: CrossplayReview.playedMove(turn), seed: cache.seed(turn) });
     const result = await workerRequest(kind === 'candidates' ? 'kibitz' : 'simulateReview', payload,
       { priority, signal, taskKey, onStart });
     if (context.owner !== analysisOwner()) throw accountChanged();
@@ -2116,6 +2134,7 @@ function renderPositionAnalysis(turn, button, status, output) {
   const full = positionCache.get(turn, 'review');
   const simulation = full || positionCache.get(turn, 'preview');
   const candidates = positionCache.get(turn, 'candidates');
+  const point = qualityPointForTurn(currentTurnIndex);
   const simulating = ['review', 'preview'].some(kind => positionCache.pending.has(positionCache.key(turn, kind)));
   const error = full || simulating ? null : (positionCache.errors.get(positionCache.key(turn, 'review')) ||
     positionCache.errors.get(positionCache.key(turn, 'preview')) ||
@@ -2129,6 +2148,7 @@ function renderPositionAnalysis(turn, button, status, output) {
     : !validAnalysisTurn(turn) ? 'This turn is missing a valid board, rack, or bag count.'
     : simulating && candidates ? 'Move candidates ready · simulating win chances for this turn…'
     : simulating ? 'Simulating candidates and win chances for this turn…'
+    : candidates && point?.category === 'unrated' && !point.retryable ? 'Move candidates ready. This turn is unrated: ' + point.reason
     : candidates ? 'Move candidates ready · win estimates are queued in the background.'
     : 'Analysis is queued in the background. You can keep reviewing the game.';
   if (positionCache.saveError) status.textContent += ' Save failed: ' + positionCache.saveError;
@@ -2167,7 +2187,7 @@ function renderMoves(moves, result, output, turn) {
   output.append(table);
   const early = result.provisional || result.iterationsCompleted < SIMULATION_ITERATIONS;
   const note = result.simulated !== true
-    ? 'Static equity candidates from move-quality analysis. Win estimates are prepared separately and reused here.'
+    ? 'Static alternatives for the board and rack before this turn. Win estimates are unavailable for these candidates.'
     : (early ? 'Early estimate. ' : 'Full estimate. ') + (result.playToEnd
       ? 'Win estimates use ' + result.iterationsCompleted + ' sampled hidden racks and draws per move, played to the Crossplay finish.'
       : 'Win estimates use Quackle’s two-ply model with ' + result.iterationsCompleted + ' samples per move.') +

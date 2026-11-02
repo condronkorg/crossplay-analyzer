@@ -675,6 +675,75 @@ class ReviewBrowserTest(unittest.TestCase):
         reason = self.page.evaluate('moveQualityResults.points[0].reason')
         self.assertTrue(reason.startswith('Quackle could not evaluate the played move: This move is not legal'), reason)
 
+    def test_exchange_without_tile_details_still_analyzes_the_position(self):
+        self.use_saved_analysis({})
+        self.open_game()
+        result = self.page.evaluate("""async () => {
+          const context = contextFor(currentReview), turn = currentReview.turns[3];
+          turn.swapped_tiles = null;
+          currentTurnIndex = 3; renderReview();
+          const calls = [], request = workerRequest;
+          workerRequest = (type, payload, options) => {
+            calls.push({type, played: payload.played});
+            return request(type, payload, options);
+          };
+          const outcome = await analyzeReviewTurn(context, 3, 'preview');
+          const point = context.quality.points.find(point => point.turnIndex === 3);
+          const candidates = context.cache.get(turn, 'candidates');
+          const callsAfterSwap = structuredClone(calls);
+          await analyzeReviewTurn(context, 4, 'preview');
+          const nextPoint = context.quality.points.find(point => point.turnIndex === 4);
+          context.quality.state = 'done';
+          const callCount = calls.length;
+          const reopened = await analyzeReviewTurn(context, 3, 'preview');
+          const stored_analysis = {version: ANALYSIS_VERSION, turn_analyses: context.cache.results};
+          const restored = makeReviewContext({...currentReview, stored_analysis}, context.owner);
+          const invalidSaved = {version: ANALYSIS_VERSION, turn_analyses: {
+            [context.cache.key(turn, 'candidates')]: {moves: [null]}
+          }};
+          const invalid = makeReviewContext({...currentReview, stored_analysis: invalidSaved}, context.owner);
+          return {outcome, point, callsAfterSwap, moves: candidates.moves.length,
+            errors: [...context.cache.errors.values()], nextWin: nextPoint.playedWin,
+            reused: reopened.complete && calls.length === callCount,
+            ignoredInvalid: invalid.cache.get(turn, 'candidates') === null,
+            restored: JSON.stringify(restored.cache.get(turn, 'candidates')) === JSON.stringify(candidates)};
+        }""")
+        self.assertEqual(result['outcome'], {'complete': True})
+        self.assertEqual(result['point']['category'], 'unrated')
+        self.assertIsNone(result['point']['loss'])
+        self.assertFalse(result['point']['retryable'])
+        self.assertFalse(result['point']['provisional'])
+        self.assertNotIn('playedWin', result['point'])
+        self.assertEqual(result['callsAfterSwap'], [{'type': 'kibitz'}])
+        self.assertGreater(result['moves'], 0)
+        self.assertEqual(result['errors'], [])
+        self.assertIsInstance(result['nextWin'], (int, float))
+        self.assertTrue(result['reused'])
+        self.assertTrue(result['ignoredInvalid'])
+        self.assertTrue(result['restored'])
+        expect(self.page.locator('.position-output .moves-table tbody tr').first).to_be_visible()
+        expect(self.page.locator('.position-output .moves-table tbody tr').first.locator('td').nth(3)).to_have_text('—')
+        expect(self.page.locator('#engineStatus')).to_contain_text('Move candidates ready. This turn is unrated')
+        expect(self.page.locator('.analysis-panel .analysis-button')).to_be_hidden()
+        expect(self.page.locator('.turn-coach')).to_contain_text('recorded exchanged tiles are missing')
+
+    def test_missing_exchange_position_failure_can_be_retried(self):
+        self.use_saved_analysis({})
+        self.open_game()
+        self.page.evaluate("""async () => {
+          const context = contextFor(currentReview), request = workerRequest;
+          currentReview.turns[3].swapped_tiles = null;
+          currentTurnIndex = 3; renderReview();
+          workerRequest = () => Promise.reject(new Error('Synthetic position failure'));
+          try { await analyzeReviewTurn(context, 3, 'preview'); } catch (_) {}
+          workerRequest = request;
+          refreshPositionPanel();
+        }""")
+        expect(self.page.locator('#engineStatus')).to_contain_text('Analysis failed')
+        self.page.get_by_role('button', name='Retry this turn', exact=True).click()
+        expect(self.page.locator('#engineStatus')).to_contain_text('Move candidates ready. This turn is unrated')
+        expect(self.page.locator('.analysis-panel .analysis-button')).to_be_hidden()
+
     def test_move_quality_refreshes_summary_with_real_engine(self):
         self.open_game()
         self.open_statistics()

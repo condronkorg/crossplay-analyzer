@@ -248,7 +248,8 @@ class BackgroundAnalysisTest(unittest.TestCase):
         self.assertTrue(Handler.recorded_move_matches(grid, 'PASS 0', '', passing))
         self.assertFalse(Handler.recorded_move_matches(grid, 'SWAP 0', 'AB', passing))
         exchange = {'action': 'exchange', 'position': '', 'tiles': '?A'}
-        self.assertTrue(Handler.recorded_move_matches(grid, 'SWAP 0', 'A?', exchange))
+        for notation in ('SWAP', 'SWAP 0', 'SWAP 3', 'exchange -5'):
+            self.assertTrue(Handler.recorded_move_matches(grid, notation, 'A?', exchange))
         self.assertFalse(Handler.recorded_move_matches(grid, 'SWAP 0', 'AB', exchange))
         self.assertFalse(Handler.recorded_move_matches(grid, 'PASS 0', 'A?', exchange))
 
