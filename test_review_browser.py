@@ -272,7 +272,9 @@ class ReviewBrowserTest(unittest.TestCase):
         expect(cards.nth(0)).to_contain_text('3 of your 3 racks estimated')
         expect(cards.nth(1)).to_contain_text('2 of your 3 turns rated')
         expect(cards.nth(2).locator('strong')).to_have_text('—')
-        expect(panel).to_contain_text('Re-analyze moves')
+        # The known swap in this legacy result must resume instead of staying unrated.
+        expect(panel).to_contain_text('Analysis is running. Performance will appear as eligible turns are rated.')
+        self.assertEqual(self.page.evaluate('moveQualityResults.state'), 'running')
         panel.locator('.luck-breakdown summary').click()
         expect(panel.locator('tbody tr')).to_have_count(3)
         panel.get_by_role('button', name='Replay turn 3 from luck breakdown').click()
@@ -343,7 +345,7 @@ class ReviewBrowserTest(unittest.TestCase):
                 board = self.page.locator('.board-scroll')
                 self.assertTrue(board.evaluate('(el) => el.scrollWidth <= el.clientWidth'),
                                 'The complete board must fit the viewport')
-                expect(self.page.get_by_role('button', name='Re-analyze moves')).to_be_visible()
+                expect(self.page.get_by_role('button', name='Stop move analysis', exact=True)).to_be_visible()
         self.page.set_viewport_size({'width': 390, 'height': 844})
         self.page.locator('.insight').click()
         expect(self.page.get_by_role('combobox', name='Select game turn')).to_have_value('2')
@@ -368,7 +370,8 @@ class ReviewBrowserTest(unittest.TestCase):
         self.page.locator('.turn-row').click()
         self.page.keyboard.press('ArrowRight')
         expect(turns).to_have_value('3')
-        expect(self.page.locator('.turn-coach')).to_contain_text('This turn is unrated')
+        expect(self.page.locator('.turn-coach')).to_contain_text('Review in progress. This turn has not been analyzed yet.')
+        expect(self.page.locator('.win-estimate-state')).to_have_text('Waiting for estimate')
         self.page.keyboard.press('End')
         expect(turns).to_have_value('5')
         self.page.get_by_role('button', name='← Previous flagged move').click()
@@ -675,6 +678,138 @@ class ReviewBrowserTest(unittest.TestCase):
         reason = self.page.evaluate('moveQualityResults.points[0].reason')
         self.assertTrue(reason.startswith('Quackle could not evaluate the played move: This move is not legal'), reason)
 
+    def use_saved_unrated_exchange(self, swapped_tiles):
+        grid = ['.' * 15 for _ in range(15)]
+        review_changes = {
+            'turns': [{'index': 0, 'mine': True, 'action': 'SWAP 0', 'score': 0,
+                       'rack': 'AEIRST?', 'swapped_tiles': swapped_tiles,
+                       'grid': grid, 'grid_after': grid, 'bag_count': 86,
+                       'final_turns_remaining': 0, 'mover_score': 12, 'other_score': 10}],
+            'my_score': 12, 'opponent_score': 10, 'turn_count': 1,
+        }
+        self.use_saved_analysis({
+            'version': 'quackle-equity-v1',
+            'move_quality': {
+                'state': 'done', 'evaluation': 'win-probability-v1',
+                'points': [{'turnIndex': 0, 'turn': 1, 'mine': True, 'action': 'SWAP 0',
+                            'category': 'unrated', 'loss': None, 'provisional': False,
+                            'retryable': False, 'reason': 'The recorded exchanged tiles are missing.'}],
+            },
+        }, **review_changes)
+        return review_changes
+
+    def test_saved_unrated_exchange_recovers_when_tile_details_are_available(self):
+        # This saved grade predates recovery of the exact physical exchanged tiles.
+        self.install_review_worker()
+        review_changes = self.use_saved_unrated_exchange('AE?')
+        saved = []
+        self.page.route('**/api/crossplay/games/mockgame01/analysis',
+                        lambda route: (saved.append(route.request.post_data_json),
+                                       route.fulfill(json={'saved': True})))
+        self.page.evaluate("""window.exchangeCalls = []; const request = workerRequest;
+          workerRequest = (type, payload, options) => {
+            if (options.taskKey.includes(':mockgame01:')) exchangeCalls.push({type, played: payload.played});
+            return request(type, payload, options);
+          }; startBackgroundAnalysis = window.automaticAnalysis; undefined""")
+        self.open_game()
+        # Wait for either a repaired result or the old, incorrectly complete state.
+        self.page.wait_for_function("""() => {
+          const context = currentReview && contextFor(currentReview);
+          return context && reviewQueue.running === 0 && context.states.every(state => ['done', 'error'].includes(state));
+        }""")
+        result = self.page.evaluate("""() => {
+          const context = contextFor(currentReview), turn = currentReview.turns[0];
+          return {point: context.quality.points[0], states: context.states, calls: exchangeCalls,
+            trend: context.trend.points,
+            validFullResult: CrossplayReview.validResult(context.cache.get(turn, 'review'), turn, context.cache.seed(turn))};
+        }""")
+        self.assertIsInstance(result['point'].get('playedWin'), (int, float), result)
+        self.assertEqual(result['point']['playedMove']['action'], 'exchange')
+        self.assertEqual(result['point']['playedMove']['tiles'], 'AE?')
+        self.assertFalse(result['point']['provisional'])
+        self.assertEqual(result['point']['samples'], 277)
+        self.assertTrue(result['validFullResult'])
+        self.assertTrue(result['calls'])
+        self.assertTrue(all(call == {'type': 'simulateReview', 'played': {
+            'action': 'exchange', 'position': '', 'tiles': 'AE?'}} for call in result['calls']))
+        turn_point = next(point for point in result['trend'] if not point.get('actual'))
+        self.assertEqual(turn_point['x'], 0)
+        self.assertEqual(turn_point['mine'], result['point']['playedWin'] * 100)
+        self.page.get_by_role('button', name='Show before move', exact=True).click()
+        expect(self.page.locator('.win-estimate-state')).to_have_text('Full estimate')
+        expect(self.page.locator('.win-you strong')).to_have_text('50.0%')
+        self.page.evaluate('flushAnalysisSave()')
+        completed = [snapshot for snapshot in saved if 'move_quality' in snapshot]
+        self.assertTrue(completed, 'The repaired grade must be saved')
+        self.assertEqual(completed[-1]['move_quality']['points'][0], result['point'])
+        stored = {'version': completed[-1]['analysis_version'],
+                  'move_quality': completed[-1]['move_quality'],
+                  'win_trend': completed[-1]['win_trend'],
+                  'turn_analyses': {key: value for snapshot in saved
+                                    for key, value in snapshot['turn_analyses'].items()}}
+        self.page.unroute('**/api/crossplay/games/mockgame01/review')
+        self.use_saved_analysis(stored, **review_changes)
+        self.page.evaluate('Promise.all(Array.from(reviewQueue.contexts.values(), context => flushAnalysisSave(context.review, context.cache)))')
+        self.context.add_init_script("window.engineCalls=[]; const post=Worker.prototype.postMessage; Worker.prototype.postMessage=function(data,...rest){engineCalls.push(data.type); return post.call(this,data,...rest);};")
+        self.page.reload()
+        expect(self.page.get_by_role('heading', name='vs Demo Cedar', exact=True)).to_be_visible()
+        self.page.wait_for_function("currentReview?.id === 'mockgame01' && reviewQueue?.running === 0 && contextFor(currentReview)?.states.every(state => ['done', 'error'].includes(state))")
+        self.assertEqual(self.page.evaluate('engineCalls'), [])
+        self.assertEqual(self.page.evaluate('moveQualityResults.points[0]'), result['point'])
+        self.page.get_by_role('button', name='Show before move', exact=True).click()
+        expect(self.page.locator('.win-estimate-state')).to_have_text('Full estimate')
+
+    def test_loaded_unrated_exchange_recovers_when_tile_details_arrive(self):
+        self.install_review_worker()
+        self.use_saved_unrated_exchange(None)
+        self.open_game()
+        result = self.page.evaluate("""async () => {
+          const context = contextFor(currentReview), turn = currentReview.turns[0];
+          const before = structuredClone(context.quality.points[0]);
+          turn.swapped_tiles = 'AE?';
+          const calls = [], request = workerRequest;
+          workerRequest = (type, payload, options) => {
+            calls.push({type, played: payload.played, iterations: payload.iterations});
+            return request(type, payload, options);
+          };
+          const preview = await analyzeReviewTurn(context, 0, 'preview');
+          const validPreview = CrossplayReview.validResult(context.cache.get(turn, 'preview'), turn,
+            context.cache.seed(turn), PREVIEW_ITERATIONS, PREVIEW_MOVE_COUNT);
+          await analyzeReviewTurn(context, 0, 'review');
+          return {before, preview, validPreview, calls, point: context.quality.points[0]};
+        }""")
+        self.assertEqual(result['before']['category'], 'unrated')
+        self.assertEqual(result['preview'], {'complete': False})
+        self.assertTrue(result['validPreview'])
+        self.assertEqual(result['calls'], [
+            {'type': 'simulateReview', 'played': {'action': 'exchange', 'position': '', 'tiles': 'AE?'},
+             'iterations': iterations} for iterations in (64, 277)])
+        self.assertEqual(result['point']['playedWin'], 0.5)
+        self.assertEqual(result['point']['playedMove']['tiles'], 'AE?')
+        self.assertFalse(result['point']['provisional'])
+
+    def test_saved_exchange_without_tile_details_does_not_guess_a_probability(self):
+        self.install_review_worker()
+        self.use_saved_unrated_exchange(None)
+        self.page.evaluate("""window.exchangeCalls = []; const request = workerRequest;
+          workerRequest = (type, payload, options) => {
+            if (options.taskKey.includes(':mockgame01:')) exchangeCalls.push({type, played: payload.played});
+            return request(type, payload, options);
+          }; startBackgroundAnalysis = window.automaticAnalysis; undefined""")
+        self.open_game()
+        self.page.wait_for_function("currentReview?.id === 'mockgame01' && reviewQueue?.running === 0 && contextFor(currentReview)?.states.every(state => ['done', 'error'].includes(state))")
+        result = self.page.evaluate("""({point: moveQualityResults.points[0],
+          recordedTrend: trendResults.points.filter(point => !point.actual), calls: exchangeCalls})""")
+        self.assertEqual(result['point']['category'], 'unrated')
+        self.assertNotIn('playedWin', result['point'])
+        self.assertFalse(result['point']['retryable'])
+        self.assertEqual(result['recordedTrend'], [])
+        self.assertFalse(any(call['type'] == 'simulateReview' for call in result['calls']))
+        self.page.get_by_role('button', name='Show before move', exact=True).click()
+        expect(self.page.locator('.win-estimate-state')).to_have_text('Estimate unavailable')
+        expect(self.page.locator('.win-you strong')).to_have_text('—')
+        expect(self.page.locator('.turn-coach')).to_contain_text('recorded exchanged tiles are missing')
+
     def test_exchange_without_tile_details_still_analyzes_the_position(self):
         self.use_saved_analysis({})
         self.open_game()
@@ -714,7 +849,8 @@ class ReviewBrowserTest(unittest.TestCase):
         self.assertFalse(result['point']['retryable'])
         self.assertFalse(result['point']['provisional'])
         self.assertNotIn('playedWin', result['point'])
-        self.assertEqual(result['callsAfterSwap'], [{'type': 'kibitz'}])
+        self.assertEqual([call['type'] for call in result['callsAfterSwap']], ['kibitz'])
+        self.assertTrue(all(call.get('played') is None for call in result['callsAfterSwap']))
         self.assertGreater(result['moves'], 0)
         self.assertEqual(result['errors'], [])
         self.assertIsInstance(result['nextWin'], (int, float))
