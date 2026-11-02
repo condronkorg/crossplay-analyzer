@@ -201,12 +201,18 @@ class ReviewBrowserTest(unittest.TestCase):
 
         self.page.route('**/api/crossplay/games/mockgame01/review', review_route)
 
+    def open_statistics(self):
+        statistics = self.page.locator('.review-statistics')
+        if not statistics.evaluate('node => node.open'):
+            statistics.locator('> summary').click()
+
     def stat(self, label):
         return self.page.locator('.dashboard-stat').filter(
             has=self.page.get_by_text(label, exact=True))
 
     def test_personal_summary_and_score_replay_without_analysis(self):
         self.open_game()
+        self.open_statistics()
         expect(self.page.locator('.review-heading')).to_contain_text('Won by 6 points')
         expect(self.page.locator('.score-person').first).to_have_text('You')
         expect(self.stat('Points per turn')).to_contain_text('3.3')
@@ -229,6 +235,11 @@ class ReviewBrowserTest(unittest.TestCase):
     def test_saved_quality_excludes_opponent_and_unrated_moves(self):
         self.use_saved_analysis()
         self.open_game()
+        lesson = self.page.locator('.review-lesson')
+        expect(lesson).to_contain_text('Start with turn 3 · 5.6 percentage points')
+        lesson.get_by_role('button').click()
+        expect(self.page.get_by_role('combobox', name='Select game turn')).to_have_value('2')
+        self.open_statistics()
         expect(self.stat('Best moves').locator('.dashboard-stat-value')).to_have_text('1 / 2')
         expect(self.stat('Avg. win chance lost').locator('.dashboard-stat-value')).to_have_text('3.0 pp')
         expect(self.stat('Avg. win chance lost')).to_contain_text('2 of your 3 turns rated')
@@ -255,6 +266,7 @@ class ReviewBrowserTest(unittest.TestCase):
     def test_luck_panel_without_analysis_and_legacy_saved_analysis(self):
         self.use_saved_analysis()
         self.open_game()
+        self.open_statistics()
         panel = self.page.locator('.luck-panel')
         cards = panel.locator('.luck-stat')
         expect(cards.nth(0)).to_contain_text('3 of your 3 racks estimated')
@@ -281,6 +293,7 @@ class ReviewBrowserTest(unittest.TestCase):
                 {'turnIndex': 2, 'category': 'unrated', 'loss': None}]}}
         self.use_saved_analysis(analysis)
         self.open_game()
+        self.open_statistics()
         panel = self.page.locator('.luck-panel')
         expect(panel.locator('.luck-stat').nth(1).locator('strong')).to_have_text('50 / 100')
         expect(panel.locator('.luck-stat').nth(2).locator('strong')).to_have_text('63 / 100')
@@ -319,6 +332,7 @@ class ReviewBrowserTest(unittest.TestCase):
     def test_mobile_layout_and_board_fit(self):
         self.use_saved_analysis()
         self.open_game()
+        self.open_statistics()
         self.page.locator('.luck-breakdown summary').click()
         for width in (320, 390, 768, 1024, 1440):
             with self.subTest(width=width):
@@ -337,6 +351,7 @@ class ReviewBrowserTest(unittest.TestCase):
     def test_walkthrough_navigation_and_personal_flag_filter(self):
         self.use_saved_analysis()
         self.open_game()
+        self.open_statistics()
         self.page.get_by_role('button', name='Start walkthrough', exact=True).click()
         turns = self.page.get_by_role('combobox', name='Select game turn')
         expect(turns).to_have_value('0')
@@ -370,11 +385,12 @@ class ReviewBrowserTest(unittest.TestCase):
     def test_best_move_preview_restores_board_and_preserves_existing_tiles(self):
         self.use_saved_analysis()
         self.open_game()
+        self.open_statistics()
         self.page.locator('.insight').click()
         comparison = self.page.locator('.move-comparison')
         expect(comparison).to_contain_text('SCAT · 8F')
         expect(comparison).to_contain_text('CATS · 8G')
-        expect(comparison).to_contain_text('6 points · leave ?EINRU')
+        expect(comparison).to_contain_text('6 points · tiles left: ?EINRU')
         original = self.page.locator('.board').inner_text()
         self.page.get_by_role('button', name='Preview best move', exact=True).click()
         expect(self.page.locator('.board-preview-note')).to_contain_text('CATS at 8G')
@@ -410,6 +426,7 @@ class ReviewBrowserTest(unittest.TestCase):
         analysis['move_quality']['points'][2]['bestMove']['tiles'] = '...s'
         self.use_saved_analysis(analysis)
         self.open_game()
+        self.open_statistics()
         self.page.locator('.insight').click()
         self.page.get_by_role('button', name='Preview best move', exact=True).click()
         expect(self.page.locator('.board .blank-tile.last-play')).to_have_text('S')
@@ -421,6 +438,7 @@ class ReviewBrowserTest(unittest.TestCase):
                 {'turnIndex': 2, 'category': 'blunder', 'loss': 10.5},
                 {'turnIndex': 0, 'category': 'inaccuracy', 'loss': 2.0}]}})
         self.page.get_by_role('button', name='Review game against Demo Cedar').click()
+        self.open_statistics()
         self.page.get_by_role('button', name='Start walkthrough', exact=True).click()
         expect(self.page.locator('.turn-coach')).to_contain_text('Inaccuracy · 2.0 percentage points lost')
         self.page.get_by_role('button', name='Next flagged move →').click()
@@ -609,6 +627,7 @@ class ReviewBrowserTest(unittest.TestCase):
                            ' if (type === "simulateReview") evaluatedMoves.push(payload.played);'
                            ' return request(type, payload, options); }; undefined')
         self.open_game()
+        self.open_statistics()
         self.page.get_by_role('button', name='Analyze move quality', exact=True).click()
         expect(self.page.locator('.quality-panel .trend-status')).to_contain_text('Your review is ready')
         completed = [snapshot for snapshot in saved if 'move_quality' in snapshot]
@@ -658,6 +677,7 @@ class ReviewBrowserTest(unittest.TestCase):
 
     def test_move_quality_refreshes_summary_with_real_engine(self):
         self.open_game()
+        self.open_statistics()
         self.page.get_by_role('button', name='Analyze move quality', exact=True).click()
         expect(self.page.locator('.quality-panel .trend-status')).to_contain_text(
             'Your review is ready', timeout=120_000)
@@ -700,6 +720,7 @@ class ReviewBrowserTest(unittest.TestCase):
         self.page.route('**/api/crossplay/games/mockgame01/analysis',
                         lambda route: (saved.append(route.request.post_data_json), route.fulfill(json={'saved': True})))
         self.open_game()
+        self.open_statistics()
         self.page.evaluate("""window.retryCalls = 0; window.failRecordedMove = true;
           const request = workerRequest;
           workerRequest = (type, payload, options) => {
@@ -735,6 +756,7 @@ class ReviewBrowserTest(unittest.TestCase):
                 route.fulfill(json={'saved': True})
             self.page.route('**/api/crossplay/games/' + game_id + '/analysis', save)
         self.open_game()
+        self.open_statistics()
         self.page.evaluate("""window.failRetry = true; const request = workerRequest;
           workerRequest = (type,payload,options) => {
             if (type === 'simulateReview' && options.taskKey.includes(':mockgame01:') && payload.rack === 'ACERSTU') {
@@ -763,6 +785,7 @@ class ReviewBrowserTest(unittest.TestCase):
     def test_partial_saved_results_resume_only_the_missing_move(self):
         self.install_review_worker()
         self.open_game()
+        self.open_statistics()
         self.page.get_by_role('button', name='Analyze move quality', exact=True).click()
         expect(self.page.locator('.quality-panel .trend-status')).to_contain_text('Your review is ready')
         self.page.evaluate('flushAnalysisSave()')
@@ -956,6 +979,7 @@ class ReviewBrowserTest(unittest.TestCase):
         self.page.route('**/wordfreq-en-25000-log.json',
                         lambda route: route.fulfill(status=503, body='Unavailable'))
         self.open_game()
+        self.open_statistics()
         self.page.get_by_role('button', name='Analyze move quality', exact=True).click()
         expect(self.page.locator('.quality-panel .trend-status')).to_contain_text(
             'Your review is ready', timeout=120_000)
@@ -981,6 +1005,7 @@ class ReviewBrowserTest(unittest.TestCase):
             'mover_score': 0, 'other_score': 0,
         }], my_score=6, opponent_score=0, turn_count=1)
         self.open_game()
+        self.open_statistics()
         self.page.get_by_role('button', name='Analyze move quality', exact=True).click()
         expect(self.page.locator('.quality-panel .trend-status')).to_contain_text(
             'Your review is ready', timeout=120_000)

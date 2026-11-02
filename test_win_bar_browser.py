@@ -15,6 +15,7 @@ class WinBarBrowserTest(unittest.TestCase):
     route_request = review_browser.ReviewBrowserTest.route_request
     connect = review_browser.ReviewBrowserTest.connect
     open_game = review_browser.ReviewBrowserTest.open_game
+    use_saved_analysis = review_browser.ReviewBrowserTest.use_saved_analysis
 
     def set_points(self, points):
         self.page.evaluate('''points => {
@@ -30,6 +31,83 @@ class WinBarBrowserTest(unittest.TestCase):
             'loss': 1, 'category': 'best', 'provisional': provisional,
             'samples': 64 if provisional else 277,
         }
+
+    def test_review_layout_puts_board_before_secondary_statistics(self):
+        self.use_saved_analysis()
+        self.open_game()
+        self.page.get_by_role('combobox', name='Select game turn').select_option('0')
+        statistics = self.page.locator('.review-statistics')
+        expect(statistics).to_be_visible()
+        expect(statistics).not_to_have_attribute('open', '')
+        expect(self.page.locator('.dashboard-stats')).to_be_hidden()
+        expect(self.page.locator('.trend-settings .trend-controls')).to_be_hidden()
+        for width, max_board_offset in [(1440, 400), (390, 500)]:
+            with self.subTest(width=width):
+                self.page.set_viewport_size({'width': width, 'height': 900})
+                geometry = self.page.locator('#reviewPanel').evaluate('''root => {
+                  const rect = selector => root.querySelector(selector).getBoundingClientRect();
+                  const board = rect('.turn-panel'), statistics = rect('.review-statistics');
+                  const chart = rect('.trend-panel');
+                  return {boardOffset: board.top - root.getBoundingClientRect().top,
+                    boardBottom: board.bottom, statisticsTop: statistics.top,
+                    chartBottom: chart.bottom, chartHeight: chart.height,
+                    fits: document.documentElement.scrollWidth <= innerWidth};
+                }''')
+                self.assertLessEqual(geometry['boardOffset'], max_board_offset)
+                self.assertGreaterEqual(geometry['statisticsTop'], geometry['boardBottom'])
+                self.assertGreaterEqual(geometry['statisticsTop'], geometry['chartBottom'])
+                self.assertLessEqual(geometry['chartHeight'], 500)
+                self.assertTrue(geometry['fits'], 'The page must not scroll horizontally')
+                expect(self.page.locator('.review-body .turn-controls')).to_be_visible()
+                expect(self.page.locator('.review-body .turn-coach')).to_be_visible()
+                expect(self.page.locator('.review-body .move-comparison')).to_be_visible()
+                expect(self.page.locator('.review-body .win-history')).to_be_visible()
+                expect(self.page.locator('.review-body .win-bar')).to_be_visible()
+
+    def test_disclosure_state_survives_turn_selection_and_background_refresh(self):
+        self.open_game()
+        statistics = self.page.locator('.review-statistics')
+        settings = self.page.locator('.trend-settings')
+        statistics.locator('> summary').click()
+        self.page.locator('.luck-breakdown > summary').click()
+        settings.locator('> summary').click()
+        expect(settings.get_by_role('button', name='Start analysis', exact=True)).to_be_visible()
+        self.page.get_by_role('combobox', name='Select game turn').select_option('0')
+        for disclosure in [statistics, settings, self.page.locator('.luck-breakdown')]:
+            expect(disclosure).to_have_attribute('open', '')
+        self.page.locator('.score-point').nth(1).focus()
+        self.page.keyboard.press('Enter')
+        expect(self.page.get_by_role('combobox', name='Select game turn')).to_have_value('1')
+        expect(self.page.locator('.score-point').nth(1)).to_be_focused()
+        self.page.evaluate('refreshTrendPanel(); refreshMoveQualityPanel()')
+        for disclosure in [statistics, settings, self.page.locator('.luck-breakdown')]:
+            expect(disclosure).to_have_attribute('open', '')
+        statistics.locator('> summary').click()
+        settings.locator('> summary').click()
+        self.page.evaluate('refreshTrendPanel(); refreshMoveQualityPanel()')
+        self.page.get_by_role('button', name='Next →', exact=True).click()
+        for disclosure in [statistics, settings]:
+            expect(disclosure).not_to_have_attribute('open', '')
+        expect(self.page.locator('.dashboard-stats')).to_be_hidden()
+        expect(self.page.locator('.win-history')).to_be_visible()
+
+    def test_background_refresh_preserves_review_control_focus(self):
+        self.use_saved_analysis()
+        self.open_game()
+        self.page.get_by_role('combobox', name='Select game turn').select_option('0')
+        self.page.locator('.trend-settings > summary').click()
+        for selector, refresh in [
+                ('.trend-settings > summary', 'refreshTrendPanel()'),
+                ('.trend-settings .analysis-button', 'refreshTrendPanel()'),
+                ('.coach-details > summary', 'refreshMoveQualityPanel()'),
+                ('.review-lesson button', 'refreshMoveQualityPanel()')]:
+            with self.subTest(control=selector):
+                control = self.page.locator(selector)
+                control.focus()
+                expect(control).to_be_focused()
+                self.page.evaluate(refresh)
+                self.assertTrue(control.evaluate('node => node === document.activeElement'),
+                                'Background refresh must preserve focus on ' + selector)
 
     def test_bar_is_visible_by_default_and_follows_both_players(self):
         self.open_game()
@@ -227,8 +305,8 @@ class WinBarBrowserTest(unittest.TestCase):
                 with self.subTest(width=width, label=label['text']):
                     self.assertGreaterEqual(label['fontSize'], 11)
                     self.assertTrue(label['contained'], 'Chart label is clipped')
-        self.assertGreater(panel.locator('.win-history').bounding_box()['x'],
-                           panel.locator('.win-evaluation').bounding_box()['x'])
+        self.assertGreater(panel.locator('.win-history').bounding_box()['y'],
+                           panel.locator('.win-evaluation').bounding_box()['y'])
         expect(panel.locator('.win-history-point')).to_have_count(43)
 
     def test_candidate_table_labels_pass_and_exchange(self):
