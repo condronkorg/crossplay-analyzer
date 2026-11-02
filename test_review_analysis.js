@@ -11,6 +11,25 @@ test('recorded actions preserve physical blanks, existing tiles, pass and exchan
   assert.throws(() => playedMove({ action: 'UNKNOWN 0' }), /recorded move/);
 });
 
+test('non-placement notation accepts the same numeric suffixes as the API validator', () => {
+  for (const action of ['SWAP', 'SWAP 0', 'SWAP 3', ' exchange -5 ', 'swap\t0']) {
+    assert.deepEqual(playedMove({ action, swapped_tiles: 'U?' }), { action: 'exchange', position: '', tiles: 'U?' });
+  }
+  for (const action of ['PASS', 'PASS 0', 'pass -5']) {
+    assert.deepEqual(playedMove({ action }), { action: 'pass', position: '', tiles: '' });
+  }
+  for (const action of ['SWAP UV 0', 'SWAP 0 extra', 'EXCHANGE 1.5']) {
+    assert.throws(() => playedMove({ action, swapped_tiles: 'UV' }), /recorded move/);
+  }
+});
+
+test('exchanges without usable tile details cannot become passes or guessed swaps', () => {
+  for (const swapped_tiles of [undefined, null, '', 3, 'ABCDEFGH', 'AB!']) {
+    assert.throws(() => playedMove({ action: 'SWAP 0', swapped_tiles }),
+      { code: 'MISSING_EXCHANGE_TILES', message: 'The recorded exchanged tiles are missing.' });
+  }
+});
+
 test('quality bands use percentage points', () => {
   assert.deepEqual([0, 1.999, 2, 4.999, 5, 9.999, 10].map(qualityBand),
     ['best', 'best', 'inaccuracy', 'inaccuracy', 'mistake', 'mistake', 'blunder']);
