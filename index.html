@@ -76,6 +76,46 @@
   .empty-state { padding: 20px 8px; color: var(--muted); font-size: 12px; }
   .review { min-width: 0; padding: 0; border: 0; background: transparent; }
   .review-placeholder { min-height: 300px; display: grid; place-items: center; padding: 30px; border: 1px dashed #bacabb; border-radius: 14px; text-align: center; color: var(--muted); }
+  .game-open .page-intro { display: none; }
+  .game-overview { max-width: 760px; margin: 0 auto; padding: 28px 32px 24px; border-radius: 18px; background: #262522; color: #f7f6f2; color-scheme: dark; }
+  .overview-heading { text-align: center; margin-bottom: 20px; }
+  .overview-heading h2 { font-size: 30px; letter-spacing: -.7px; }
+  .overview-heading p { margin-top: 6px; color: #c4c2b9; font-size: 12px; }
+  .overview-result { padding: 12px 16px; margin-bottom: 18px; border-radius: 9px; background: #35342f; font-size: 14px; text-align: center; }
+  .overview-chart { padding: 10px 8px 6px; margin-bottom: 20px; border-radius: 10px; background: #1c1c1a; }
+  .overview-chart .win-history-heading { padding: 0 8px; color: #dbd9d0; font-size: 12px; }
+  .overview-chart .win-history svg { width: 100%; display: block; }
+  .overview-chart .win-history-legend { padding: 4px 8px; color: #bdbbb2; font-size: 10px; gap: 5px 14px; }
+  .overview-table { width: 100%; table-layout: fixed; border-collapse: collapse; }
+  .overview-table th, .overview-table td { padding: 6px 4px; border: 0; vertical-align: middle; }
+  .overview-table thead th:first-child { width: 42%; }
+  .overview-table th { text-align: left; font-size: 14px; font-weight: 600; }
+  .overview-table td, .overview-table thead th:not(:first-child) { text-align: center; }
+  .overview-table td { font-size: 25px; font-weight: 750; font-variant-numeric: tabular-nums; }
+  .overview-table .overview-player { padding-bottom: 14px; }
+  .overview-avatar { display: grid; place-items: center; width: 54px; height: 54px; margin: 0 auto 8px; border: 3px solid #eeede7; border-radius: 11px; background: #f1efe7; color: #302f2b; font-size: 20px; }
+  .overview-player.opponent .overview-avatar { background: #141413; color: #f3f1e9; border-color: #88877e; }
+  .overview-player.winner .overview-avatar { border-color: #97c95b; }
+  .overview-player-name { display: block; overflow-wrap: anywhere; font-size: 12px; line-height: 1.3; }
+  .overview-player-score { display: block; margin-top: 4px; color: #bbb9b0; font-size: 11px; font-weight: 400; }
+  .overview-table [data-summary-row="average"] { border-top: 1px solid #49473f; }
+  .overview-table [data-summary-row="average"] td { font-size: 24px; color: #faf8f0; }
+  .overview-table [data-summary-row="average"] small { display: block; color: #bbb9b0; font-weight: 400; font-size: 11px; margin-top: 3px; }
+  .overview-table [data-summary-row="coverage"] { border-bottom: 1px solid #49473f; }
+  .overview-table [data-summary-row="coverage"] th, .overview-table [data-summary-row="coverage"] td { padding: 3px 4px 14px; font-size: 11px; color: #c4c2b9; font-weight: 400; }
+  .overview-table [data-summary-row="best"] { color: #a3d668; }
+  .overview-table [data-summary-row="inaccuracy"] { color: #e7cb73; }
+  .overview-table [data-summary-row="mistake"] { color: #ffaa64; }
+  .overview-table [data-summary-row="blunder"] { color: #ff8178; }
+  .overview-table [data-summary-row="unrated"], .overview-table [data-summary-row="pending"] { color: #bfbdb4; }
+  .overview-grade-mark { display: inline-block; width: 23px; margin-right: 6px; font-size: 18px; text-align: center; }
+  .overview-status { color: #c4c2b9; font-size: 12px; margin: 14px 0; min-height: 18px; }
+  .game-overview .start-review { width: 100%; min-height: 56px; border: 0; border-bottom: 4px solid #597d2f; border-radius: 11px; background: #95c95b; color: #162509; font-size: 22px; font-weight: 750; }
+  .game-overview .start-review:hover { background: #a7d977; }
+  .game-overview :focus-visible { outline-color: #b9e784; }
+  .overview-method { margin-top: 14px; color: #c4c2b9; font-size: 11px; }
+  .overview-method p { margin-top: 8px; }
+  .summary-back { margin-bottom: 12px; }
   .review-heading { padding: 18px 20px; border: 1px solid #d3dfcb; border-radius: 13px; background: #eaf1e3; }
   .review-heading.result-loss { border-color: #e7dcd2; background: #f4eee7; }
   .review-heading.result-draw, .review-heading.result-complete { background: #ecefe8; }
@@ -281,6 +321,13 @@
     .insight-list { grid-template-columns: 1fr; }
   }
   @media (max-width: 760px) {
+    .game-overview { padding: 22px 18px 20px; border-radius: 13px; }
+    .overview-heading h2 { font-size: 27px; }
+    .overview-table th { font-size: 12px; }
+    .overview-table td { font-size: 24px; }
+    .overview-table [data-summary-row="average"] td { font-size: 19px; }
+    .overview-grade-mark { width: 16px; margin-right: 3px; font-size: 15px; }
+    .overview-chart { padding: 10px 2px 6px; }
     .luck-stats { grid-template-columns: 1fr; gap: 8px; }
     .container { padding: 0 16px 24px; }
     .masthead { min-height: 74px; flex-wrap: wrap; gap: 12px; padding: 15px 0; margin-bottom: 21px; }
@@ -409,6 +456,7 @@ const MOVE_QUALITY_EVALUATION = 'win-probability-v1';
 let games = [];
 let activeGameId = null;
 let currentReview = null;
+let reviewView = 'summary';
 const reviewDisclosureStates = new WeakMap();
 let customMoveController = null;
 let currentTurnIndex = 0;
@@ -586,6 +634,7 @@ function clearAccountUi(message) {
   activeGameId = null;
   currentReview = null;
   byId('reviewPanel').replaceChildren(makeElement('div', 'review-placeholder', 'Choose a finished game to replay its turns.'));
+  document.body.classList.remove('game-open');
   setGameMessage('Connect your NYT account to load recent games.');
   updateAuthUi();
 }
@@ -807,6 +856,7 @@ async function openGame(gameId, { shareToken = null } = {}) {
   moveQualityResults = null;
   boardView = 'after';
   previewBestMove = false;
+  reviewView = 'summary';
   flaggedMovesOnly = false;
   activeGameId = gameId;
   renderGames();
@@ -833,6 +883,7 @@ async function openGame(gameId, { shareToken = null } = {}) {
     currentTurnIndex = Math.max(0, currentReview.turns.length - 1);
     renderGames();
     renderReview();
+    byId('reviewPanel').scrollIntoView({ block: 'start', behavior: 'instant' });
     startBackgroundAnalysis(currentReview);
   } catch (error) {
     if (requestToken !== reviewRequestToken) return;
@@ -968,6 +1019,117 @@ function makeTurnBoard(turn, qualityPoint) {
   return [renderBoard(preview ? preview.grid : board, preview ? preview.action : turn.action), legend];
 }
 
+function makeGameOverview(review) {
+  const panel = makeElement('section', 'game-overview');
+  panel.setAttribute('aria-label', 'Game summary');
+  const heading = makeElement('header', 'overview-heading');
+  heading.append(makeElement('h2', '', 'Game Review'),
+    makeElement('p', '', formatDate(review.timestamp) + ' · ' + review.turns.length + ' turns'));
+  const result = gameResult(review);
+  const you = viewingSharedGame ? review.my_name || 'Player' : 'You';
+  const resultText = result.kind === 'complete' ? 'Game complete · Final scores unavailable'
+    : result.kind === 'draw' ? 'Draw · ' + review.my_score + '–' + review.opponent_score
+    : (result.kind === 'win' ? you + ' won' : (review.opponent || 'Opponent') + ' won') +
+      ' · ' + review.my_score + '–' + review.opponent_score;
+  panel.append(heading, makeElement('p', 'overview-result', resultText));
+  const chart = makeElement('div', 'overview-chart');
+  chart.append(drawWinHistory(trendResults?.points || [], review, false, true));
+  panel.append(chart);
+
+  const points = new Map((moveQualityResults?.points || []).map(point => [point.turnIndex, point]));
+  const categories = ['best', 'inaccuracy', 'mistake', 'blunder'];
+  const players = [true, false].map(mine => {
+    const turns = review.turns.map((turn, index) => ({turn, point: points.get(index)}))
+      .filter(item => Boolean(item.turn.mine) === mine);
+    const checked = turns.map(item => item.point).filter(point => point && !(point.provisional && point.category === 'unrated'));
+    const rated = checked.filter(point => Number.isFinite(point.loss) && categories.includes(point.category));
+    return { mine, total: turns.length, checked, rated,
+      name: mine ? review.my_name || 'You' : review.opponent || 'Opponent',
+      score: mine ? review.my_score : review.opponent_score,
+      pending: turns.length - checked.length,
+      unrated: checked.length - rated.length,
+      early: rated.filter(point => point.provisional).length,
+      average: rated.length ? (rated.reduce((sum, point) => sum + point.loss, 0) / rated.length).toFixed(1) + ' pp' : '—'
+    };
+  });
+  const table = makeElement('table', 'overview-table');
+  table.setAttribute('aria-label', 'Move quality for both players');
+  const head = makeElement('thead');
+  const names = makeElement('tr');
+  const label = makeElement('th', '', 'Players');
+  label.scope = 'col';
+  names.append(label);
+  for (const player of players) {
+    const winner = result.kind === (player.mine ? 'win' : 'loss');
+    const cell = makeElement('th', 'overview-player' + (player.mine ? '' : ' opponent') + (winner ? ' winner' : ''));
+    cell.scope = 'col';
+    const initials = player.name.trim().split(/\s+/).slice(0, 2).map(word => Array.from(word)[0]).join('').toUpperCase();
+    const avatar = makeElement('span', 'overview-avatar', initials);
+    avatar.setAttribute('aria-hidden', 'true');
+    cell.append(avatar, makeElement('span', 'overview-player-name', player.name),
+      makeElement('span', 'overview-player-score', (player.score ?? '—') + ' points'));
+    names.append(cell);
+  }
+  head.append(names);
+  const body = makeElement('tbody');
+  const row = (key, title, values, symbol) => {
+    const tr = makeElement('tr');
+    tr.dataset.summaryRow = key;
+    const th = makeElement('th');
+    th.scope = 'row';
+    if (symbol) {
+      const mark = makeElement('span', 'overview-grade-mark', symbol);
+      mark.setAttribute('aria-hidden', 'true');
+      th.append(mark);
+    }
+    th.append(document.createTextNode(title));
+    tr.append(th, ...values.map(value => makeElement('td', '', value)));
+    body.append(tr);
+    return th;
+  };
+  row('average', 'Avg. win chance lost', players.map(player => player.average))
+    .append(makeElement('small', '', 'Percentage points · lower is better'));
+  row('coverage', 'Moves rated', players.map(player => player.rated.length + ' / ' + player.total));
+  const symbols = {best: '★', inaccuracy: '●', mistake: '?', blunder: '??'};
+  for (const category of categories) row(category, qualityLabel(category), players.map(player =>
+    player.rated.length ? player.rated.filter(point => point.category === category).length : '—'), symbols[category]);
+  if (players.some(player => player.unrated)) row('unrated', 'Unrated', players.map(player => player.unrated), '—');
+  if (players.some(player => player.pending)) row('pending', 'Pending', players.map(player => player.pending), '·');
+  table.append(head, body);
+  panel.append(table);
+  const pending = players.reduce((sum, player) => sum + player.pending, 0);
+  const early = players.reduce((sum, player) => sum + player.early, 0);
+  const unrated = players.reduce((sum, player) => sum + player.unrated, 0);
+  const status = [pending ? pending + ' moves waiting for estimates.' : 'All moves checked.'];
+  if (early) status.push(early + ' early estimates; grades can change.');
+  if (unrated) status.push(unrated + ' moves could not be rated.');
+  if (contextFor(review)?.paused || moveQualityResults?.state === 'stopped') status.push('Analysis paused. Open the review to resume.');
+  if (moveQualityResults?.state === 'error' || [...points.values()].some(point => point.retryable)) status.push('Some moves need a retry. Open the review for details.');
+  if (positionCache?.saveError) status.push('Results could not be saved.');
+  panel.append(makeElement('p', 'overview-status', status.join(' ')));
+  const start = makeElement('button', 'start-review', 'Start Review');
+  start.type = 'button';
+  start.addEventListener('click', () => { boardView = 'after'; selectTurn(0, '.turn-controls'); });
+  panel.append(start);
+  const method = makeReviewDetails('overview-method', 'overview-method', 'About these estimates');
+  method.append(makeElement('p', '', 'Win chance lost compares each recorded move with the best sampled alternative from the same position. Best: under 2 percentage points; Inaccuracy: 2–under 5; Mistake: 5–under 10; Blunder: 10 or more. Missing estimates stay blank in the chart. These are engine estimates, not a measure of human accuracy.'));
+  panel.append(method);
+  return panel;
+}
+
+function refreshGameOverview() {
+  const existing = byId('reviewPanel').querySelector('.game-overview');
+  if (!existing || !currentReview) return;
+  rememberReviewDetails();
+  const focused = document.activeElement;
+  const turn = focused?.closest('.win-history-point')?.dataset.turnIndex;
+  const selector = turn !== undefined ? '.win-history-point[data-turn-index="' + turn + '"]'
+    : focused?.matches('.start-review') ? '.start-review'
+    : focused?.matches('.overview-method > summary') ? '.overview-method > summary' : null;
+  existing.replaceWith(makeGameOverview(currentReview));
+  if (selector) byId('reviewPanel').querySelector(selector)?.focus({preventScroll: true});
+}
+
 function renderReview() {
   rememberReviewDetails();
   if (customMoveController) customMoveController.dispose();
@@ -980,6 +1142,21 @@ function renderReview() {
   const turn = review.turns[currentTurnIndex];
   const root = byId('reviewPanel');
   root.replaceChildren();
+  document.body.classList.add('game-open');
+  if (reviewView === 'summary') {
+    root.append(makeGameOverview(review));
+    return;
+  }
+  const back = makeElement('button', 'summary-back', 'Game summary');
+  back.type = 'button';
+  back.addEventListener('click', () => {
+    reviewView = 'summary';
+    previewBestMove = false;
+    renderReview();
+    root.scrollIntoView({block: 'start', behavior: 'instant'});
+    root.querySelector('.start-review')?.focus({preventScroll: true});
+  });
+  root.append(back);
   const result = gameResult(review);
   const header = makeElement('div', 'review-heading result-' + result.kind);
   const title = document.createElement('div');
@@ -1151,9 +1328,15 @@ function renderReview() {
 
 function selectTurn(index, focusSelector) {
   if (!currentReview || index < 0 || index >= currentReview.turns.length) return;
+  const entering = reviewView === 'summary';
+  reviewView = 'walkthrough';
   currentTurnIndex = index;
   previewBestMove = false;
   renderReview();
+  if (entering) {
+    byId('reviewPanel').scrollIntoView({block: 'start', behavior: 'instant'});
+    byId('reviewPanel').querySelector('.turn-controls')?.focus({preventScroll: true});
+  }
   const list = byId('reviewPanel').querySelector('.turn-list-panel');
   const selected = list && list.querySelector('.turn-row.selected');
   if (selected) list.scrollTop = Math.max(0, selected.offsetTop - list.offsetTop - list.clientHeight / 2);
@@ -1708,6 +1891,7 @@ function drawEquityLossChart(points, totalTurns) {
 }
 
 function refreshMoveQualityPanel() {
+  refreshGameOverview();
   const restoreFocus = preserveReviewControlFocus();
   rememberReviewDetails();
   const existing = byId('reviewPanel').querySelector('.quality-panel');
@@ -1741,6 +1925,7 @@ function refreshMoveQualityPanel() {
 }
 
 function refreshTrendPanel() {
+  refreshGameOverview();
   const restoreFocus = preserveReviewControlFocus();
   rememberReviewDetails();
   const existing = byId('reviewPanel').querySelector('.trend-panel');
@@ -1804,7 +1989,7 @@ function makeTrendPanel(review) {
   return panel;
 }
 
-function drawWinHistory(estimates, review, preview = false) {
+function drawWinHistory(estimates, review, preview = false, overview = false) {
   const totalTurns = review.turns.length;
   const you = viewingSharedGame ? review.my_name || 'Player' : 'You';
   const known = new Map(estimates.filter(point => !point.actual && Number.isInteger(point.x) &&
@@ -1813,10 +1998,10 @@ function drawWinHistory(estimates, review, preview = false) {
   const result = gameResult(review);
   if (result.kind !== 'complete') points.push({ x: totalTurns, actual: true,
     mine: result.kind === 'draw' ? 50 : result.kind === 'win' ? 100 : 0 });
-  const selected = !preview && currentTurnIndex === totalTurns - 1 && boardView === 'after' && result.kind !== 'complete'
+  const selected = overview ? -1 : !preview && currentTurnIndex === totalTurns - 1 && boardView === 'after' && result.kind !== 'complete'
     ? totalTurns : currentTurnIndex;
-  const width = 560, height = 260;
-  const margin = { top: 24, right: 48, bottom: 50, left: 80 };
+  const width = 560, height = overview ? 190 : 260;
+  const margin = overview ? {top: 28, right: 48, bottom: 42, left: 80} : { top: 24, right: 48, bottom: 50, left: 80 };
   const plotWidth = width - margin.left - margin.right, plotHeight = height - margin.top - margin.bottom;
   const x = index => margin.left + index / Math.max(1, totalTurns) * plotWidth;
   const y = value => margin.top + (1 - Math.max(0, Math.min(100, value)) / 100) * plotHeight;
@@ -1824,27 +2009,29 @@ function drawWinHistory(estimates, review, preview = false) {
   chart.append(makeElement('div', 'win-history-heading', you + ' · Win chance (white)'));
   const svg = svgElement('svg', { viewBox: `0 0 ${width} ${height}`, role: 'group',
     'aria-label': 'Win chance for ' + you + ' by game turn. Select a point to review.' });
-  for (const value of [0, 25, 50, 75, 100]) {
+  for (const value of overview ? [0, 50, 100] : [0, 25, 50, 75, 100]) {
     svg.append(svgElement('line', { x1: margin.left, x2: width - margin.right, y1: y(value), y2: y(value),
-      stroke: value === 50 ? '#96a99a' : '#e0e7dc', 'stroke-dasharray': value === 50 ? '4 4' : 'none' }));
-    const label = svgElement('text', { x: margin.left - 9, y: y(value) + 5, fill: '#526259', 'font-size': 14, 'text-anchor': 'end' });
+      stroke: overview ? '#65635b' : value === 50 ? '#96a99a' : '#e0e7dc', 'stroke-dasharray': value === 50 ? '4 4' : 'none' }));
+    const label = svgElement('text', { x: margin.left - 9, y: y(value) + 5, fill: overview ? '#c4c2b9' : '#526259', 'font-size': overview ? 26 : 14, 'text-anchor': 'end' });
     label.textContent = value + '%';
     svg.append(label);
   }
   const tickIndices = new Set([0, Math.round(totalTurns / 3), Math.round(totalTurns * 2 / 3), totalTurns]);
   for (const index of tickIndices) {
-    const label = svgElement('text', { x: x(index), y: height - 9, fill: '#526259', 'font-size': 14, 'text-anchor': 'middle' });
+    const label = svgElement('text', { x: x(index), y: height - 9, fill: overview ? '#c4c2b9' : '#526259', 'font-size': overview ? 26 : 14, 'text-anchor': 'middle' });
     label.textContent = index === totalTurns ? 'Finish' : index === 0 ? 'Turn 1' : String(index + 1);
     svg.append(label);
   }
   for (let index = 1; index < points.length; index++) {
     const previous = points[index - 1], point = points[index];
     if (!Number.isFinite(previous.mine) || !Number.isFinite(point.mine)) continue;
+    if (overview) svg.append(svgElement('polygon', {points: `${x(previous.x)},${y(0)} ${x(previous.x)},${y(previous.mine)} ${x(point.x)},${y(point.mine)} ${x(point.x)},${y(0)}`,
+      fill: '#eeede7', opacity: previous.provisional || point.provisional ? .45 : .85}));
     svg.append(svgElement('line', { class: 'win-history-segment', x1: x(previous.x), x2: x(point.x),
-      y1: y(previous.mine), y2: y(point.mine), stroke: '#256b4a', 'stroke-width': 3,
+      y1: y(previous.mine), y2: y(point.mine), stroke: overview ? '#eeede7' : '#256b4a', 'stroke-width': 3,
       'stroke-dasharray': previous.provisional || point.provisional ? '5 4' : 'none' }));
   }
-  svg.append(svgElement('line', { x1: x(selected), x2: x(selected), y1: margin.top, y2: y(0) + 16,
+  if (!overview) svg.append(svgElement('line', { x1: x(selected), x2: x(selected), y1: margin.top, y2: y(0) + 16,
     stroke: '#174c38', 'stroke-width': 1, 'stroke-dasharray': '2 3', 'aria-hidden': 'true' }));
   for (const point of points) {
     const available = Number.isFinite(point.mine);
@@ -1859,13 +2046,14 @@ function drawWinHistory(estimates, review, preview = false) {
     title.textContent = label + (point.actual ? '' : ' ' + (review.turns[point.x].action || 'Pass'));
     group.append(title);
     const centerY = available ? y(point.mine) : y(0) + 16;
+    const color = overview ? ({best: '#a3d668', inaccuracy: '#e7cb73', mistake: '#ffaa64', blunder: '#ff8178'}[qualityPointForTurn(point.x)?.category] || '#eeede7') : '#256b4a';
     if (point.x === selected) group.append(svgElement('circle', { cx: x(point.x), cy: centerY, r: 10,
       fill: '#fff', stroke: '#174c38', 'stroke-width': 2 }));
     group.append(svgElement(point.actual ? 'path' : available ? 'circle' : 'rect', point.actual
       ? { class: 'win-history-marker', d: `M ${x(point.x)} ${centerY - 7} l 7 7 -7 7 -7 -7 Z`, fill: '#256b4a', stroke: '#256b4a', 'stroke-width': 2 }
       : available
-      ? { class: 'win-history-marker', cx: x(point.x), cy: centerY, r: point.actual ? 6 : 4.5,
-        fill: point.provisional ? '#fff' : '#256b4a', stroke: '#256b4a', 'stroke-width': 2 }
+      ? { class: 'win-history-marker', cx: x(point.x), cy: centerY, r: overview ? 5.5 : 4.5,
+        fill: point.provisional ? (overview ? '#1c1c1a' : '#fff') : color, stroke: color, 'stroke-width': 2 }
       : { class: 'win-history-marker', x: x(point.x) - 3, y: centerY - 1, width: 6, height: 2, fill: '#7a877e' }));
     const hitWidth = Math.min(30, plotWidth / Math.max(1, totalTurns));
     group.append(svgElement('rect', { class: 'win-history-hit', x: x(point.x) - hitWidth / 2, y: margin.top - 10,

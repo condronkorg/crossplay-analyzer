@@ -15,6 +15,7 @@ class WinBarBrowserTest(unittest.TestCase):
     route_request = review_browser.ReviewBrowserTest.route_request
     connect = review_browser.ReviewBrowserTest.connect
     open_game = review_browser.ReviewBrowserTest.open_game
+    start_review = review_browser.ReviewBrowserTest.start_review
     use_saved_analysis = review_browser.ReviewBrowserTest.use_saved_analysis
 
     def set_points(self, points):
@@ -111,6 +112,7 @@ class WinBarBrowserTest(unittest.TestCase):
 
     def test_bar_is_visible_by_default_and_follows_both_players(self):
         self.open_game()
+        self.page.get_by_role('button', name='Last ⇥', exact=True).click()
         panel = self.page.locator('.trend-panel')
         expect(panel).to_be_visible()
         self.assertFalse(panel.evaluate("node => Boolean(node.closest('details'))"))
@@ -243,6 +245,7 @@ class WinBarBrowserTest(unittest.TestCase):
 
     def test_last_turn_preview_does_not_inherit_the_final_result(self):
         self.open_game()
+        self.page.get_by_role('button', name='Last ⇥', exact=True).click()
         point = self.point(5, 0.8)
         point.update(bestWin=0.9, bestMove={
             'position': '8F', 'tiles': '....S', 'word': 'SCATS', 'score': 6,
