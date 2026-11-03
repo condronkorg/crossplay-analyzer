@@ -255,6 +255,8 @@
   .moves-table th, .moves-table td { padding: 7px 3px; border-bottom: 1px solid var(--line); text-align: left; overflow-wrap: anywhere; }
   .moves-table th { color: var(--muted); font-weight: 500; }
   .moves-table tr:first-child td { color: #237653; font-weight: 700; }
+  .moves-table .played-move td { background: #fff4d4; font-weight: 700; }
+  .played-move-label { display: inline-block; margin-left: 6px; padding: 1px 5px; border-radius: 4px; background: #f0dfaa; color: #695016; font-size: 9px; }
   .commonness-panel { margin-top: 12px; padding: 12px; border-radius: 8px; background: #f5f7f1; }
   .commonness-panel h4 { margin-bottom: 6px; font-size: 12px; }
   .commonness-list { display: grid; gap: 6px; padding-left: 18px; }
@@ -2171,8 +2173,9 @@ function renderMoves(moves, result, output, turn) {
   head.append(header);
   table.append(head);
   const body = document.createElement('tbody');
-  for (const move of moves) {
-    const row = document.createElement('tr');
+  const playedIndex = findPlayedCandidateIndex(turn, moves, false);
+  for (const [index, move] of moves.entries()) {
+    const row = makeElement('tr', index === playedIndex ? 'played-move' : '');
     const tiles = String(move.tiles || '').replace(/\./g, '');
     const play = move.action === 'pass' ? 'Pass' : move.action === 'exchange' ? 'Exchange ' + tiles
       : (move.position ? move.position + ' ' : '') + tiles;
@@ -2181,6 +2184,7 @@ function renderMoves(moves, result, output, turn) {
       Number.isFinite(move.equity) ? move.equity.toFixed(1) : '—']) {
       row.append(makeElement('td', '', value));
     }
+    if (index === playedIndex) row.firstElementChild.append(makeElement('span', 'played-move-label', 'Played'));
     body.append(row);
   }
   table.append(body);
