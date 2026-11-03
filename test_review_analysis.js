@@ -1,6 +1,44 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { playedMove, qualityBand, ReviewQueue } = require('./review-analysis.js');
+const { playedMove, playedCandidateIndex, qualityBand, ReviewQueue } = require('./review-analysis.js');
+
+test('played candidate follows the recorded placement rather than rank, word or score', () => {
+  const turn = { action: 'OAKY 5G 20', score: 20, grid: Array(15).fill('.'.repeat(15)) };
+  const best = { action: 'place', position: '8G', tiles: 'LEUKON', score: 30 };
+  const otherWord = { action: 'place', position: '5G', tiles: 'OKAY', score: 20 };
+  const otherPosition = { action: 'place', position: '6G', tiles: 'OAKY', score: 20 };
+  const played = { action: 'place', position: '5G', tiles: 'OAKY', score: 20 };
+  assert.equal(playedCandidateIndex(turn, [best, otherWord, otherPosition, played]), 3);
+  assert.equal(playedCandidateIndex(turn, [played, best]), 0);
+  assert.equal(playedCandidateIndex(turn, [best, otherWord, otherPosition]), -1);
+  // Tile placement identifies the play even if an imported score differs.
+  assert.equal(playedCandidateIndex({ ...turn, score: 21 }, [best, played]), 1);
+});
+
+test('played candidate preserves blanks and recognizes perpendicular single-tile plays', () => {
+  const grid = Array(15).fill('.'.repeat(15));
+  grid[7] = '......CAT......';
+  const turn = { action: 's(CAT) 8F 5', score: 5, grid };
+  const normal = { action: 'place', position: '8F', tiles: 'S...', score: 5 };
+  const blank = { ...normal, tiles: 's...' };
+  assert.equal(playedCandidateIndex(turn, [normal, blank]), 1);
+  assert.equal(playedCandidateIndex(turn, [normal]), -1);
+  assert.equal(playedCandidateIndex({ ...turn, action: 'S J8 5' }, [blank,
+    { action: 'place', position: '8G', tiles: '...S', score: 5 }]), 1);
+});
+
+test('played candidate identifies passes and exact exchanges, without guessing missing actions', () => {
+  const grid = Array(15).fill('.'.repeat(15));
+  const moves = [
+    { action: 'exchange', position: '', tiles: 'UV' },
+    { action: 'pass', position: '', tiles: '' },
+    { action: 'exchange', position: '', tiles: 'U?' }
+  ];
+  assert.equal(playedCandidateIndex({ action: 'PASS 0', grid }, moves), 1);
+  assert.equal(playedCandidateIndex({ action: 'SWAP 0', swapped_tiles: '?U', grid }, moves), 2);
+  assert.equal(playedCandidateIndex({ action: 'SWAP 0', grid }, moves), -1);
+  assert.equal(playedCandidateIndex({ action: 'UNKNOWN', grid }, moves), -1);
+});
 
 test('recorded actions preserve physical blanks, existing tiles, pass and exchange', () => {
   assert.deepEqual(playedMove({ action: 's(CAT) 8F 5' }), { action: 'place', position: '8F', tiles: 's...' });
