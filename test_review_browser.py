@@ -466,6 +466,29 @@ class ReviewBrowserTest(unittest.TestCase):
         expect(self.page.locator('.turn-row')).to_have_count(2)
         expect(self.page.locator('.turn-row .quality-chip').last).to_have_text('Blunder')
 
+    def test_only_played_candidate_is_highlighted_as_turn_changes(self):
+        self.install_review_worker()
+        self.open_game()
+        turns = self.page.get_by_role('combobox', name='Select game turn')
+        for turn_index in (0, 2, 4, 0):
+            with self.subTest(turn=turn_index):
+                turns.select_option(str(turn_index))
+                self.page.evaluate("analyzeReviewTurn(contextFor(currentReview), currentTurnIndex, 'preview')")
+                rows = self.page.locator('.position-output .moves-table tbody tr')
+                played = self.page.locator('.position-output .played-move')
+                expect(played).to_have_count(1)
+                expect(played.locator('.played-move-label')).to_have_text('Played')
+                expect(played.locator('td').first).to_have_css('font-weight', '700')
+                expect(played.locator('td').first).to_have_css('background-color', 'rgb(255, 244, 212)')
+                # The best alternative must not look like the played move.
+                if turn_index != 4:
+                    expect(rows.first).not_to_have_class('played-move')
+                    expect(rows.first.locator('td').first).to_have_css('font-weight', '400')
+                    expect(rows.first.locator('td').first).to_have_css('color', 'rgb(32, 51, 45)')
+                    expect(rows.nth(1)).to_have_class('played-move')
+                else:
+                    expect(rows.first).to_have_class('played-move')
+
     def install_review_worker(self, delay=0):
         worker = r"""
           self.onmessage = ({data: {id, type, payload: p}}) => {

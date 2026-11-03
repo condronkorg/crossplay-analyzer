@@ -44,6 +44,15 @@
     }
     return cells.length ? cells.sort().join('|') : null;
   }
+
+  function playedCandidateIndex(turn, moves) {
+    if (!Array.isArray(turn.grid)) return -1;
+    let played;
+    try { played = playedMove(turn); } catch (_) { return -1; }
+    const key = placementKey(played, turn.grid);
+    return key === null ? -1 : moves.findIndex(move => placementKey(move, turn.grid) === key);
+  }
+
   function validResult(result, turn, seed, iterations = 277, moveCount = 15) {
     if (!Array.isArray(turn.grid) || turn.grid.length !== 15 || !turn.grid.every(row => typeof row === 'string' && /^[A-Za-z.]{15}$/.test(row))) return false;
     const bag = Number(turn.bag_count), end = bag <= 21;
@@ -178,7 +187,7 @@
     }
     close() { this.closed = true; this.controller.abort(); }
   }
-  const api = { playedMove, qualityBand, validResult, ReviewQueue };
+  const api = { playedMove, playedCandidateIndex, qualityBand, validResult, ReviewQueue };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.CrossplayReview = api;
 })(typeof window !== 'undefined' ? window : globalThis);
