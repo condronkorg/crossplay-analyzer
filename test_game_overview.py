@@ -81,10 +81,21 @@ class GameOverviewTest(unittest.TestCase):
         self.assertGreater(geometry['width'], 700)
         self.assertGreaterEqual(geometry['height'], 320)
         self.assertAlmostEqual(geometry['svgWidth'], geometry['width'], delta=1)
+        inspector = self.page.locator('.overview-chart .win-history-inspector')
+        visual = self.page.locator('.overview-chart .win-history-visual')
+        self.assertGreater(inspector.bounding_box()['x'], visual.bounding_box()['x'] + visual.bounding_box()['width'])
+        expect(inspector).to_have_attribute('data-inspected-turn', '0')
+        expect(chart.locator('svg > polygon')).to_have_count(0)
+        expect(chart.locator('.win-history-segment').first).to_have_attribute('stroke', '#256b4a')
         expect(chart.locator('.win-history-grade')).to_have_text(['??', '?'])
         expect(chart.locator('[data-turn-index="3"]')).to_have_attribute('data-quality', 'mistake')
         self.page.set_viewport_size({'width': 320, 'height': 844})
         self.assertGreaterEqual(chart.bounding_box()['height'], 320)
+        self.assertGreater(inspector.bounding_box()['y'], visual.bounding_box()['y'] + visual.bounding_box()['height'])
+        heading = inspector.locator('.win-history-inspector-head').bounding_box()
+        comparison = inspector.locator('.win-history-comparison').bounding_box()
+        self.assertGreater(comparison['x'], heading['x'] + heading['width'])
+        self.assertAlmostEqual(comparison['y'], heading['y'], delta=1)
         self.assertTrue(self.page.evaluate('document.documentElement.scrollWidth <= innerWidth'))
 
     def test_background_updates_keep_view_and_keyboard_focus(self):
@@ -124,6 +135,32 @@ class GameOverviewTest(unittest.TestCase):
         self.page.evaluate('pauseReviewAnalysis(currentReview)')
         expect(self.page.locator('.overview-status')).to_contain_text('paused')
 
+    def test_summary_preserves_hover_inspection_during_background_refresh(self):
+        self.open_summary()
+        self.set_points()
+        inspector = self.page.locator('.win-history-inspector')
+        selection = self.page.locator('.win-history-selection')
+        self.page.mouse.move(0, 0)
+        self.page.locator('.win-history-point[data-turn-index="0"]').focus()
+        self.page.locator('.win-history-point[data-turn-index="1"]').hover()
+        expect(inspector).to_have_attribute('data-inspected-turn', '1')
+        highlight_x = selection.get_attribute('x')
+        for refresh in ['quality', 'trend']:
+            state = self.page.evaluate('''refresh => {
+              (refresh === 'quality' ? refreshMoveQualityPanel : refreshTrendPanel)();
+              return {turn: document.querySelector('.win-history-inspector').dataset.inspectedTurn,
+                x: document.querySelector('.win-history-selection').getAttribute('x'),
+                focused: document.activeElement.dataset.turnIndex};
+            }''', refresh)
+            self.assertEqual(state, {'turn': '1', 'x': highlight_x, 'focused': '0'})
+            expect(self.page.locator('.game-overview')).to_be_visible()
+        self.page.keyboard.press('Tab')
+        self.page.keyboard.press('Tab')
+        expect(inspector).to_have_attribute('data-inspected-turn', '2')
+        self.page.locator('.win-history-point[data-turn-index="3"]').click()
+        expect(self.page.get_by_role('combobox', name='Select game turn')).to_have_value('3')
+        expect(inspector).to_have_attribute('data-inspected-turn', '3')
+
     def test_direct_and_shared_links_open_summary(self):
         self.open_summary()
         owner_url = self.page.url
@@ -150,6 +187,7 @@ class GameOverviewTest(unittest.TestCase):
           trendResults = deriveWinTrend({review: currentReview, quality: moveQualityResults});
           renderReview();
         }''')
+        self.page.locator('.win-history-point[data-turn-index="1"]').focus()
         for width in [320, 390, 768, 1440]:
             with self.subTest(width=width):
                 self.page.set_viewport_size({'width': width, 'height': 900})
