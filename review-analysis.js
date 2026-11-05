@@ -27,6 +27,46 @@
     return loss < 2 ? 'best' : loss < 5 ? 'inaccuracy' : loss < 10 ? 'mistake' : 'blunder';
   }
 
+  function sweepEvent(turn, candidates = []) {
+    const grid = turn?.grid;
+    if (!Array.isArray(grid) || grid.length !== 15 ||
+        !Array.from(grid).every(row => typeof row === 'string' && /^[A-Za-z.]{15}$/.test(row))) return null;
+    const placedTiles = move => {
+      if (move?.action !== 'place' || typeof move.tiles !== 'string' || !/^[A-Za-z.]{1,15}$/.test(move.tiles)) return null;
+      const across = String(move.position).match(/^(1[0-5]|[1-9])([A-O])$/);
+      const down = String(move.position).match(/^([A-O])(1[0-5]|[1-9])$/);
+      if (!across && !down) return null;
+      let row = Number(across ? across[1] : down[2]) - 1;
+      let col = 'ABCDEFGHIJKLMNO'.indexOf(across ? across[2] : down[1]);
+      let count = 0;
+      for (const tile of move.tiles) {
+        if (row >= 15 || col >= 15) return null;
+        const existing = grid[row][col];
+        if (existing === '.') {
+          if (tile === '.') return null;
+          count++;
+        } else if (tile !== '.' && tile.toUpperCase() !== existing.toUpperCase()) return null;
+        if (across) col++; else row++;
+      }
+      return count || null;
+    };
+    let count = 0;
+    try {
+      const played = playedMove(turn);
+      if (played.action === 'place') {
+        const word = String(turn.action).trim().split(/\s+/)[0];
+        if (!/^(?:[A-Za-z]|\([A-Za-z]+\))+$/.test(word)) return null;
+        count = placedTiles(played);
+      }
+    } catch (error) {
+      // This code is emitted only for a recognized swap/exchange action.
+      if (error.code !== 'MISSING_EXCHANGE_TILES') return null;
+    }
+    if (count === null || count > 7) return null;
+    if (count === 7) return 'played';
+    return Array.isArray(candidates) && candidates.some(move => placedTiles(move) === 7) ? 'missed' : null;
+  }
+
   function placementKey(move, grid) {
     if (!move || !['place', 'pass', 'exchange'].includes(move.action)) return null;
     if (move.action === 'pass') return 'pass';
@@ -187,7 +227,7 @@
     }
     close() { this.closed = true; this.controller.abort(); }
   }
-  const api = { playedMove, playedCandidateIndex, qualityBand, validResult, ReviewQueue };
+  const api = { playedMove, playedCandidateIndex, sweepEvent, qualityBand, validResult, ReviewQueue };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.CrossplayReview = api;
 })(typeof window !== 'undefined' ? window : globalThis);

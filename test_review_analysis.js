@@ -1,6 +1,77 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { playedMove, playedCandidateIndex, qualityBand, ReviewQueue } = require('./review-analysis.js');
+const { playedMove, playedCandidateIndex, sweepEvent, qualityBand, ReviewQueue } = require('./review-analysis.js');
+
+test('played sweeps use seven new tiles, including blanks, without analysis', () => {
+  const grid = Array(15).fill('.'.repeat(15));
+  for (const action of ['CURATES 8G 80', 'CuRATES G8 80']) {
+    const turn = { action, grid };
+    assert.equal(sweepEvent(turn), 'played');
+    assert.equal(sweepEvent(turn, [{action: 'place', position: '8G', tiles: 'CURATES'}]), 'played');
+  }
+  assert.equal(sweepEvent({action: 'CANTER 8G 12', rack: 'ACENRT', grid}), null);
+});
+
+test('sweeps count new cells rather than the length of a word', () => {
+  const grid = Array(15).fill('.'.repeat(15));
+  grid[7] = '....CAT........';
+  assert.equal(sweepEvent({action: 'RE(CAT)aLOGS 8C 80', grid}), 'played');
+  assert.equal(sweepEvent({action: '(C)ATTERS 8E 14', grid}), null);
+  const turn = {action: 'PASS 0', grid};
+  for (const tiles of ['RE...aLOGS', 'RECATaLOGS']) {
+    assert.equal(sweepEvent(turn, [{action: 'place', position: '8C', tiles}]), 'missed');
+  }
+  assert.equal(sweepEvent(turn, [{action: 'place', position: '8E', tiles: 'CATTERS'}]), null);
+});
+
+test('a sweep in any candidate is missed even if the best move is not a sweep', () => {
+  const grid = Array(15).fill('.'.repeat(15));
+  const turn = {action: 'CATER 8G 12', rack: 'ACERSTU', grid};
+  const moves = [
+    {action: 'place', position: '8G', tiles: 'CATER', win: .8},
+    {action: 'place', position: 'G8', tiles: 'CURATES', win: .7}
+  ];
+  assert.equal(sweepEvent(turn, moves), 'missed');
+  assert.equal(sweepEvent(turn, moves.slice(0, 1)), null);
+});
+
+test('known passes and swaps can miss sweeps without exchanged tile details', () => {
+  const grid = Array(15).fill('.'.repeat(15));
+  const sweep = {action: 'place', position: '8G', tiles: 'CuRATES'};
+  for (const action of ['PASS', 'pass 0', 'SWAP', 'swap -- 0', 'EXCHANGE -5']) {
+    assert.equal(sweepEvent({action, grid}, [sweep]), 'missed');
+    assert.equal(sweepEvent({action, grid}), null);
+  }
+});
+
+test('unknown or invalid recorded moves cannot become missed sweeps', () => {
+  const grid = Array(15).fill('.'.repeat(15));
+  const sweep = {action: 'place', position: '8G', tiles: 'CURATES'};
+  for (const action of ['', 'UNKNOWN 0', 'SWAP --', 'SWAP AB 0', 'SWAP -- 0 extra',
+    '(CAT 8G 5', 'C)AT 8G 5', 'CAT() 8G 5', '()CAT 8G 5', '(C)AT 8G 5',
+    'CAT 15O 5', 'CAT 0G 5', 'ABCDEFGH 8G 80']) {
+    assert.equal(sweepEvent({action, grid}, [sweep]), null, action);
+  }
+  assert.equal(sweepEvent(null, [sweep]), null);
+  assert.equal(sweepEvent({}, [sweep]), null);
+});
+
+test('missing boards or malformed candidates do not create sweep markers', () => {
+  const grid = Array(15).fill('.'.repeat(15));
+  const sweep = {action: 'place', position: '8G', tiles: 'CURATES'};
+  for (const board of [undefined, null, [], Array(15), ['...............'], Array(15).fill('..............!')]) {
+    assert.equal(sweepEvent({action: 'CURATES 8G 80', grid: board}, [sweep]), null);
+  }
+  const turn = {action: 'PASS 0', grid};
+  for (const candidates of [null, {}, [], [null, {}, {tiles: 'CURATES'}],
+    [{...sweep, action: 'exchange'}], [{...sweep, position: '15O'}],
+    [{...sweep, tiles: 'CURATE?'}], [{...sweep, tiles: '.CURATES'}]]) {
+    assert.equal(sweepEvent(turn, candidates), null);
+  }
+  const occupied = grid.slice();
+  occupied[7] = '......X........';
+  assert.equal(sweepEvent({action: 'PASS 0', grid: occupied}, [sweep]), null);
+});
 
 test('played candidate follows the recorded placement rather than rank, word or score', () => {
   const turn = { action: 'OAKY 5G 20', score: 20, grid: Array(15).fill('.'.repeat(15)) };

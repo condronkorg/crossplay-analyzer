@@ -197,7 +197,7 @@ class WinBarBrowserTest(unittest.TestCase):
                     f'Full estimate. Turn {int(index) + 1} of 6 · Best move preview. '
                     f'You: {best}. Demo Cedar: {opponent}.')
                 expect(panel.locator(f'.win-history-point[data-turn-index="{index}"]')).to_have_attribute(
-                    'aria-label', f'Turn {int(index) + 1}. You: {recorded}. Full estimate. Select to review.')
+                    'aria-label', f'Turn {int(index) + 1}. {"You" if index == "0" else "Demo Cedar"} moved. You: {recorded}. Full estimate. Select to review.')
                 proportion = panel.evaluate('''node => {
                   const bar = node.querySelector('.win-bar');
                   return node.querySelector('.win-bar-white').getBoundingClientRect().height / bar.clientHeight;
@@ -304,13 +304,73 @@ class WinBarBrowserTest(unittest.TestCase):
         points = chart.locator('.win-history-point')
         self.assertEqual(points.evaluate_all("nodes => nodes.map(n => n.dataset.turnIndex)"),
                          ['0', '1', '2', '3', '4', '5', '6'])
-        expect(points.nth(0)).to_have_attribute('aria-label', 'Turn 1. You: 75.0%. Full estimate. Select to review.')
-        expect(points.nth(1)).to_have_attribute('aria-label', 'Turn 2. You: 20.0%. Full estimate. Select to review.')
-        expect(points.nth(2)).to_have_attribute('aria-label', 'Turn 3. Waiting for estimate. Select to review.')
+        expect(points.nth(0)).to_have_attribute('aria-label', 'Turn 1. You moved. You: 75.0%. Full estimate. Select to review.')
+        expect(points.nth(1)).to_have_attribute('aria-label', 'Turn 2. Demo Cedar moved. You: 20.0%. Full estimate. Select to review.')
+        expect(points.nth(2)).to_have_attribute('aria-label', 'Turn 3. You moved. Waiting for estimate. Select to review.')
         # Only adjacent known turns connect. No line crosses the missing turns.
         expect(chart.locator('.win-history-segment')).to_have_count(1)
         self.assertLess(float(points.nth(0).locator('.win-history-marker').get_attribute('cy')),
-                        float(points.nth(1).locator('.win-history-marker').get_attribute('cy')))
+                        float(points.nth(1).locator('.win-history-marker').get_attribute('y')) + 5.5)
+
+    def test_history_identifies_players_and_sweep_events_without_estimates(self):
+        self.open_game()
+        self.page.evaluate("""() => {
+          const empty = Array(15).fill('.'.repeat(15));
+          currentReview.turns[0] = {...currentReview.turns[0], grid: empty, action: 'RETAINS 8D 64'};
+          const turn = currentReview.turns[1];
+          // The sweep is not the best candidate. It is still an unused sweep.
+          positionCache.results[positionCache.key(turn, 'candidates')] = {moves: [
+            {action: 'place', position: '6A', tiles: 'CAT'},
+            {action: 'place', position: '6A', tiles: 'RETAiNS'}
+          ]};
+          renderReview();
+        }""")
+        chart = self.page.locator('.win-history')
+        played = chart.locator('[data-turn-index="0"]')
+        missed = chart.locator('[data-turn-index="1"]')
+        expect(played).to_have_attribute('data-player', 'mine')
+        expect(missed).to_have_attribute('data-player', 'opponent')
+        expect(played.locator('circle.win-history-marker')).to_have_count(1)
+        expect(missed.locator('rect.win-history-marker')).to_have_count(1)
+        expect(played).to_have_attribute('data-sweep', 'played')
+        expect(missed).to_have_attribute('data-sweep', 'missed')
+        expect(played).to_have_attribute('data-estimate', 'missing')
+        expect(played).to_have_accessible_name('Turn 1. You moved. Sweep (bingo). Waiting for estimate. Select to review.')
+        expect(missed).to_have_accessible_name('Turn 2. Demo Cedar moved. Missed sweep (bingo). Waiting for estimate. Select to review.')
+        expect(chart.locator('[data-estimate="final"]')).to_have_attribute('data-player', '')
+        expect(chart.locator('[data-estimate="final"]')).to_have_attribute('data-sweep', '')
+        self.assertNotEqual(played.locator('.win-history-marker').get_attribute('stroke'),
+                            missed.locator('.win-history-marker').get_attribute('stroke'))
+        expect(chart.locator('.win-history-players')).to_contain_text('You')
+        expect(chart.locator('.win-history-players')).to_contain_text('Demo Cedar')
+        missed.focus()
+        expect(chart.locator('.win-history-detail')).to_contain_text('Demo Cedar')
+        expect(chart.locator('.win-history-detail')).to_contain_text('Missed sweep')
+        self.page.keyboard.press('Enter')
+        expect(self.page.get_by_role('combobox', name='Select game turn')).to_have_value('1')
+        expect(missed).to_be_focused()
+        expect(chart.locator('.win-history-detail')).to_contain_text('Missed sweep')
+        self.page.get_by_role('button', name='Game summary', exact=True).click()
+        expect(self.page.locator('.overview-chart [data-turn-index="0"]')).to_have_attribute('data-sweep', 'played')
+        expect(self.page.locator('.overview-chart [data-turn-index="1"]')).to_have_attribute('data-sweep', 'missed')
+        expect(self.page.locator('.overview-chart .win-history-players')).to_contain_text('Demo Cedar')
+
+    def test_sweep_markers_update_from_analysis_and_saved_best_move(self):
+        self.open_game()
+        self.set_points([self.point(0, .6)])
+        point = self.page.locator('.win-history-point[data-turn-index="0"]')
+        expect(point).to_have_attribute('data-sweep', '')
+        point.focus()
+        self.page.evaluate("""() => {
+          moveQualityResults.points[0].bestMove = {action: 'place', position: '8D', tiles: 'RETAiNS'};
+          refreshTrendPanel();
+        }""")
+        expect(point).to_have_attribute('data-sweep', 'missed')
+        expect(point).to_be_focused()
+        expect(self.page.locator('.win-history-detail')).to_contain_text('Missed sweep')
+        self.page.evaluate('viewingSharedGame = true; refreshTrendPanel()')
+        expect(self.page.locator('.win-history-players')).to_contain_text('Demo Player')
+        expect(point).to_have_accessible_name('Turn 1. Demo Player moved. Missed sweep (bingo). Demo Player: 60.0%. Full estimate. Select to review.')
 
     def test_history_selects_pass_exchange_and_final_with_mouse_and_keyboard(self):
         self.open_game()
@@ -346,7 +406,7 @@ class WinBarBrowserTest(unittest.TestCase):
         chart = self.page.locator('.win-history')
         expect(chart.locator('[data-turn-index="0"]')).to_have_attribute('data-estimate', 'early')
         expect(chart.locator('[data-turn-index="0"]')).to_have_attribute('aria-label',
-            'Turn 1. You: 62.5%. Early estimate. Select to review.')
+            'Turn 1. You moved. You: 62.5%. Early estimate. Select to review.')
         expect(chart.locator('.win-history-segment')).to_have_attribute('stroke-dasharray', '5 4')
         chart.locator('[data-turn-index="0"]').focus()
         self.page.evaluate('refreshTrendPanel()')
@@ -355,7 +415,7 @@ class WinBarBrowserTest(unittest.TestCase):
         self.set_points([self.point(0, 0.7), self.point(1, 0.5)])
         expect(chart.locator('[data-turn-index="0"]')).to_have_attribute('data-estimate', 'full')
         expect(chart.locator('[data-turn-index="0"]')).to_have_attribute('aria-label',
-            'Turn 1. Demo Player: 70.0%. Full estimate. Select to review.')
+            'Turn 1. Demo Player moved. Demo Player: 70.0%. Full estimate. Select to review.')
         expect(chart.locator('.win-history-segment')).to_have_attribute('stroke-dasharray', 'none')
 
     def test_history_final_result_does_not_need_analysis_and_missing_scores_stay_unknown(self):
@@ -423,7 +483,7 @@ class WinBarBrowserTest(unittest.TestCase):
             {action: 'place', position: '8G', tiles: 'CAT', score: 5, win: .6}
           ], {simulated: false}, output, currentReview.turns[0]);
         }''')
-        expect(self.page.locator('.moves-table tbody tr td:first-child')).to_have_text(['Pass', 'Exchange AE?', '8G CAT'])
+        expect(self.page.locator('.moves-table tbody tr td:first-child')).to_have_text(['Pass', 'Exchange AE?', '8G CATPlayed'])
 
     def test_position_details_use_early_results_then_prefer_full_results(self):
         self.open_game()
