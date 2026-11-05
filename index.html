@@ -176,6 +176,19 @@
   .win-history-heading { margin: 0 0 4px; font-size: 12px; font-weight: 650; }
   .win-history-legend { display: flex; flex-wrap: wrap; gap: 3px 12px; margin: 2px 0 4px; color: var(--muted); font-size: 11px; }
   .win-history svg { max-width: 430px; margin: 0 auto; }
+  .win-history-players { font-weight: 650; }
+  .win-history-legend span { min-width: 0; overflow-wrap: anywhere; }
+  .win-history-key { display: inline-block; width: 10px; height: 10px; margin-right: 4px; border: 2px solid currentColor; vertical-align: -1px; background: currentColor; }
+  .win-history-key.mine { border-radius: 50%; }
+  .win-history-sweep-key { display: inline-block; position: relative; font-size: 16px; line-height: 12px; }
+  .win-history-sweep-key.missed::after { content: ''; position: absolute; left: 0; top: 50%; width: 100%; border-top: 2px solid currentColor; transform: rotate(-45deg); }
+  .win-history-detail, .win-history-note { margin: 5px 0 0; font-size: 11px; line-height: 1.4; overflow-wrap: anywhere; color: var(--muted); }
+  .win-history-detail { color: var(--ink); }
+  .win-history-help { margin-top: 5px; color: var(--muted); font-size: 11px; }
+  .win-history-help > summary { cursor: pointer; }
+  .overview-chart .win-history-help { padding: 0 8px; color: #dbd9d0; }
+  .overview-chart .win-history-detail, .overview-chart .win-history-note { padding: 0 8px; color: #dbd9d0; }
+
   .win-overview .win-history svg text { font-size: 26px; }
   .trend-panel { padding: 14px; }
   .trend-panel .trend-status { margin: 6px 0 0; }
@@ -183,7 +196,7 @@
   .trend-settings .trend-controls { margin-top: 10px; }
   .win-history-point { cursor: pointer; }
   .win-history-point:focus { outline: none; }
-  .win-history-point:focus .win-history-marker { stroke: #174c38; stroke-width: 4; }
+  .win-history-point:focus .win-history-marker { stroke-width: 4; }
   .win-history-point:hover .win-history-hit, .win-history-point:focus .win-history-hit { fill: #256b4a; fill-opacity: .09; }
   .estimate-level { margin: 0 0 7px; color: var(--muted); font-size: 10px; font-weight: 650; }
   .quality-summary { display: flex; flex-wrap: wrap; gap: 6px; margin: 10px 0; }
@@ -1126,7 +1139,8 @@ function refreshGameOverview() {
   const turn = focused?.closest('.win-history-point')?.dataset.turnIndex;
   const selector = turn !== undefined ? '.win-history-point[data-turn-index="' + turn + '"]'
     : focused?.matches('.start-review') ? '.start-review'
-    : focused?.matches('.overview-method > summary') ? '.overview-method > summary' : null;
+    : focused?.matches('.overview-method > summary') ? '.overview-method > summary'
+    : focused?.matches('.win-history-help > summary') ? '.win-history-help > summary' : null;
   existing.replaceWith(makeGameOverview(currentReview));
   if (selector) byId('reviewPanel').querySelector(selector)?.focus({preventScroll: true});
 }
@@ -2001,13 +2015,19 @@ function drawWinHistory(estimates, review, preview = false, overview = false) {
     mine: result.kind === 'draw' ? 50 : result.kind === 'win' ? 100 : 0 });
   const selected = overview ? -1 : !preview && currentTurnIndex === totalTurns - 1 && boardView === 'after' && result.kind !== 'complete'
     ? totalTurns : currentTurnIndex;
-  const width = 560, height = overview ? 190 : 260;
+  const width = 560, height = overview ? 190 : 218;
   const margin = overview ? {top: 28, right: 48, bottom: 42, left: 80} : { top: 24, right: 48, bottom: 50, left: 80 };
   const plotWidth = width - margin.left - margin.right, plotHeight = height - margin.top - margin.bottom;
   const x = index => margin.left + index / Math.max(1, totalTurns) * plotWidth;
   const y = value => margin.top + (1 - Math.max(0, Math.min(100, value)) / 100) * plotHeight;
   const chart = makeElement('div', 'win-history');
-  chart.append(makeElement('div', 'win-history-heading', you + ' · Win chance (white)'));
+  chart.append(makeElement('div', 'win-history-heading', you + ' · Win chance'));
+  const players = {
+    mine: { name: you, color: overview ? '#79bdff' : '#1769aa' },
+    opponent: { name: review.opponent || 'Opponent', color: overview ? '#ffb36b' : '#a84900' }
+  };
+  const sweepColors = { played: overview ? '#f4cf66' : '#916000', missed: overview ? '#ffa4c5' : '#ad3764' };
+  const detail = makeElement('p', 'win-history-detail', 'Select a move to review.');
   const svg = svgElement('svg', { viewBox: `0 0 ${width} ${height}`, role: 'group',
     'aria-label': 'Win chance for ' + you + ' by game turn. Select a point to review.' });
   for (const value of overview ? [0, 50, 100] : [0, 25, 50, 75, 100]) {
@@ -2038,24 +2058,55 @@ function drawWinHistory(estimates, review, preview = false, overview = false) {
     const available = Number.isFinite(point.mine);
     const state = point.actual ? 'Final result' : available ? point.provisional ? 'Early estimate' : 'Full estimate'
       : qualityPointForTurn(point.x)?.category === 'unrated' ? 'Estimate unavailable' : 'Waiting for estimate';
-    const label = (point.actual ? 'Final result' : 'Turn ' + (point.x + 1)) + '. ' +
+    const turn = review.turns[point.x];
+    const playerKey = point.actual ? '' : turn.mine ? 'mine' : 'opponent';
+    const player = players[playerKey];
+    const candidates = turn ? ['review', 'preview', 'candidates'].flatMap(kind => positionCache.get(turn, kind)?.moves || []) : [];
+    const bestMove = turn && qualityPointForTurn(point.x)?.bestMove;
+    if (bestMove) candidates.push(bestMove);
+    const sweep = turn ? CrossplayReview.sweepEvent(turn, candidates) : null;
+    const eventLabel = sweep === 'played' ? 'Sweep (bingo)' : sweep === 'missed' ? 'Missed sweep (bingo)' : '';
+    const label = (point.actual ? 'Final result' : 'Turn ' + (point.x + 1) + '. ' + player.name + ' moved') + '. ' +
+      (eventLabel ? eventLabel + '. ' : '') +
       (available ? you + ': ' + Math.max(0, Math.min(100, point.mine)).toFixed(1) + '%.' + (point.actual ? '' : ' ' + state + '.') : state + '.') + ' Select to review.';
     const group = svgElement('g', { class: 'win-history-point', 'data-turn-index': point.x,
+      'data-player': playerKey, 'data-sweep': sweep || '',
       'data-estimate': point.actual ? 'final' : available ? point.provisional ? 'early' : 'full' : 'missing',
       tabindex: 0, role: 'button', 'aria-label': label, 'aria-pressed': point.x === selected ? 'true' : 'false' });
+    const description = label.replace(' Select to review.', '') + (turn ? ' ' + (turn.action || 'Pass') : '');
     const title = svgElement('title');
-    title.textContent = label + (point.actual ? '' : ' ' + (review.turns[point.x].action || 'Pass'));
+    title.textContent = description;
     group.append(title);
     const centerY = available ? y(point.mine) : y(0) + 16;
-    const color = overview ? ({best: '#a3d668', inaccuracy: '#e7cb73', mistake: '#ffaa64', blunder: '#ff8178'}[qualityPointForTurn(point.x)?.category] || '#eeede7') : '#256b4a';
+    const color = player?.color || (overview ? '#eeede7' : '#256b4a');
+    const hollow = !available || point.provisional;
     if (point.x === selected) group.append(svgElement('circle', { cx: x(point.x), cy: centerY, r: 10,
       fill: '#fff', stroke: '#174c38', 'stroke-width': 2 }));
-    group.append(svgElement(point.actual ? 'path' : available ? 'circle' : 'rect', point.actual
-      ? { class: 'win-history-marker', d: `M ${x(point.x)} ${centerY - 7} l 7 7 -7 7 -7 -7 Z`, fill: '#256b4a', stroke: '#256b4a', 'stroke-width': 2 }
-      : available
-      ? { class: 'win-history-marker', cx: x(point.x), cy: centerY, r: overview ? 5.5 : 4.5,
-        fill: point.provisional ? (overview ? '#1c1c1a' : '#fff') : color, stroke: color, 'stroke-width': 2 }
-      : { class: 'win-history-marker', x: x(point.x) - 3, y: centerY - 1, width: 6, height: 2, fill: '#7a877e' }));
+    group.append(svgElement(point.actual ? 'path' : turn.mine ? 'circle' : 'rect', point.actual
+      ? { class: 'win-history-marker', d: `M ${x(point.x)} ${centerY - 7} l 7 7 -7 7 -7 -7 Z`, fill: color, stroke: color, 'stroke-width': 2 }
+      : { class: 'win-history-marker', ...(turn.mine
+          ? { cx: x(point.x), cy: centerY, r: 5.5 }
+          : { x: x(point.x) - 5.5, y: centerY - 5.5, width: 11, height: 11 }),
+        fill: hollow ? (overview ? '#1c1c1a' : '#fff') : color, stroke: color, 'stroke-width': 2,
+        'stroke-dasharray': !available ? '2 2' : 'none' }));
+    if (sweep) {
+      const starY = centerY - 17;
+      const vertices = Array.from({ length: 10 }, (_, index) => {
+        const angle = -Math.PI / 2 + index * Math.PI / 5;
+        const radius = index % 2 ? 3.2 : 7;
+        return `${x(point.x) + Math.cos(angle) * radius},${starY + Math.sin(angle) * radius}`;
+      }).join(' ');
+      group.append(svgElement('polygon', { class: 'win-history-sweep', points: vertices,
+        fill: sweep === 'played' ? sweepColors.played : (overview ? '#1c1c1a' : '#fff'),
+        stroke: sweepColors[sweep], 'stroke-width': 1.5, 'aria-hidden': 'true' }));
+      if (sweep === 'missed') group.append(svgElement('line', { x1: x(point.x) - 7, y1: starY + 7,
+        x2: x(point.x) + 7, y2: starY - 7, stroke: sweepColors.missed, 'stroke-width': 2, 'aria-hidden': 'true' }));
+    }
+    const showDetail = () => { detail.textContent = point.actual ? 'Final result · ' + you + ': ' + point.mine.toFixed(1) + '%'
+      : 'Turn ' + (point.x + 1) + ' · ' + player.name + (eventLabel ? ' · ' + eventLabel : '') + ' · ' + (turn.action || 'Pass'); };
+    group.addEventListener('pointerenter', showDetail);
+    group.addEventListener('focus', showDetail);
+    if (point.x === selected) showDetail();
     const hitWidth = Math.min(30, plotWidth / Math.max(1, totalTurns));
     group.append(svgElement('rect', { class: 'win-history-hit', x: x(point.x) - hitWidth / 2, y: margin.top - 10,
       width: hitWidth, height: plotHeight + 36, fill: 'transparent', rx: 3 }));
@@ -2072,9 +2123,30 @@ function drawWinHistory(estimates, review, preview = false, overview = false) {
     });
     svg.append(group);
   }
+  const playerLegend = makeElement('div', 'win-history-legend win-history-players');
+  for (const [key, player] of Object.entries(players)) {
+    const item = makeElement('span');
+    const marker = makeElement('i', 'win-history-key ' + key);
+    marker.style.color = player.color;
+    marker.setAttribute('aria-hidden', 'true');
+    item.append(marker, document.createTextNode(player.name));
+    playerLegend.append(item);
+  }
+  const eventLegend = makeElement('div', 'win-history-legend');
+  for (const [event, label] of [['played', 'Sweep (bingo)'], ['missed', 'Missed sweep']]) {
+    const item = makeElement('span');
+    const marker = makeElement('b', 'win-history-sweep-key ' + event, event === 'played' ? '★' : '☆');
+    marker.style.color = sweepColors[event];
+    marker.setAttribute('aria-hidden', 'true');
+    item.append(marker, document.createTextNode(' ' + label));
+    eventLegend.append(item);
+  }
   const legend = makeElement('div', 'win-history-legend');
-  for (const label of ['● Full estimate', '○ Early estimate (dashed)', '◆ Final result', '— Missing estimate']) legend.append(makeElement('span', '', label));
-  chart.append(svg, legend);
+  for (const label of ['Filled: full estimate', 'Hollow: early (dashed line)', '◆ Final result', 'Below line: missing estimate']) legend.append(makeElement('span', '', label));
+  const note = makeElement('p', 'win-history-note', 'Sweep: all 7 tiles played. Missed sweep: analysis found a 7-tile alternative; it may not be the best move.');
+  const help = makeReviewDetails('chart-key', 'win-history-help', 'Chart key');
+  help.append(legend, note);
+  chart.append(svg, playerLegend, eventLegend, detail, help);
   return chart;
 }
 
