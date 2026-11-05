@@ -68,6 +68,25 @@ class GameOverviewTest(unittest.TestCase):
         }''')
         expect(self.page.locator('.overview-status')).not_to_contain_text('early')
 
+    def test_summary_chart_uses_the_card_width_and_labels_errors(self):
+        self.page.set_viewport_size({'width': 1440, 'height': 1000})
+        self.open_summary()
+        self.set_points()
+        chart = self.page.locator('.overview-chart .win-history-scroll')
+        geometry = chart.evaluate('''node => ({
+          width: node.getBoundingClientRect().width,
+          height: node.getBoundingClientRect().height,
+          svgWidth: node.querySelector('svg').getBoundingClientRect().width
+        })''')
+        self.assertGreater(geometry['width'], 700)
+        self.assertGreaterEqual(geometry['height'], 320)
+        self.assertAlmostEqual(geometry['svgWidth'], geometry['width'], delta=1)
+        expect(chart.locator('.win-history-grade')).to_have_text(['??', '?'])
+        expect(chart.locator('[data-turn-index="3"]')).to_have_attribute('data-quality', 'mistake')
+        self.page.set_viewport_size({'width': 320, 'height': 844})
+        self.assertGreaterEqual(chart.bounding_box()['height'], 320)
+        self.assertTrue(self.page.evaluate('document.documentElement.scrollWidth <= innerWidth'))
+
     def test_background_updates_keep_view_and_keyboard_focus(self):
         self.open_summary()
         self.set_points()
@@ -124,6 +143,11 @@ class GameOverviewTest(unittest.TestCase):
           currentReview.my_name = 'LongPlayerNameWithoutAnySpacesAtAll';
           currentReview.opponent = 'AnOpponentWithAnEquallyLongPlayerName';
           currentReview.turns = Array.from({length: 80}, (_, i) => ({...currentReview.turns[i % 6]}));
+          moveQualityResults = {state: 'complete', points: currentReview.turns.map((turn, turnIndex) => ({
+            turnIndex, category: turnIndex % 2 ? 'mistake' : 'blunder', loss: turnIndex % 2 ? 7 : 12,
+            playedWin: .5, bestWin: .62
+          }))};
+          trendResults = deriveWinTrend({review: currentReview, quality: moveQualityResults});
           renderReview();
         }''')
         for width in [320, 390, 768, 1440]:
@@ -150,3 +174,8 @@ class GameOverviewTest(unittest.TestCase):
                 for label in labels:
                     self.assertTrue(label['inside'], label)
                     self.assertGreaterEqual(label['size'], 11, label)
+                badges = self.page.locator('.overview-chart .win-history-grade').evaluate_all('''nodes => nodes.map(node => {
+                  const r = node.getBoundingClientRect(); return {left: r.left, right: r.right};
+                })''')
+                for previous, following in zip(badges, badges[1:]):
+                    self.assertLess(previous['right'], following['left'])

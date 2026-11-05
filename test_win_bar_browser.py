@@ -57,7 +57,7 @@ class WinBarBrowserTest(unittest.TestCase):
                 self.assertLessEqual(geometry['boardOffset'], max_board_offset)
                 self.assertGreaterEqual(geometry['statisticsTop'], geometry['boardBottom'])
                 self.assertGreaterEqual(geometry['statisticsTop'], geometry['chartBottom'])
-                self.assertLessEqual(geometry['chartHeight'], 500)
+                self.assertLessEqual(geometry['chartHeight'], 750)
                 self.assertTrue(geometry['fits'], 'The page must not scroll horizontally')
                 expect(self.page.locator('.review-body .turn-controls')).to_be_visible()
                 expect(self.page.locator('.review-body .turn-coach')).to_be_visible()
@@ -312,6 +312,76 @@ class WinBarBrowserTest(unittest.TestCase):
         self.assertLess(float(points.nth(0).locator('.win-history-marker').get_attribute('cy')),
                         float(points.nth(1).locator('.win-history-marker').get_attribute('y')) + 5.5)
 
+    def test_history_labels_recorded_errors_and_keeps_sweep_markers(self):
+        self.open_game()
+        points = [self.point(0, .7), self.point(1, .8, provisional=True),
+                  self.point(2, .3), {'turnIndex': 3, 'category': 'unrated', 'loss': None},
+                  {'turnIndex': 4, 'category': 'mistake', 'loss': 6},
+                  {'turnIndex': 5, 'category': 'unrated', 'loss': None}]
+        points[0].update(category='mistake', loss=7)
+        points[1].update(category='blunder', loss=12)
+        self.set_points(points)
+        self.page.evaluate("""() => {
+          currentReview.turns[0] = {...currentReview.turns[0],
+            grid: Array(15).fill('.'.repeat(15)), action: 'RETAINS 8D 64'};
+          renderReview();
+          // A malformed saved grade must not become a chart label.
+          moveQualityResults.points[5].category = 'blunder';
+          refreshTrendPanel();
+        }""")
+        chart = self.page.locator('.win-history')
+        expect(chart.locator('.win-history-grade')).to_have_text(['?', '??', '?'])
+        expect(chart.locator('.win-history-grades')).to_contain_text('? Mistake')
+        expect(chart.locator('.win-history-grades')).to_contain_text('?? Blunder')
+        first = chart.locator('[data-turn-index="0"]')
+        expect(first).to_have_attribute('data-quality', 'mistake')
+        expect(first).to_have_attribute('data-sweep', 'played')
+        expect(first.locator('.win-history-sweep')).to_have_count(1)
+        expect(first).to_have_accessible_name(
+            'Turn 1. You moved. Sweep (bingo). Mistake: 7.0 percentage points lost. You: 70.0%. Full estimate. Select to review.')
+        early = chart.locator('[data-turn-index="1"]')
+        expect(early).to_have_accessible_name(
+            'Turn 2. Demo Cedar moved. Blunder: 12.0 percentage points lost (early grade). You: 20.0%. Early estimate. Select to review.')
+        expect(early.locator('.win-history-grade')).to_have_attribute('data-provisional', 'true')
+        early.focus()
+        expect(chart.locator('.win-history-detail')).to_contain_text('Blunder: 12.0 percentage points lost (early grade)')
+        for index in [2, 3, 5, 6]:
+            expect(chart.locator(f'[data-turn-index="{index}"] .win-history-grade')).to_have_count(0)
+        expect(chart.locator('[data-turn-index="4"]')).to_have_attribute('data-estimate', 'missing')
+        badge_bounds = chart.locator('[data-turn-index="4"] .win-history-grade').bounding_box()
+        tick_bounds = chart.locator('svg > text').filter(has_text='5').last.bounding_box()
+        self.assertLess(badge_bounds['y'] + badge_bounds['height'], tick_bounds['y'])
+        self.page.get_by_role('button', name='Game summary', exact=True).click()
+        expect(self.page.locator('.overview-chart .win-history-grade')).to_have_text(['?', '??', '?'])
+        self.page.evaluate('moveQualityResults.points[1].category = "best"; refreshMoveQualityPanel(); refreshTrendPanel()')
+        expect(self.page.locator('.overview-chart .win-history-grade')).to_have_text(['?', '?'])
+
+    def test_large_history_preserves_scroll_and_keyboard_selection(self):
+        self.page.set_viewport_size({'width': 390, 'height': 844})
+        self.open_game()
+        self.page.evaluate('''() => {
+          const turns = currentReview.turns;
+          currentReview.turns = Array.from({length: 42}, (_, index) => ({...turns[index % turns.length]}));
+        }''')
+        self.set_points([{**self.point(index, .5), 'category': 'blunder', 'loss': 12}
+                         for index in range(42)])
+        viewport = self.page.locator('.win-history-scroll')
+        self.assertGreaterEqual(viewport.bounding_box()['height'], 300)
+        self.assertGreater(viewport.evaluate('node => node.scrollWidth'), viewport.evaluate('node => node.clientWidth'))
+        viewport.evaluate('node => node.scrollLeft = 500')
+        self.page.evaluate('refreshTrendPanel()')
+        self.assertAlmostEqual(viewport.evaluate('node => node.scrollLeft'), 500, delta=1)
+        point = self.page.locator('.win-history-point[data-turn-index="30"]')
+        point.focus()
+        scroll_before = viewport.evaluate('node => node.scrollLeft')
+        self.page.keyboard.press('Enter')
+        expect(point).to_be_focused()
+        expect(self.page.get_by_role('combobox', name='Select game turn')).to_have_value('30')
+        self.assertAlmostEqual(viewport.evaluate('node => node.scrollLeft'), scroll_before, delta=1)
+        self.page.evaluate('refreshTrendPanel()')
+        expect(point).to_be_focused()
+        self.assertAlmostEqual(viewport.evaluate('node => node.scrollLeft'), scroll_before, delta=1)
+
     def test_history_identifies_players_and_sweep_events_without_estimates(self):
         self.open_game()
         self.page.evaluate("""() => {
@@ -440,7 +510,9 @@ class WinBarBrowserTest(unittest.TestCase):
           const turns = currentReview.turns;
           currentReview.turns = Array.from({length: 42}, (_, index) => ({...turns[index % turns.length]}));
         }''')
-        self.set_points([self.point(index, 0.1 + index % 9 / 10) for index in range(42)])
+        self.set_points([{**self.point(index, 0.1 + index % 9 / 10),
+                          'category': 'mistake' if index % 2 else 'blunder', 'loss': 12}
+                         for index in range(42)])
         panel = self.page.locator('.trend-panel')
         for width in [320, 390, 400, 401, 600, 760, 761, 800, 1024, 1100, 1101, 1280]:
             self.page.set_viewport_size({'width': width, 'height': 844})
@@ -471,6 +543,11 @@ class WinBarBrowserTest(unittest.TestCase):
         self.assertGreater(panel.locator('.win-history').bounding_box()['y'],
                            panel.locator('.win-evaluation').bounding_box()['y'])
         expect(panel.locator('.win-history-point')).to_have_count(43)
+        badges = panel.locator('.win-history-grade').evaluate_all('''nodes => nodes.map(node => {
+          const r = node.getBoundingClientRect(); return {left: r.left, right: r.right};
+        })''')
+        for previous, following in zip(badges, badges[1:]):
+            self.assertLess(previous['right'], following['left'], 'Adjacent error labels overlap')
 
     def test_candidate_table_labels_pass_and_exchange(self):
         self.open_game()
