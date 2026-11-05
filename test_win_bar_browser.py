@@ -57,7 +57,7 @@ class WinBarBrowserTest(unittest.TestCase):
                 self.assertLessEqual(geometry['boardOffset'], max_board_offset)
                 self.assertGreaterEqual(geometry['statisticsTop'], geometry['boardBottom'])
                 self.assertGreaterEqual(geometry['statisticsTop'], geometry['chartBottom'])
-                self.assertLessEqual(geometry['chartHeight'], 500)
+                self.assertLessEqual(geometry['chartHeight'], 1000)
                 self.assertTrue(geometry['fits'], 'The page must not scroll horizontally')
                 expect(self.page.locator('.review-body .turn-controls')).to_be_visible()
                 expect(self.page.locator('.review-body .turn-coach')).to_be_visible()
@@ -312,6 +312,176 @@ class WinBarBrowserTest(unittest.TestCase):
         self.assertLess(float(points.nth(0).locator('.win-history-marker').get_attribute('cy')),
                         float(points.nth(1).locator('.win-history-marker').get_attribute('y')) + 5.5)
 
+    def test_history_labels_recorded_errors_and_keeps_sweep_markers(self):
+        self.open_game()
+        points = [self.point(0, .7), self.point(1, .8, provisional=True),
+                  self.point(2, .3), {'turnIndex': 3, 'category': 'unrated', 'loss': None},
+                  {'turnIndex': 4, 'category': 'mistake', 'loss': 6},
+                  {'turnIndex': 5, 'category': 'unrated', 'loss': None}]
+        points[0].update(category='mistake', loss=7)
+        points[1].update(category='blunder', loss=12)
+        self.set_points(points)
+        self.page.evaluate("""() => {
+          currentReview.turns[0] = {...currentReview.turns[0],
+            grid: Array(15).fill('.'.repeat(15)), action: 'RETAINS 8D 64'};
+          renderReview();
+          // A malformed saved grade must not become a chart label.
+          moveQualityResults.points[5].category = 'blunder';
+          refreshTrendPanel();
+        }""")
+        chart = self.page.locator('.win-history')
+        expect(chart.locator('.win-history-grade')).to_have_text(['?', '??', '?'])
+        expect(chart.locator('.win-history-grades')).to_contain_text('? Mistake')
+        expect(chart.locator('.win-history-grades')).to_contain_text('?? Blunder')
+        first = chart.locator('[data-turn-index="0"]')
+        expect(first).to_have_attribute('data-quality', 'mistake')
+        expect(first).to_have_attribute('data-sweep', 'played')
+        expect(first.locator('.win-history-sweep')).to_have_count(1)
+        expect(first).to_have_accessible_name(
+            'Turn 1. You moved. Sweep (bingo). Mistake: 7.0 percentage points lost. You: 70.0%. Full estimate. Select to review.')
+        early = chart.locator('[data-turn-index="1"]')
+        expect(early).to_have_accessible_name(
+            'Turn 2. Demo Cedar moved. Blunder: 12.0 percentage points lost (early grade). You: 20.0%. Early estimate. Select to review.')
+        expect(early.locator('.win-history-grade')).to_have_attribute('data-provisional', 'true')
+        early.focus()
+        expect(chart.locator('.win-history-inspector-grade')).to_have_text('Blunder')
+        expect(chart.locator('.win-history-inspector-loss')).to_have_text('12.0 pp')
+        expect(chart.locator('.win-history-inspector-early')).to_have_text('Early estimate')
+        for index in [2, 3, 5, 6]:
+            expect(chart.locator(f'[data-turn-index="{index}"] .win-history-grade')).to_have_count(0)
+        expect(chart.locator('[data-turn-index="4"]')).to_have_attribute('data-estimate', 'missing')
+        badge_bounds = chart.locator('[data-turn-index="4"] .win-history-grade').bounding_box()
+        tick_bounds = chart.locator('svg > text').filter(has_text='5').last.bounding_box()
+        self.assertLess(badge_bounds['y'] + badge_bounds['height'], tick_bounds['y'])
+        self.page.get_by_role('button', name='Game summary', exact=True).click()
+        expect(self.page.locator('.overview-chart .win-history-grade')).to_have_text(['?', '??', '?'])
+        self.page.evaluate('moveQualityResults.points[1].category = "best"; refreshMoveQualityPanel(); refreshTrendPanel()')
+        expect(self.page.locator('.overview-chart .win-history-grade')).to_have_text(['?', '?'])
+
+    def test_large_history_preserves_scroll_and_keyboard_selection(self):
+        self.page.set_viewport_size({'width': 390, 'height': 844})
+        self.open_game()
+        self.page.evaluate('''() => {
+          const turns = currentReview.turns;
+          currentReview.turns = Array.from({length: 42}, (_, index) => ({...turns[index % turns.length]}));
+        }''')
+        self.set_points([{**self.point(index, .5), 'category': 'blunder', 'loss': 12}
+                         for index in range(42)])
+        viewport = self.page.locator('.win-history-scroll')
+        self.assertGreaterEqual(viewport.bounding_box()['height'], 300)
+        self.assertGreater(viewport.evaluate('node => node.scrollWidth'), viewport.evaluate('node => node.clientWidth'))
+        viewport.evaluate('node => node.scrollLeft = 500')
+        self.page.evaluate('refreshTrendPanel()')
+        self.assertAlmostEqual(viewport.evaluate('node => node.scrollLeft'), 500, delta=1)
+        point = self.page.locator('.win-history-point[data-turn-index="30"]')
+        point.focus()
+        scroll_before = viewport.evaluate('node => node.scrollLeft')
+        self.page.keyboard.press('Enter')
+        expect(point).to_be_focused()
+        expect(self.page.get_by_role('combobox', name='Select game turn')).to_have_value('30')
+        self.assertAlmostEqual(viewport.evaluate('node => node.scrollLeft'), scroll_before, delta=1)
+        self.page.evaluate('refreshTrendPanel()')
+        expect(point).to_be_focused()
+        self.assertAlmostEqual(viewport.evaluate('node => node.scrollLeft'), scroll_before, delta=1)
+
+    def test_timeline_inspector_uses_mover_odds_without_changing_board_on_hover(self):
+        self.open_game()
+        points = [self.point(0, .70), self.point(1, .80, provisional=True)]
+        points[0].update(bestWin=.77, loss=7, category='mistake')
+        points[1].update(bestWin=.92, loss=12, category='blunder')
+        self.set_points(points)
+        turns = self.page.get_by_role('combobox', name='Select game turn')
+        turns.select_option('0')
+        inspector = self.page.locator('.win-history-inspector')
+        expect(inspector).to_have_attribute('data-inspected-turn', '0')
+        expect(inspector.locator('.win-history-inspector-player')).to_have_text('You moved')
+        expect(inspector.locator('[data-move="played"] strong')).to_have_text('70.0%')
+        expect(inspector.locator('[data-move="best"] strong')).to_have_text('77.0%')
+        board = self.page.locator('.turn-panel table.board').inner_text()
+        self.page.locator('.win-history-point[data-turn-index="1"]').hover()
+        expect(inspector).to_have_attribute('data-inspected-turn', '1')
+        expect(inspector.locator('.win-history-inspector-player')).to_have_text('Demo Cedar moved')
+        expect(inspector.locator('[data-move="played"] strong')).to_have_text('80.0%')
+        expect(inspector.locator('[data-move="best"] strong')).to_have_text('92.0%')
+        expect(inspector.locator('.win-history-inspector-loss')).to_have_text('12.0 pp')
+        expect(inspector.locator('.win-history-inspector-early')).to_have_text('Early estimate')
+        expect(turns).to_have_value('0')
+        expect(self.page.locator('.turn-panel table.board')).to_have_text(board, use_inner_text=True)
+        expect(self.page.locator('.win-history-point[data-turn-index="1"]')).to_have_attribute('aria-pressed', 'false')
+        self.page.locator('.win-history-point[data-turn-index="1"]').focus()
+        self.page.evaluate('refreshTrendPanel()')
+        expect(inspector).to_have_attribute('data-inspected-turn', '1')
+        self.page.keyboard.press('Enter')
+        expect(turns).to_have_value('1')
+        expect(inspector).to_have_attribute('data-inspected-turn', '1')
+        self.page.evaluate('viewingSharedGame = true; refreshTrendPanel()')
+        self.page.locator('.win-history-point[data-turn-index="0"]').focus()
+        expect(inspector.locator('.win-history-inspector-player')).to_have_text('Demo Player moved')
+
+    def test_timeline_inspector_keeps_missing_values_and_final_result_distinct(self):
+        self.open_game()
+        self.set_points([{'turnIndex': 0, 'category': 'unrated', 'reason': 'Missing rack'}])
+        inspector = self.page.locator('.win-history-inspector')
+        self.page.locator('.win-history-point[data-turn-index="0"]').focus()
+        expect(inspector.locator('.win-history-inspector-grade')).to_have_text('Unrated')
+        expect(inspector.locator('.win-history-inspector-loss')).to_have_text('—')
+        expect(inspector.locator('[data-move="played"] strong')).to_have_text('—')
+        expect(inspector.locator('[data-move="best"] strong')).to_have_text('—')
+        expect(inspector.locator('.win-history-meter i')).to_have_count(0)
+        expect(inspector).to_contain_text('Missing rack')
+        self.page.locator('.win-history-point[data-turn-index="1"]').focus()
+        expect(inspector.locator('.win-history-inspector-grade')).to_have_text('Waiting for analysis')
+        self.page.locator('.win-history-point[data-estimate="final"]').focus()
+        expect(inspector).to_have_attribute('data-final', 'true')
+        expect(inspector).to_contain_text('Final result')
+        expect(inspector.locator('.win-history-inspector-grade')).to_have_count(0)
+        expect(inspector.locator('.win-history-inspector-loss')).to_have_count(0)
+        expect(inspector.locator('.win-history-meter')).to_have_count(0)
+
+    def test_timeline_preserves_hover_inspection_during_background_refresh(self):
+        self.open_game()
+        self.set_points([self.point(0, .7), self.point(1, .8), self.point(2, .6)])
+        turns = self.page.get_by_role('combobox', name='Select game turn')
+        turns.select_option('0')
+        inspector = self.page.locator('.win-history-inspector')
+        selection = self.page.locator('.win-history-selection')
+        self.page.mouse.move(0, 0)
+        self.page.locator('.win-history-point[data-turn-index="0"]').focus()
+        self.page.locator('.win-history-point[data-turn-index="1"]').hover()
+        expect(inspector).to_have_attribute('data-inspected-turn', '1')
+        highlight_x = selection.get_attribute('x')
+        for refresh in ['quality', 'trend']:
+            state = self.page.evaluate('''refresh => {
+              (refresh === 'quality' ? refreshMoveQualityPanel : refreshTrendPanel)();
+              return {turn: document.querySelector('.win-history-inspector').dataset.inspectedTurn,
+                x: document.querySelector('.win-history-selection').getAttribute('x'),
+                focused: document.activeElement.dataset.turnIndex};
+            }''', refresh)
+            self.assertEqual(state, {'turn': '1', 'x': highlight_x, 'focused': '0'})
+            expect(turns).to_have_value('0')
+        self.page.keyboard.press('Tab')
+        self.page.keyboard.press('Tab')
+        expect(inspector).to_have_attribute('data-inspected-turn', '2')
+        expect(turns).to_have_value('0')
+        turns.hover()
+        turns.select_option('3')
+        expect(inspector).to_have_attribute('data-inspected-turn', '3')
+        self.assertNotEqual(selection.get_attribute('x'), highlight_x)
+
+    def test_timeline_inspector_keeps_recorded_odds_during_best_move_preview(self):
+        self.open_game()
+        point = self.point(0, .6)
+        point.update(bestWin=.8, loss=20, category='blunder', bestMove={
+            'position': '8G', 'tiles': 'ACT', 'word': 'ACT', 'score': 5})
+        self.set_points([point])
+        self.page.get_by_role('combobox', name='Select game turn').select_option('0')
+        self.page.get_by_role('button', name='Preview best move', exact=True).click()
+        expect(self.page.locator('.win-you strong')).to_have_text('80.0%')
+        inspector = self.page.locator('.win-history-inspector')
+        expect(inspector.locator('[data-move="played"] strong')).to_have_text('60.0%')
+        expect(inspector.locator('[data-move="best"] strong')).to_have_text('80.0%')
+        expect(inspector).to_contain_text('Recorded move')
+
     def test_history_identifies_players_and_sweep_events_without_estimates(self):
         self.open_game()
         self.page.evaluate("""() => {
@@ -440,7 +610,9 @@ class WinBarBrowserTest(unittest.TestCase):
           const turns = currentReview.turns;
           currentReview.turns = Array.from({length: 42}, (_, index) => ({...turns[index % turns.length]}));
         }''')
-        self.set_points([self.point(index, 0.1 + index % 9 / 10) for index in range(42)])
+        self.set_points([{**self.point(index, 0.1 + index % 9 / 10),
+                          'category': 'mistake' if index % 2 else 'blunder', 'loss': 12}
+                         for index in range(42)])
         panel = self.page.locator('.trend-panel')
         for width in [320, 390, 400, 401, 600, 760, 761, 800, 1024, 1100, 1101, 1280]:
             self.page.set_viewport_size({'width': width, 'height': 844})
@@ -471,6 +643,11 @@ class WinBarBrowserTest(unittest.TestCase):
         self.assertGreater(panel.locator('.win-history').bounding_box()['y'],
                            panel.locator('.win-evaluation').bounding_box()['y'])
         expect(panel.locator('.win-history-point')).to_have_count(43)
+        badges = panel.locator('.win-history-grade').evaluate_all('''nodes => nodes.map(node => {
+          const r = node.getBoundingClientRect(); return {left: r.left, right: r.right};
+        })''')
+        for previous, following in zip(badges, badges[1:]):
+            self.assertLess(previous['right'], following['left'], 'Adjacent error labels overlap')
 
     def test_candidate_table_labels_pass_and_exchange(self):
         self.open_game()
