@@ -334,6 +334,13 @@
   .moves-table th, .moves-table td { padding: 7px 3px; border-bottom: 1px solid var(--line); text-align: left; overflow-wrap: anywhere; }
   .moves-table th { color: var(--muted); font-weight: 500; }
   .moves-table .played-move td { background: #fff4d4; color: var(--green); font-weight: 700; }
+  .moves-table .previewable-move { cursor: pointer; }
+  .moves-table .previewable-move:hover td, .moves-table .selected-move td { box-shadow: inset 0 -2px var(--green); }
+  .move-preview-button { padding: 0; border: 0; border-radius: 0; background: transparent; color: inherit; font: inherit; text-align: left; text-decoration: underline; text-underline-offset: 3px; }
+  .move-preview-button:focus-visible { outline: 2px solid var(--green); outline-offset: 3px; }
+  .continuation-panel { margin-top: 16px; padding-top: 16px; border-top: 1px solid var(--line); }
+  .continuation-controls { display: flex; flex-wrap: wrap; gap: 8px; }
+  .continuation-racks { overflow-wrap: anywhere; font-family: 'SFMono-Regular', Consolas, monospace; font-size: 11px; }
   .played-move-label { display: inline-block; margin-left: 6px; padding: 1px 5px; border-radius: 4px; background: #f0dfaa; color: #695016; font-size: 9px; }
   .commonness-panel { margin-top: 12px; padding: 12px; border-radius: 8px; background: #f5f7f1; }
   .commonness-panel h4 { margin-bottom: 6px; font-size: 12px; }
@@ -463,6 +470,7 @@
 <script src="supabase-config.js"></script>
 <script src="supabase-auth.js"></script>
 <script src="luck-analysis.js"></script>
+<script src="move-continuation.js"></script>
 <script src="analysis-cache.js"></script>
 <script src="quackle-pool.js"></script>
 <script src="review-analysis.js?v=played-candidate-index"></script>
@@ -503,6 +511,8 @@ let customMoveController = null;
 let currentTurnIndex = 0;
 let boardView = 'after';
 let previewBestMove = false;
+let previewCandidate = null;
+let continuationExplorer = null;
 let flaggedMovesOnly = false;
 let trendResults = null;
 let trendRequestToken = 0;
@@ -591,7 +601,7 @@ function preserveReviewControlFocus() {
   const focused = document.activeElement;
   const key = focused?.matches('summary') && focused.parentElement.dataset.reviewDisclosure;
   const selector = key ? 'details[data-review-disclosure="' + key + '"] > summary'
-    : ['.review-lesson button', '.preview-best-move', '.trend-panel .analysis-button', '.quality-panel .analysis-button', '.win-history-scroll']
+    : ['.review-lesson button', '.preview-best-move', '.return-to-played', '.explore-continuation', '.trend-panel .analysis-button', '.quality-panel .analysis-button', '.win-history-scroll']
       .find(value => focused?.matches(value));
   return () => {
     if (selector && !focused.isConnected) byId('reviewPanel').querySelector(selector)?.focus({ preventScroll: true });
@@ -679,6 +689,9 @@ function showNytDisconnected(message, state = '') {
 
 function clearAccountUi(message) {
   resetBackgroundAnalysis();
+  stopContinuation();
+  previewBestMove = false;
+  previewCandidate = null;
   if (customMoveController) customMoveController.dispose();
   customMoveController = null;
   reviewRequestToken++;
@@ -923,6 +936,8 @@ async function openGame(gameId, { shareToken = null } = {}) {
   moveQualityResults = null;
   boardView = 'after';
   previewBestMove = false;
+  previewCandidate = null;
+  stopContinuation();
   reviewView = 'summary';
   flaggedMovesOnly = false;
   activeGameId = gameId;
@@ -1078,12 +1093,69 @@ function renderBoard(grid, action) {
 
 function makeTurnBoard(turn, qualityPoint) {
   const board = boardView === 'after' && Array.isArray(turn.grid_after) ? turn.grid_after : turn.grid;
-  const preview = previewBestMove && candidatePreview(turn, qualityPoint?.bestMove);
+  const preview = currentMovePreview(turn, qualityPoint);
+  const move = preview?.move;
+  const description = move && (move.action === 'pass' ? 'Pass' : move.action === 'exchange'
+    ? 'Exchange ' + move.tiles : (move.word || candidateWord(turn, move)) + ' at ' + move.position);
   const legend = makeElement('div', 'board-legend' + (preview ? ' board-preview-note' : ''),
-    (preview ? 'Best move preview · ' + qualityPoint.bestMove.word + ' at ' + qualityPoint.bestMove.position + '. Return to played move to continue.'
+    (preview ? (previewBestMove ? 'Best move preview' : 'Selected move preview') + ' · ' + description + '.'
       : boardView === 'after' ? 'Board after this move.' : 'Board before this move.') +
     ' Green outline marks newly placed tiles. Italic letters are assigned blanks.');
-  return [renderBoard(preview ? preview.grid : board, preview ? preview.action : turn.action), legend];
+  if (preview) {
+    const explore = makeElement('button', 'explore-continuation', 'Explore continuations');
+    explore.type = 'button';
+    explore.addEventListener('click', () => {
+      stopContinuation();
+      const nextTurn = currentReview.turns.slice(currentTurnIndex + 1).find(next => next.mine !== turn.mine);
+      continuationExplorer = new MoveContinuation.Explorer({
+        turn, opponentRack: nextTurn?.rack ?? null, seed: positionCache.seed(turn), move: preview.move,
+        names: turn.mine ? [viewingSharedGame ? currentReview.my_name || 'Player' : 'You', currentReview.opponent || 'Opponent']
+          : [currentReview.opponent || 'Opponent', viewingSharedGame ? currentReview.my_name || 'Player' : 'You'],
+        request: (type, payload, options) => workerRequest(type, payload, { ...options, priority: ANALYSIS_PRIORITY.view + ++viewRequestSequence }),
+        renderBoard
+      });
+      legend.closest('.turn-panel').append(continuationExplorer.root);
+      continuationExplorer.root.focus({ preventScroll: true });
+      continuationExplorer.root.scrollIntoView({ block: 'start', behavior: 'instant' });
+    });
+    legend.append(document.createTextNode(' '), explore);
+  }
+  if (previewCandidate) {
+    const restore = makeElement('button', 'return-to-played', 'Return to played move');
+    restore.type = 'button';
+    restore.addEventListener('click', () => {
+      previewCandidate = null;
+      stopContinuation();
+      renderReview();
+      byId('reviewPanel').querySelector('.board-view-button')?.focus({ preventScroll: true });
+    });
+    legend.append(document.createTextNode(' '), restore);
+  }
+  return [renderBoard(preview ? preview.grid : board, preview ? preview.action : turn.action), legend,
+    ...(continuationExplorer ? [continuationExplorer.root] : [])];
+}
+
+function stopContinuation() {
+  continuationExplorer?.dispose();
+  continuationExplorer = null;
+}
+
+function candidateKey(move) {
+  return JSON.stringify([move.action || 'place', move.position || '', move.tiles || '']);
+}
+
+function currentMovePreview(turn, point) {
+  let move = previewBestMove ? point?.bestMove : previewCandidate;
+  let win = point?.bestWin, provisional = point?.provisional;
+  if (previewCandidate) {
+    const result = positionCache.get(turn, 'review') || positionCache.get(turn, 'preview') || positionCache.get(turn, 'candidates');
+    const latest = result?.moves.find(candidate => candidateKey(candidate) === candidateKey(previewCandidate));
+    move = latest || previewCandidate;
+    win = result?.simulated === true ? latest?.win : null;
+    provisional = result?.provisional || result?.iterationsCompleted < SIMULATION_ITERATIONS;
+  }
+  const board = move && candidatePreview(turn, move);
+  return board ? { ...board, move, win, provisional } : null;
 }
 
 function makeGameOverview(review) {
@@ -1224,6 +1296,8 @@ function renderReview() {
   back.addEventListener('click', () => {
     reviewView = 'summary';
     previewBestMove = false;
+    previewCandidate = null;
+    stopContinuation();
     renderReview();
     root.scrollIntoView({block: 'start', behavior: 'instant'});
     root.querySelector('.start-review')?.focus({preventScroll: true});
@@ -1288,7 +1362,7 @@ function renderReview() {
   const body = makeElement('div', 'review-body');
   body.addEventListener('keydown', event => {
     if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey ||
-        event.target.closest('input, select, textarea, [contenteditable]')) return;
+        event.target.closest('input, select, textarea, [contenteditable], .continuation-panel')) return;
     const destinations = { ArrowLeft: currentTurnIndex - 1, ArrowRight: currentTurnIndex + 1, Home: 0, End: review.turns.length - 1 };
     if (!(event.key in destinations)) return;
     event.preventDefault();
@@ -1331,6 +1405,8 @@ function renderReview() {
   boardToggle.addEventListener('click', () => {
     boardView = boardView === 'after' ? 'before' : 'after';
     previewBestMove = false;
+    previewCandidate = null;
+    stopContinuation();
     renderReview();
   });
   controls.append(first, previous, select, next, last, boardToggle);
@@ -1405,6 +1481,8 @@ function selectTurn(index, focusSelector) {
   reviewView = 'walkthrough';
   currentTurnIndex = index;
   previewBestMove = false;
+  previewCandidate = null;
+  stopContinuation();
   renderReview();
   if (entering) {
     byId('reviewPanel').scrollIntoView({block: 'start', behavior: 'instant'});
@@ -1527,6 +1605,8 @@ function makeTurnCoach(turn, point) {
       preview.type = 'button';
       preview.setAttribute('aria-pressed', String(previewBestMove));
       preview.addEventListener('click', () => {
+        previewCandidate = null;
+        stopContinuation();
         previewBestMove = !previewBestMove;
         renderReview();
         byId('reviewPanel').querySelector('.preview-best-move').focus({ preventScroll: true });
@@ -1545,6 +1625,9 @@ function makeTurnCoach(turn, point) {
 }
 
 function candidatePreview(turn, move) {
+  if (['pass', 'exchange'].includes(move?.action) && Array.isArray(turn.grid)) {
+    return { grid: turn.grid.slice(), action: move.action === 'pass' ? 'PASS' : 'EXCHANGE' };
+  }
   const start = movePosition(move?.position);
   if (!start || typeof move.tiles !== 'string' || !Array.isArray(turn.grid) || turn.grid.length !== 15 ||
       !turn.grid.every(row => typeof row === 'string' && /^[A-Za-z.]{15}$/.test(row))) return null;
@@ -1552,11 +1635,11 @@ function candidatePreview(turn, move) {
   let row = start.row, col = start.col, word = '', placed = 0;
   for (const tile of move.tiles) {
     if (row < 0 || row >= 15 || col < 0 || col >= 15) return null;
-    if (tile === '.') {
-      if (grid[row][col] === '.') return null;
+    if (grid[row][col] !== '.') {
+      if (tile !== '.' && tile.toUpperCase() !== grid[row][col].toUpperCase()) return null;
       word += '(' + grid[row][col] + ')';
     } else {
-      if (!/^[A-Za-z]$/.test(tile) || grid[row][col] !== '.') return null;
+      if (!/^[A-Za-z]$/.test(tile)) return null;
       grid[row][col] = tile;
       word += tile;
       placed++;
@@ -1981,7 +2064,7 @@ function refreshMoveQualityPanel() {
       byId('reviewPanel').querySelector('.turn-list-panel').scrollTop = scrollTop;
     }
     byId('reviewPanel').querySelector('.turn-coach')?.replaceWith(makeTurnCoach(currentReview.turns[currentTurnIndex], qualityPointForTurn(currentTurnIndex)));
-    if (previewBestMove) {
+    if (previewBestMove || previewCandidate) {
       const [board, legend] = makeTurnBoard(currentReview.turns[currentTurnIndex], qualityPointForTurn(currentTurnIndex));
       byId('reviewPanel').querySelector('.turn-panel .board-scroll')?.replaceWith(board);
       byId('reviewPanel').querySelector('.board-legend')?.replaceWith(legend);
@@ -2016,13 +2099,13 @@ function makeTrendPanel(review) {
   panel.append(makeElement('h3', '', 'Win chance through the game'));
   const turn = review.turns[currentTurnIndex];
   const qualityPoint = qualityPointForTurn(currentTurnIndex);
-  const preview = previewBestMove && candidatePreview(turn, qualityPoint?.bestMove);
+  const preview = currentMovePreview(turn, qualityPoint);
   let point = trendResults?.points?.find(item => !item.actual && item.x === currentTurnIndex);
   if (preview) {
-    const known = Number.isFinite(qualityPoint.bestWin);
+    const known = Number.isFinite(preview.win);
     point = {
-      mine: known ? (turn.mine ? qualityPoint.bestWin : 1 - qualityPoint.bestWin) * 100 : null,
-      preview: true, provisional: qualityPoint.provisional, unavailable: !known
+      mine: known ? (turn.mine ? preview.win : 1 - preview.win) * 100 : null,
+      preview: true, selectedPreview: Boolean(previewCandidate), provisional: preview.provisional, unavailable: !known
     };
   } else if (!point && qualityPoint?.category === 'unrated') point = { unavailable: true };
   const result = gameResult(review);
@@ -2049,7 +2132,7 @@ function makeTrendPanel(review) {
   const settings = makeReviewDetails('trend', 'trend-settings', 'Estimate details and controls');
   settings.append(controls);
   const status = makeElement('div', 'trend-status', preview
-    ? 'Showing the best sampled alternative for this turn.' : trendResults
+    ? (previewCandidate ? 'Showing the selected alternative for this turn.' : 'Showing the best sampled alternative for this turn.') : trendResults
     ? trendResults.message || (trendResults.state === 'running' ? 'Preparing estimates…' : '')
     : 'Estimates appear as background analysis finishes.');
   status.id = 'trendStatus';
@@ -2057,7 +2140,7 @@ function makeTrendPanel(review) {
   settings.append(makeElement('p', 'analysis-note', point?.actual
     ? 'The final position shows the game result. A draw splits the bar equally. The chart shows recorded-move estimates from Turn 1 to the finish; gaps have no estimate.'
     : 'White shows your chance; black shows your opponent’s. The bar estimates ' +
-      (preview ? 'the best move preview' : 'the recorded move') +
+      (preview ? (previewCandidate ? 'the selected move preview' : 'the best move preview') : 'the recorded move') +
       '. Each chart point estimates the recorded move from the board and rack before that turn. Turn 1 is the first move estimate. Gaps have no estimate. Early estimates can change.'));
   panel.append(settings);
   return panel;
@@ -2326,7 +2409,7 @@ function drawTrendChart(point, review) {
   const state = point?.actual ? 'Final result' : known ? (point.provisional ? 'Early estimate' : 'Full estimate')
     : point?.unavailable ? 'Estimate unavailable' : 'Waiting for estimate';
   const turnLabel = 'Turn ' + (currentTurnIndex + 1) + ' of ' + review.turns.length +
-    (point?.actual ? '' : point?.preview ? ' · Best move preview' : ' · Recorded move');
+    (point?.actual ? '' : point?.preview ? (point.selectedPreview ? ' · Selected move preview' : ' · Best move preview') : ' · Recorded move');
   const chart = makeElement('div', 'win-evaluation');
   const bar = makeElement('div', 'win-bar' + (known ? '' : ' win-bar-pending'));
   bar.setAttribute('role', 'img');
@@ -2622,8 +2705,11 @@ function renderPositionAnalysis(turn, button, status, output) {
 function refreshPositionPanel() {
   const panel = byId('reviewPanel').querySelector('.analysis-panel');
   const turn = currentReview?.turns[currentTurnIndex];
+  const focusedKey = panel?.contains(document.activeElement) ? document.activeElement.dataset.moveKey : null;
   if (panel && turn) renderPositionAnalysis(turn, panel.querySelector('.analysis-button'),
     panel.querySelector('.analysis-status'), panel.querySelector('.position-output'));
+  if (focusedKey) [...panel.querySelectorAll('.move-preview-button')]
+    .find(button => button.dataset.moveKey === focusedKey)?.focus({ preventScroll: true });
 }
 
 function renderMoves(moves, result, output, turn) {
@@ -2644,6 +2730,28 @@ function renderMoves(moves, result, output, turn) {
     for (const value of [play, move.score ?? '—', move.leave || '', win,
       Number.isFinite(move.equity) ? move.equity.toFixed(1) : '—']) {
       row.append(makeElement('td', '', value));
+    }
+    if (candidatePreview(turn, move)) {
+      row.classList.add('previewable-move');
+      const selected = currentMovePreview(turn, qualityPointForTurn(currentTurnIndex));
+      const active = Boolean(selected && candidateKey(selected.move) === candidateKey(move));
+      row.classList.toggle('selected-move', active);
+      const button = makeElement('button', 'move-preview-button', play);
+      button.type = 'button';
+      button.dataset.moveKey = candidateKey(move);
+      button.setAttribute('aria-label', 'Preview ' + play + ' on board');
+      button.setAttribute('aria-pressed', String(active));
+      row.firstElementChild.replaceChildren(button);
+      row.addEventListener('click', () => {
+        stopContinuation();
+        previewBestMove = false;
+        previewCandidate = move;
+        renderReview();
+        const root = byId('reviewPanel');
+        [...root.querySelectorAll('.move-preview-button')]
+          .find(node => node.dataset.moveKey === candidateKey(move))?.focus({ preventScroll: true });
+        root.querySelector('.turn-panel .board-scroll')?.scrollIntoView({ block: 'center', behavior: 'instant' });
+      });
     }
     if (index === playedIndex) row.firstElementChild.append(makeElement('span', 'played-move-label', 'Played'));
     body.append(row);

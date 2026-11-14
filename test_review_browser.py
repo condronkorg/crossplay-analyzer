@@ -489,6 +489,122 @@ class ReviewBrowserTest(unittest.TestCase):
                 else:
                     expect(rows.first).to_have_class('played-move')
 
+    def test_table_previews_blank_alternatives_and_restores_the_recorded_board(self):
+        self.use_saved_analysis()
+        self.open_game()
+        self.page.get_by_role('combobox', name='Select game turn').select_option('2')
+        original = self.page.locator('.turn-panel > .board-scroll .board').inner_text()
+        self.page.evaluate('''() => {
+          const turn = currentReview.turns[currentTurnIndex];
+          positionCache.results[positionCache.key(turn, 'preview')] = {
+            simulated: true, iterationsCompleted: 64, moves: [
+              {action: 'place', position: '8G', tiles: '...s', score: 6, win: .62},
+              {action: 'place', position: '8F', tiles: 's...', score: 5, win: .43},
+              {action: 'pass', position: '', tiles: '', score: 0, win: .1},
+              {action: 'exchange', position: '', tiles: 'E', score: 0, win: .2},
+              {action: 'place', position: '99Z', tiles: 'X', score: 0}
+            ]
+          };
+          renderReview();
+        }''')
+        rows = self.page.locator('.position-output .moves-table tbody tr')
+        expect(rows.last.locator('button')).to_have_count(0)
+        # Clicking a score cell must select the whole move, including a blank
+        # after existing letters. The existing tiles must remain untouched.
+        rows.first.locator('td').nth(1).click()
+        expect(self.page.locator('.board-preview-note')).to_contain_text('CATS at 8G')
+        expect(self.page.locator('.board .blank-tile.last-play')).to_have_text('S')
+        expect(self.page.locator('.board .last-play')).to_have_count(1)
+        expect(rows.first.locator('button')).to_have_attribute('aria-pressed', 'true')
+        expect(self.page.locator('.win-turn-label')).to_contain_text('Selected move preview')
+        expect(self.page.locator('.win-you strong')).to_have_text('62.0%')
+        rows.first.locator('button').focus()
+        self.page.evaluate('''() => {
+          const turn = currentReview.turns[currentTurnIndex];
+          const early = positionCache.get(turn, 'preview');
+          positionCache.results[positionCache.key(turn, 'review')] = {
+            ...early, iterationsCompleted: 277,
+            moves: early.moves.map(move => ({...move, win: .7}))
+          };
+          refreshMoveQualityPanel(); refreshTrendPanel(); refreshPositionPanel();
+        }''')
+        expect(rows.first.locator('button')).to_be_focused()
+        expect(self.page.locator('.win-you strong')).to_have_text('70.0%')
+        expect(self.page.locator('.win-estimate-state')).to_have_text('Full estimate')
+        # Native buttons also support keyboard activation for passes/exchanges.
+        for index, label in [(2, 'Pass'), (3, 'Exchange E')]:
+            rows.nth(index).locator('button').focus()
+            self.page.keyboard.press('Enter')
+            expect(self.page.locator('.board-preview-note')).to_contain_text(label)
+            expect(self.page.locator('.board .last-play')).to_have_count(0)
+            expect(self.page.locator('.board .tile')).to_have_count(5)
+        self.page.get_by_role('button', name='Return to played move', exact=True).click()
+        self.assertEqual(self.page.locator('.board').inner_text(), original)
+        rows.first.locator('button').click()
+        self.page.get_by_role('button', name='Next →', exact=True).click()
+        expect(self.page.locator('.board-preview-note')).to_have_count(0)
+
+    def test_continuation_recomputes_replies_and_can_undo_without_changing_review(self):
+        self.open_game()
+        self.page.evaluate('''() => {
+          const turn = currentReview.turns[0];
+          positionCache.results[positionCache.key(turn, 'candidates')] = {
+            moves: [{action: 'place', position: '8G', tiles: 'ACT', score: 5}]
+          };
+          renderReview();
+        }''')
+        original = self.page.evaluate('JSON.stringify(currentReview)')
+        self.page.locator('.move-preview-button').click()
+        expect(self.page.locator('.win-you strong')).to_have_text('—')
+        self.page.get_by_role('button', name='Explore continuations', exact=True).click()
+        panel = self.page.get_by_role('region', name='Hypothetical continuation')
+        replies = panel.locator('.continuation-moves tbody tr')
+        expect(replies.first).to_be_visible(timeout=30_000)
+        expect(panel).to_contain_text('Future draws are sampled')
+        expect(panel).to_contain_text('Demo Cedar to move')
+        expect(panel.locator('.board .tile')).to_have_count(3)
+        board = panel.locator('.board').inner_text()
+        first_reply = replies.first.locator('button').inner_text()
+        # Real Quackle must see the changed ACT board, not the recorded CAT.
+        self.assertTrue(self.page.evaluate('''() => {
+          const state = continuationExplorer.history.at(-1);
+          return state.grid[7] === '......ACT......' && state.racks[1] === currentReview.turns[1].rack;
+        }'''))
+        replies.first.locator('button').click()
+        expect(panel).to_contain_text('After 2 hypothetical moves')
+        expect(replies.first).to_be_visible(timeout=30_000)
+        expect(panel).to_contain_text('You to move')
+        panel.get_by_role('button', name='Play best reply →', exact=True).click()
+        expect(panel).to_contain_text('After 3 hypothetical moves')
+        expect(replies.first).to_be_visible(timeout=30_000)
+        panel.get_by_role('button', name='← Undo reply', exact=True).click()
+        panel.get_by_role('button', name='← Undo reply', exact=True).click()
+        expect(panel).to_contain_text('After 1 hypothetical move')
+        self.assertEqual(panel.locator('.board').inner_text(), board)
+        self.assertEqual(replies.first.locator('button').inner_text(), first_reply)
+        panel.get_by_role('button', name='Play best reply →', exact=True).click()
+        expect(panel).to_contain_text('After 2 hypothetical moves')
+        expect(replies.first).to_be_visible(timeout=30_000)
+        for _ in range(100):
+            state = self.page.evaluate('''() => ({
+              finished: continuationExplorer.history.at(-1).finished,
+              error: continuationExplorer.error
+            })''')
+            self.assertIsNone(state['error'])
+            if state['finished']:
+                break
+            panel.get_by_role('button', name='Play best reply →', exact=True).click()
+            self.page.wait_for_function('continuationExplorer && !continuationExplorer.busy')
+        expect(panel).to_contain_text('Line complete')
+        self.assertEqual(self.page.evaluate('''() => {
+          const state = continuationExplorer.history.at(-1);
+          return [state.bag.length, state.finalTurns];
+        }'''), [0, 0])
+        self.assertEqual(self.page.evaluate('JSON.stringify(currentReview)'), original)
+        self.page.get_by_role('button', name='Next →', exact=True).click()
+        expect(panel).to_have_count(0)
+        expect(self.page.locator('.board-preview-note')).to_have_count(0)
+
     def install_review_worker(self, delay=0):
         worker = r"""
           self.onmessage = ({data: {id, type, payload: p}}) => {
