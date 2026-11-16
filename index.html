@@ -100,7 +100,9 @@
   .overview-player-score { display: block; margin-top: 4px; color: #bbb9b0; font-size: 11px; font-weight: 400; }
   .overview-table [data-summary-row="average"] { border-top: 1px solid #49473f; }
   .overview-table [data-summary-row="average"] td { font-size: 24px; color: #faf8f0; }
-  .overview-table [data-summary-row="average"] small { display: block; color: #bbb9b0; font-weight: 400; font-size: 11px; margin-top: 3px; }
+  .overview-table th small { display: block; color: #bbb9b0; font-weight: 400; font-size: 11px; margin-top: 3px; }
+  .overview-table [data-summary-row="draw-luck"] td { font-size: clamp(14px, 4vw, 20px); }
+  .overview-table [data-summary-row="draw-coverage"] th, .overview-table [data-summary-row="draw-coverage"] td { font-size: 11px; color: #c4c2b9; font-weight: 400; }
   .overview-table [data-summary-row="coverage"] { border-bottom: 1px solid #49473f; }
   .overview-table [data-summary-row="coverage"] th, .overview-table [data-summary-row="coverage"] td { padding: 3px 4px 14px; font-size: 11px; color: #c4c2b9; font-weight: 400; }
   .overview-table [data-summary-row="best"] { color: #a3d668; }
@@ -221,6 +223,12 @@
   .trend-settings { margin-top: 8px; color: var(--muted); font-size: 11px; }
   .trend-settings .trend-controls { margin-top: 10px; }
   .win-history-point { cursor: pointer; }
+  .win-history-point[data-phase="after-draw"] .win-history-marker,
+  .win-history-draw-mark { opacity: .45; }
+  .win-history-point[data-phase="after-draw"]:hover .win-history-marker,
+  .win-history-point[data-phase="after-draw"]:focus .win-history-marker,
+  .win-history-point:hover .win-history-draw-mark,
+  .win-history-point:focus .win-history-draw-mark { opacity: 1; }
   .win-history-point:focus { outline: none; }
   .win-history-point:focus .win-history-marker { stroke-width: 4; }
   .win-history-point:hover .win-history-hit, .win-history-point:focus .win-history-hit { fill: #256b4a; fill-opacity: .09; }
@@ -564,7 +572,8 @@ function rememberReviewDetails() {
   const chart = byId('reviewPanel').querySelector('.win-history-scroll');
   if (chart) reviewChartScrollStates.set(currentReview, {
     left: chart.scrollLeft, selected: chart.dataset.selected,
-    inspected: Number(chart.closest('.win-history').querySelector('.win-history-inspector')?.dataset.inspectedTurn)
+    inspected: Number(chart.closest('.win-history').querySelector('.win-history-inspector')?.dataset.inspectedTurn),
+    phase: chart.closest('.win-history').querySelector('.win-history-inspector')?.dataset.inspectedPhase || 'before-draw'
   });
 }
 
@@ -809,6 +818,31 @@ function resetBackgroundAnalysis() {
   byId('backgroundStatus').textContent = '';
   byId('retryBackground').classList.add('hidden');
 }
+function drawPoint(result) {
+  return {beforeWin: result.beforeWin, afterWin: result.afterWin,
+    luck: (result.afterWin - result.beforeWin) * 100, drawCount: result.drawCount,
+    rackAfter: result.rackAfter, samples: result.iterationsCompleted,
+    provisional: result.iterationsCompleted !== SIMULATION_ITERATIONS};
+}
+function restoreDrawPoint(cache, turn, point) {
+  const restored = {...point};
+  delete restored.draw;
+  if (!Number.isFinite(point.playedWin)) return restored;
+  try {
+    const draw = CrossplayReview.rackDraw(turn);
+    const result = cache.get(turn, 'draw') || cache.get(turn, 'draw-preview');
+    if (result) restored.draw = drawPoint(result);
+    else if (!draw.drawCount) restored.draw = {beforeWin: point.playedWin, afterWin: point.playedWin,
+      luck: 0, drawCount: 0, rackAfter: draw.rackAfter, samples: point.samples, provisional: Boolean(point.provisional)};
+  } catch (error) { restored.draw = {unavailable: true, reason: error.message}; }
+  return restored;
+}
+function drawWorkComplete(context, index) {
+  try {
+    if (!CrossplayReview.rackDraw(context.review.turns[index]).drawCount) return true;
+    return Boolean(context.cache.get(context.review.turns[index], 'draw'));
+  } catch (_) { return true; }
+}
 function makeReviewContext(review, owner, shared = false) {
   const stored = review.stored_analysis?.version === ANALYSIS_VERSION ? review.stored_analysis : {};
   const cache = new AnalysisCache({}, POSITION_PARAMETERS);
@@ -827,6 +861,11 @@ function makeReviewContext(review, owner, shared = false) {
         kind === 'preview' ? PREVIEW_ITERATIONS : SIMULATION_ITERATIONS,
         kind === 'preview' ? PREVIEW_MOVE_COUNT : MOVE_COUNT)) cache.results[key] = result;
     }
+    for (const kind of ['draw', 'draw-preview']) {
+      const key = cache.key(turn, kind), result = stored.turn_analyses?.[key];
+      if (CrossplayReview.validDrawResult(result, turn, cache.seed(turn),
+        kind === 'draw-preview' ? PREVIEW_ITERATIONS : SIMULATION_ITERATIONS)) cache.results[key] = result;
+    }
   }
   cache.owner = owner;
   cache.shared = shared;
@@ -842,10 +881,12 @@ function makeReviewContext(review, owner, shared = false) {
     quality = { ...quality, points, current: points.length, state: 'running',
       message: 'Resuming swaps with available exchanged tiles.' };
   }
+  if (quality) quality = {...quality, points: quality.points.map(point => restoreDrawPoint(cache, review.turns[point.turnIndex], point))};
   const trend = quality ? deriveWinTrend({ review, quality }, quality.state === 'done') : null;
   const complete = quality?.state === 'done' && trend?.state === 'done' && quality.points.length === review.turns.length &&
     new Set(quality.points.map(point => point.turnIndex)).size === review.turns.length && !quality.points.some(point => point.retryable) && quality.points.every(point => point.category === 'unrated' ||
-      cache.get(review.turns[point.turnIndex], 'review')?.selected.win === point.playedWin);
+      (cache.get(review.turns[point.turnIndex], 'review')?.selected.win === point.playedWin &&
+        drawWorkComplete({review, cache}, point.turnIndex)));
   return { review, cache, owner, shared, quality, trend, states: review.turns.map(() => complete ? 'done' : 'pending-preview') };
 }
 function getReviewQueue() {
@@ -886,7 +927,7 @@ function updateBackgroundStatus() {
     total += context.states.length;
     unrated += (context.quality?.points || []).filter(point => point.category === 'unrated').length;
     if (context.states.every(state => state === 'done')) done++;
-    if (context.cache.saveError || context.error || context.quality?.points.some(point => point.retryable)) failed++;
+    if (context.cache.saveError || context.error || context.quality?.points.some(point => point.retryable || point.draw?.retryable)) failed++;
   }
   const gameCount = queue.orderedIds().length;
   const note = gameCount ? 'Background analysis: ' + done + '/' + gameCount + ' games · ' + moves + '/' + total + ' loaded moves checked' + (early ? ' · ' + early + ' early estimates awaiting full analysis' : '') + (unrated ? ' · ' + unrated + ' unrated' : '') + '. Keep this page open to continue.' : '';
@@ -1182,7 +1223,33 @@ function makeGameOverview(review) {
       .filter(item => Boolean(item.turn.mine) === mine);
     const checked = turns.map(item => item.point).filter(point => point && !(point.provisional && point.category === 'unrated'));
     const rated = checked.filter(point => Number.isFinite(point.loss) && categories.includes(point.category));
-    return { mine, total: turns.length, checked, rated,
+    const draws = [];
+    let drawTotal = 0, drawPending = 0, drawUnavailable = 0;
+    for (const {turn, point} of turns) {
+      if (point?.draw && Number.isFinite(point.draw.beforeWin) && Number.isFinite(point.draw.afterWin) && point.draw.drawCount > 0) {
+        draws.push(point.draw);
+        drawTotal++;
+        continue;
+      }
+      try {
+        const info = CrossplayReview.rackDraw(turn);
+        if (info.drawCount > 0) {
+          drawTotal++;
+          if (point?.draw?.unavailable) drawUnavailable++; else drawPending++;
+        }
+      } catch (_) {
+        // A pass or an empty bag has no refill to measure.
+        if (Number(turn.bag_count) !== 0 && !/^PASS(?:\s+-?\d+)?$/i.test(String(turn.action || '').trim())) {
+          drawTotal++;
+          drawUnavailable++;
+        }
+      }
+    }
+    const drawSum = draws.reduce((sum, draw) => sum + (draw.afterWin - draw.beforeWin) * 100, 0);
+    const signedDraw = Math.abs(drawSum) < .05 ? '0.0' : (drawSum > 0 ? '+' : '−') + Math.abs(drawSum).toFixed(1);
+    return { mine, total: turns.length, checked, rated, draws, drawTotal, drawPending, drawUnavailable,
+      drawEarly: draws.filter(draw => draw.provisional).length,
+      drawLuck: draws.length || !drawTotal ? signedDraw + ' pp' : '—',
       name: mine ? review.my_name || 'You' : review.opponent || 'Opponent',
       score: mine ? review.my_score : review.opponent_score,
       pending: turns.length - checked.length,
@@ -1228,6 +1295,9 @@ function makeGameOverview(review) {
   };
   row('average', 'Avg. win chance lost', players.map(player => player.average))
     .append(makeElement('small', '', 'Percentage points · lower is better'));
+  row('draw-luck', 'Rack draw luck', players.map(player => player.drawLuck))
+    .append(makeElement('small', '', 'Net percentage points gained or lost'));
+  row('draw-coverage', 'Draws measured', players.map(player => player.draws.length + ' / ' + player.drawTotal));
   row('coverage', 'Moves rated', players.map(player => player.rated.length + ' / ' + player.total));
   const symbols = {best: '★', inaccuracy: '●', mistake: '?', blunder: '??'};
   for (const category of categories) row(category, qualityLabel(category), players.map(player =>
@@ -1242,6 +1312,12 @@ function makeGameOverview(review) {
   const status = [pending ? pending + ' moves waiting for estimates.' : 'All moves checked.'];
   if (early) status.push(early + ' early estimates; grades can change.');
   if (unrated) status.push(unrated + ' moves could not be rated.');
+  const drawPending = players.reduce((sum, player) => sum + player.drawPending, 0);
+  const drawUnavailable = players.reduce((sum, player) => sum + player.drawUnavailable, 0);
+  const drawEarly = players.reduce((sum, player) => sum + player.drawEarly, 0);
+  if (drawPending) status.push(drawPending + (drawPending === 1 ? ' draw waiting' : ' draws waiting') + ' for estimates.');
+  if (drawUnavailable) status.push(drawUnavailable + (drawUnavailable === 1 ? ' draw record unavailable.' : ' draw records unavailable.'));
+  if (drawEarly) status.push(drawEarly + (drawEarly === 1 ? ' early draw estimate; totals can change.' : ' early draw estimates; totals can change.'));
   if (contextFor(review)?.paused || moveQualityResults?.state === 'stopped') status.push('Analysis paused. Open the review to resume.');
   if (moveQualityResults?.state === 'error' || [...points.values()].some(point => point.retryable)) status.push('Some moves need a retry. Open the review for details.');
   if (positionCache?.saveError) status.push('Results could not be saved.');
@@ -1251,7 +1327,7 @@ function makeGameOverview(review) {
   start.addEventListener('click', () => { boardView = 'after'; selectTurn(0, '.turn-controls'); });
   panel.append(start);
   const method = makeReviewDetails('overview-method', 'overview-method', 'About these estimates');
-  method.append(makeElement('p', '', 'Win chance lost compares each recorded move with the best sampled alternative from the same position. Best: under 2 percentage points; Inaccuracy: 2–under 5; Mistake: 5–under 10; Blunder: 10 or more. Missing estimates stay blank in the chart. These are engine estimates, not a measure of human accuracy.'));
+  method.append(makeElement('p', '', 'Win chance lost compares each recorded move with the best sampled alternative from the same position. Best: under 2 percentage points; Inaccuracy: 2–under 5; Mistake: 5–under 10; Blunder: 10 or more. Rack draw luck compares the same recorded move before and after its actual refill. It sums signed changes for each player; passes and empty-bag turns have no draw. Partial totals include only measured refills. Missing estimates stay blank in the chart. These are engine estimates, not a measure of human accuracy.'));
   panel.append(method);
   return panel;
 }
@@ -1261,8 +1337,9 @@ function refreshGameOverview() {
   if (!existing || !currentReview) return;
   rememberReviewDetails();
   const focused = document.activeElement;
-  const turn = focused?.closest('.win-history-point')?.dataset.turnIndex;
-  const selector = turn !== undefined ? '.win-history-point[data-turn-index="' + turn + '"]'
+  const focusedPoint = focused?.closest('.win-history-point');
+  const turn = focusedPoint?.dataset.turnIndex;
+  const selector = turn !== undefined ? '.win-history-point[data-turn-index="' + turn + '"][data-phase="' + focusedPoint.dataset.phase + '"]'
     : focused?.matches('.start-review') ? '.start-review'
     : focused?.matches('.overview-method > summary') ? '.overview-method > summary'
     : focused?.matches('.win-history-help > summary') ? '.win-history-help > summary'
@@ -2086,10 +2163,12 @@ function refreshTrendPanel() {
   rememberReviewDetails();
   const existing = byId('reviewPanel').querySelector('.trend-panel');
   if (existing && currentReview) {
-    const focusedTurn = existing.querySelector('.win-history-point:focus')?.dataset.turnIndex;
+    const focusedPoint = existing.querySelector('.win-history-point:focus');
+    const focusedTurn = focusedPoint?.dataset.turnIndex;
+    const focusedPhase = focusedPoint?.dataset.phase;
     existing.replaceWith(makeTrendPanel(currentReview));
     restoreReviewChartScroll();
-    if (focusedTurn !== undefined) restoreWinHistoryFocus(byId('reviewPanel').querySelector('.win-history-point[data-turn-index="' + focusedTurn + '"]'));
+    if (focusedTurn !== undefined) restoreWinHistoryFocus(byId('reviewPanel').querySelector('.win-history-point[data-turn-index="' + focusedTurn + '"][data-phase="' + focusedPhase + '"]'));
   }
   restoreFocus();
 }
@@ -2138,10 +2217,10 @@ function makeTrendPanel(review) {
   status.id = 'trendStatus';
   panel.append(status);
   settings.append(makeElement('p', 'analysis-note', point?.actual
-    ? 'The final position shows the game result. A draw splits the bar equally. The chart shows recorded-move estimates from Turn 1 to the finish; gaps have no estimate.'
+    ? 'The final position shows the game result. A draw splits the bar equally. The chart shows move estimates before and after recorded rack draws; gaps have no estimate.'
     : 'White shows your chance; black shows your opponent’s. The bar estimates ' +
       (preview ? (previewCandidate ? 'the selected move preview' : 'the best move preview') : 'the recorded move') +
-      '. Each chart point estimates the recorded move from the board and rack before that turn. Turn 1 is the first move estimate. Gaps have no estimate. Early estimates can change.'));
+      '. The chart adds a second point after each measured rack refill. Draw luck compares the same move before and after that refill. Gaps have no estimate. Early estimates can change.'));
   panel.append(settings);
   return panel;
 }
@@ -2151,6 +2230,7 @@ function makeWinHistoryInspector(point, review, sweep) {
   inspector.setAttribute('aria-label', 'Move details');
   inspector.dataset.inspectedTurn = String(point.x);
   inspector.dataset.final = String(Boolean(point.actual));
+  inspector.dataset.inspectedPhase = point.actual ? 'final' : point.phase || 'before-draw';
   const you = viewingSharedGame ? review.my_name || 'Player' : 'You';
   if (point.actual) {
     const result = gameResult(review);
@@ -2164,6 +2244,33 @@ function makeWinHistoryInspector(point, review, sweep) {
   const turn = review.turns[point.x];
   const player = turn.mine ? you : review.opponent || 'Opponent';
   const quality = qualityPointForTurn(point.x);
+  if (point.phase === 'after-draw') {
+    const draw = point.draw || quality?.draw;
+    const known = Number.isFinite(draw?.beforeWin) && Number.isFinite(draw?.afterWin);
+    const delta = known ? (draw.afterWin - draw.beforeWin) * 100 : null;
+    const signed = known ? Math.abs(delta) < .05 ? '0.0' : (delta > 0 ? '+' : '−') + Math.abs(delta).toFixed(1) : '—';
+    const heading = makeElement('div', 'win-history-inspector-head');
+    heading.append(makeElement('p', 'eyebrow', 'Turn ' + (point.x + 1) + ' · After rack draw'),
+      makeElement('h4', '', draw?.rackAfter || 'Rack unavailable'),
+      makeElement('p', 'win-history-inspector-player', player + ' drew' + (draw?.drawCount ? ' ' + draw.drawCount + (draw.drawCount === 1 ? ' tile' : ' tiles') : '')));
+    if (draw?.provisional || point.provisional) heading.append(makeElement('span', 'win-history-inspector-early', 'Early estimate'));
+    const lossBlock = makeElement('div', 'win-history-inspector-loss-block');
+    const luck = makeElement('p', 'win-history-inspector-loss', signed);
+    if (known) luck.append(makeElement('small', '', ' pp'));
+    lossBlock.append(luck, makeElement('p', 'win-history-inspector-label', 'Rack draw luck for ' + player));
+    const comparison = makeElement('div', 'win-history-comparison');
+    comparison.append(makeElement('p', 'eyebrow', 'Win chance for ' + player));
+    for (const [kind, label, value] of [['before-draw', 'Before draw', draw?.beforeWin], ['after-draw', 'After draw', draw?.afterWin]]) {
+      const row = makeElement('div', 'win-history-comparison-row');
+      row.dataset.move = kind;
+      row.append(makeElement('span', '', label), makeElement('strong', '', Number.isFinite(value) ? (value * 100).toFixed(1) + '%' : '—'));
+      comparison.append(row);
+    }
+    comparison.append(makeElement('p', 'win-history-inspector-note', 'Same move and position; the second estimate fixes the recorded refill.'));
+    inspector.append(heading, lossBlock, comparison);
+    return inspector;
+  }
+
   const knownLoss = Number.isFinite(quality?.loss);
   const grade = knownLoss && ['best', 'inaccuracy', 'mistake', 'blunder'].includes(quality?.category) ? quality.category : 'unrated';
   const probability = value => Number.isFinite(value) && value >= 0 && value <= 1 ? value : null;
@@ -2171,7 +2278,7 @@ function makeWinHistoryInspector(point, review, sweep) {
     ? probability((turn.mine ? point.mine : 100 - point.mine) / 100) : null);
   const best = probability(quality?.bestWin);
   const heading = makeElement('div', 'win-history-inspector-head');
-  heading.append(makeElement('p', 'eyebrow', 'Turn ' + (point.x + 1) + ' · Recorded move'),
+  heading.append(makeElement('p', 'eyebrow', 'Turn ' + (point.x + 1) + ' · Recorded move' + (quality?.draw?.drawCount > 0 ? ' · Before rack draw' : '')),
     makeElement('h4', '', turn.action || 'Pass'),
     makeElement('p', 'win-history-inspector-player', player + ' moved'),
     makeElement('span', 'quality-chip quality-' + grade + ' win-history-inspector-grade', quality ? qualityLabel(grade) : 'Waiting for analysis'));
@@ -2213,18 +2320,26 @@ function makeWinHistoryInspector(point, review, sweep) {
 function drawWinHistory(estimates, review, preview = false, overview = false) {
   const totalTurns = review.turns.length;
   const you = viewingSharedGame ? review.my_name || 'Player' : 'You';
-  const known = new Map(estimates.filter(point => !point.actual && Number.isInteger(point.x) &&
-    point.x >= 0 && point.x < totalTurns && Number.isFinite(point.mine)).map(point => [point.x, point]));
-  const points = review.turns.map((turn, index) => ({ ...known.get(index), x: index }));
+  const usable = estimates.filter(point => !point.actual && Number.isInteger(point.x) &&
+    point.x >= 0 && point.x < totalTurns && Number.isFinite(point.mine));
+  const known = new Map(usable.filter(point => point.phase !== 'after-draw').map(point => [point.x, point]));
+  const draws = new Map(usable.filter(point => point.phase === 'after-draw').map(point => [point.x, point]));
+  const points = review.turns.flatMap((turn, index) => [
+    { ...known.get(index), x: index, phase: 'before-draw' },
+    ...(draws.has(index) ? [{ ...draws.get(index), x: index, phase: 'after-draw' }] : [])
+  ]);
+  const pointKey = point => point.x + ':' + (point.actual ? 'final' : point.phase);
+  const plotIndex = point => point.x + (point.phase === 'after-draw' ? .45 : 0);
   const result = gameResult(review);
   if (result.kind !== 'complete') points.push({ x: totalTurns, actual: true,
     mine: result.kind === 'draw' ? 50 : result.kind === 'win' ? 100 : 0 });
   const selected = overview ? -1 : !preview && currentTurnIndex === totalTurns - 1 && boardView === 'after' && result.kind !== 'complete'
     ? totalTurns : currentTurnIndex;
   const previous = reviewChartScrollStates.get(review);
-  const inspected = previous?.selected === String(selected) && points.some(point => point.x === previous.inspected)
-    ? previous.inspected : Math.max(0, selected);
-  const width = Math.max(560, totalTurns * 32 + 128), height = 320;
+  const inspected = previous?.selected === String(selected)
+    ? points.find(point => point.x === previous.inspected && (point.actual ? 'final' : point.phase) === (previous.phase || 'before-draw')) : null;
+  const inspectedPoint = inspected || points.find(point => point.x === Math.max(0, selected));
+  const width = Math.max(560, totalTurns * (draws.size ? 56 : 32) + 128), height = 320;
   const margin = {top: 32, right: 48, bottom: 88, left: 80};
   const plotWidth = width - margin.left - margin.right, plotHeight = height - margin.top - margin.bottom;
   const x = index => margin.left + index / Math.max(1, totalTurns) * plotWidth;
@@ -2248,8 +2363,8 @@ function drawWinHistory(estimates, review, preview = false, overview = false) {
   const svg = svgElement('svg', { viewBox: `0 0 ${width} ${height}`, role: 'group',
     'aria-label': 'Win chance for ' + you + ' by game turn. Select a point to review.' });
   svg.style.minWidth = width + 'px';
-  const selection = svgElement('rect', {class: 'win-history-selection', x: x(inspected) - 15,
-    y: margin.top - 9, width: 30, height: plotHeight + 61, rx: 5, fill: '#e9f0e5', 'aria-hidden': 'true'});
+  const selection = svgElement('rect', {class: 'win-history-selection', x: x(plotIndex(inspectedPoint || {x: 0})) - 12,
+    y: margin.top - 9, width: 24, height: plotHeight + 61, rx: 5, fill: '#e9f0e5', 'aria-hidden': 'true'});
   svg.append(selection);
   for (const value of overview ? [0, 50, 100] : [0, 25, 50, 75, 100]) {
     svg.append(svgElement('line', { x1: margin.left, x2: width - margin.right, y1: y(value), y2: y(value),
@@ -2267,13 +2382,15 @@ function drawWinHistory(estimates, review, preview = false, overview = false) {
   for (let index = 1; index < points.length; index++) {
     const previous = points[index - 1], point = points[index];
     if (!Number.isFinite(previous.mine) || !Number.isFinite(point.mine)) continue;
-    svg.append(svgElement('line', { class: 'win-history-segment', x1: x(previous.x), x2: x(point.x),
+    svg.append(svgElement('line', { class: 'win-history-segment' + (point.phase === 'after-draw' ? ' win-history-draw-segment' : ''), x1: x(plotIndex(previous)), x2: x(plotIndex(point)),
       y1: y(previous.mine), y2: y(point.mine), stroke: '#256b4a', 'stroke-width': 3,
       'stroke-dasharray': previous.provisional || point.provisional ? '5 4' : 'none' }));
   }
   for (const point of points) {
     const available = Number.isFinite(point.mine);
-    const quality = point.actual ? null : qualityPointForTurn(point.x);
+    const afterDraw = point.phase === 'after-draw';
+    const quality = point.actual || afterDraw ? null : qualityPointForTurn(point.x);
+    const centerX = x(plotIndex(point));
     const grade = ['mistake', 'blunder'].includes(quality?.category) && Number.isFinite(quality.loss) ? quality.category : '';
     const gradeLabel = grade ? qualityLabel(grade) + ': ' + quality.loss.toFixed(1) + ' percentage points lost' +
       (quality.provisional ? ' (early grade)' : '') : '';
@@ -2285,16 +2402,16 @@ function drawWinHistory(estimates, review, preview = false, overview = false) {
     const candidates = turn ? ['review', 'preview', 'candidates'].flatMap(kind => positionCache.get(turn, kind)?.moves || []) : [];
     const bestMove = quality?.bestMove;
     if (bestMove) candidates.push(bestMove);
-    const sweep = turn ? CrossplayReview.sweepEvent(turn, candidates) : null;
+    const sweep = turn && !afterDraw ? CrossplayReview.sweepEvent(turn, candidates) : null;
     const eventLabel = sweep === 'played' ? 'Sweep (bingo)' : sweep === 'missed' ? 'Missed sweep (bingo)' : '';
-    const label = (point.actual ? 'Final result' : 'Turn ' + (point.x + 1) + '. ' + player.name + ' moved') + '. ' +
+    const label = (point.actual ? 'Final result' : 'Turn ' + (point.x + 1) + '. ' + player.name + (afterDraw ? '. After rack draw' : ' moved' + (draws.has(point.x) ? '. Before rack draw' : ''))) + '. ' +
       (eventLabel ? eventLabel + '. ' : '') +
       (gradeLabel ? gradeLabel + '. ' : '') +
       (available ? you + ': ' + Math.max(0, Math.min(100, point.mine)).toFixed(1) + '%.' + (point.actual ? '' : ' ' + state + '.') : state + '.') + ' Select to review.';
-    const group = svgElement('g', { class: 'win-history-point', 'data-turn-index': point.x,
+    const group = svgElement('g', { class: 'win-history-point', 'data-turn-index': point.x, 'data-phase': point.actual ? 'final' : point.phase,
       'data-player': playerKey, 'data-sweep': sweep || '', 'data-quality': grade,
       'data-estimate': point.actual ? 'final' : available ? point.provisional ? 'early' : 'full' : 'missing',
-      tabindex: 0, role: 'button', 'aria-label': label, 'aria-pressed': point.x === selected ? 'true' : 'false' });
+      tabindex: 0, role: 'button', 'aria-label': label, 'aria-pressed': point.x === selected && !afterDraw ? 'true' : 'false' });
     const description = label.replace(' Select to review.', '') + (turn ? ' ' + (turn.action || 'Pass') : '');
     const title = svgElement('title');
     title.textContent = description;
@@ -2302,35 +2419,38 @@ function drawWinHistory(estimates, review, preview = false, overview = false) {
     const centerY = available ? y(point.mine) : y(0) + 16;
     const color = player?.color || '#256b4a';
     const hollow = !available || point.provisional;
-    if (point.x === selected) group.append(svgElement('circle', { cx: x(point.x), cy: centerY, r: 10,
+    const markerRadius = afterDraw ? 3.5 : 5.5;
+    if (point.x === selected && !afterDraw) group.append(svgElement('circle', { cx: centerX, cy: centerY, r: 10,
       fill: '#fff', stroke: '#174c38', 'stroke-width': 2 }));
     group.append(svgElement(point.actual ? 'path' : turn.mine ? 'circle' : 'rect', point.actual
-      ? { class: 'win-history-marker', d: `M ${x(point.x)} ${centerY - 7} l 7 7 -7 7 -7 -7 Z`, fill: color, stroke: color, 'stroke-width': 2 }
+      ? { class: 'win-history-marker', d: `M ${centerX} ${centerY - 7} l 7 7 -7 7 -7 -7 Z`, fill: color, stroke: color, 'stroke-width': 2 }
       : { class: 'win-history-marker', ...(turn.mine
-          ? { cx: x(point.x), cy: centerY, r: 5.5 }
-          : { x: x(point.x) - 5.5, y: centerY - 5.5, width: 11, height: 11 }),
-        fill: hollow ? '#fff' : color, stroke: color, 'stroke-width': 2,
+          ? { cx: centerX, cy: centerY, r: markerRadius }
+          : { x: centerX - markerRadius, y: centerY - markerRadius, width: markerRadius * 2, height: markerRadius * 2 }),
+        fill: hollow ? '#fff' : color, stroke: color, 'stroke-width': afterDraw ? 1.5 : 2,
         'stroke-dasharray': !available ? '2 2' : 'none' }));
+    if (afterDraw) group.append(svgElement('circle', { class: 'win-history-draw-mark', cx: centerX,
+      cy: centerY, r: 1.2, fill: hollow ? color : '#fff', 'aria-hidden': 'true' }));
     if (sweep) {
       const starY = centerY - 17;
       const vertices = Array.from({ length: 10 }, (_, index) => {
         const angle = -Math.PI / 2 + index * Math.PI / 5;
         const radius = index % 2 ? 3.2 : 7;
-        return `${x(point.x) + Math.cos(angle) * radius},${starY + Math.sin(angle) * radius}`;
+        return `${centerX + Math.cos(angle) * radius},${starY + Math.sin(angle) * radius}`;
       }).join(' ');
       group.append(svgElement('polygon', { class: 'win-history-sweep', points: vertices,
         fill: sweep === 'played' ? sweepColors.played : '#fff',
         stroke: sweepColors[sweep], 'stroke-width': 1.5, 'aria-hidden': 'true' }));
-      if (sweep === 'missed') group.append(svgElement('line', { x1: x(point.x) - 7, y1: starY + 7,
-        x2: x(point.x) + 7, y2: starY - 7, stroke: sweepColors.missed, 'stroke-width': 2, 'aria-hidden': 'true' }));
+      if (sweep === 'missed') group.append(svgElement('line', { x1: centerX - 7, y1: starY + 7,
+        x2: centerX + 7, y2: starY - 7, stroke: sweepColors.missed, 'stroke-width': 2, 'aria-hidden': 'true' }));
     }
     if (grade) {
       const badge = svgElement('g', {class: 'win-history-grade', 'data-provisional': String(Boolean(quality.provisional)), 'aria-hidden': 'true'});
       const badgeY = centerY + 27;
-      badge.append(svgElement('circle', {cx: x(point.x), cy: badgeY, r: 12,
+      badge.append(svgElement('circle', {cx: centerX, cy: badgeY, r: 12,
         fill: quality.provisional ? '#fff' : gradeColors[grade],
         stroke: gradeColors[grade], 'stroke-width': 1.5, 'stroke-dasharray': quality.provisional ? '3 2' : 'none'}));
-      const mark = svgElement('text', {x: x(point.x), y: badgeY + 5, 'text-anchor': 'middle',
+      const mark = svgElement('text', {x: centerX, y: badgeY + 5, 'text-anchor': 'middle',
         fill: quality.provisional ? gradeColors[grade] : '#fff'});
       mark.textContent = grade === 'blunder' ? '??' : '?';
       badge.append(mark);
@@ -2340,13 +2460,15 @@ function drawWinHistory(estimates, review, preview = false, overview = false) {
       const next = makeWinHistoryInspector(point, review, sweep);
       inspector.replaceWith(next);
       inspector = next;
-      selection.setAttribute('x', x(point.x) - 15);
+      selection.setAttribute('x', centerX - 12);
     };
-    group.addEventListener('pointerenter', showDetail);
+    // Layout changes during keyboard inspection can emit pointerenter beneath
+    // a stationary pointer. Only pointer movement should change that inspection.
+    group.addEventListener('pointermove', showDetail);
     group.addEventListener('focus', () => { if (!group.dataset.restoringFocus) showDetail(); });
-    if (point.x === inspected) showDetail();
-    const hitWidth = Math.min(30, plotWidth / Math.max(1, totalTurns));
-    group.append(svgElement('rect', { class: 'win-history-hit', x: x(point.x) - hitWidth / 2, y: margin.top - 10,
+    if (pointKey(point) === pointKey(inspectedPoint || {})) showDetail();
+    const hitWidth = Math.min(30, plotWidth / Math.max(1, totalTurns) * (draws.size ? .42 : 1));
+    group.append(svgElement('rect', { class: 'win-history-hit', x: centerX - hitWidth / 2, y: margin.top - 10,
       width: hitWidth, height: plotHeight + 66, fill: 'transparent', rx: 3 }));
     const inspect = () => {
       boardView = point.actual ? 'after' : 'before';
@@ -2357,7 +2479,7 @@ function drawWinHistory(estimates, review, preview = false, overview = false) {
       if (event.key !== 'Enter' && event.key !== ' ') return;
       event.preventDefault();
       inspect();
-      byId('reviewPanel').querySelector('.win-history-point[data-turn-index="' + point.x + '"]')?.focus({ preventScroll: true });
+      byId('reviewPanel').querySelector('.win-history-point[data-turn-index="' + point.x + '"][data-phase="' + (point.actual ? 'final' : point.phase) + '"]')?.focus({ preventScroll: true });
     });
     svg.append(group);
   }
@@ -2389,12 +2511,14 @@ function drawWinHistory(estimates, review, preview = false, overview = false) {
   }
   gradeLegend.append(makeElement('span', '', 'Dashed badge: early grade'));
   const legend = makeElement('div', 'win-history-legend');
-  for (const label of ['Filled: full estimate', 'Hollow: early (dashed line)', '◆ Final result', 'Below line: missing estimate']) legend.append(makeElement('span', '', label));
+  for (const label of ['Dot in marker: after rack draw', 'Filled: full estimate', 'Hollow: early (dashed line)', '◆ Final result', 'Below line: missing estimate']) legend.append(makeElement('span', '', label));
   const note = makeElement('p', 'win-history-note', 'Sweep: all 7 tiles played. Missed sweep: analysis found a 7-tile alternative; it may not be the best move.');
   const help = makeReviewDetails('chart-key', 'win-history-help', 'Chart key');
   help.append(legend, note);
   viewport.append(svg);
-  visual.append(viewport, makeElement('p', 'win-history-note', 'Swipe or scroll to see more turns. Hover or focus to inspect; select to review.'),
+  visual.append(viewport, makeElement('p', 'win-history-note', draws.size
+    ? 'Center dot: after rack draw. Scroll; hover or focus to inspect; select to review.'
+    : 'Swipe or scroll to see more turns. Hover or focus to inspect; select to review.'),
     playerLegend, eventLegend, gradeLegend, help);
   body.append(visual, inspector);
   chart.append(body);
@@ -2481,11 +2605,12 @@ async function analyzeReviewTurn(context, index, phase = 'review', options = {})
   const turn = review.turns[index];
   const fullPointReady = () => phase === 'preview' && cache.get(turn, 'review') &&
     context.quality?.points.some(value => value.turnIndex === index && !value.provisional &&
-      value.playedWin === cache.get(turn, 'review').selected.win);
+      value.playedWin === cache.get(turn, 'review').selected.win) && drawWorkComplete(context, index);
   if (fullPointReady()) return { complete: true };
   const savedPoint = context.quality?.points.find(value => value.turnIndex === index);
   if (phase === 'preview' && context.quality?.state === 'done' && savedPoint && !savedPoint.provisional &&
-      !canAnalyzeUnratedExchange(turn, savedPoint)) {
+      !canAnalyzeUnratedExchange(turn, savedPoint) &&
+      (savedPoint.category === 'unrated' || drawWorkComplete(context, index))) {
     // Keep alternatives available for unrated turns in a restored review.
     if (savedPoint.category === 'unrated' && !savedPoint.retryable && validAnalysisTurn(turn)) {
       await ensurePositionAnalysis(review, turn, 'candidates', options);
@@ -2540,9 +2665,34 @@ async function analyzeReviewTurn(context, index, phase = 'review', options = {})
   }
   if (owner !== analysisOwner()) throw accountChanged();
   if (fullPointReady()) return { complete: true };
+  if (Number.isFinite(point.playedWin)) {
+    point = restoreDrawPoint(cache, turn, point);
+    if (!context.paused && !point.draw?.unavailable) {
+      try {
+        const draw = CrossplayReview.rackDraw(turn);
+        if (draw.drawCount) {
+          const result = await ensureRackDrawAnalysis(context, turn, phase, options);
+          if (owner !== analysisOwner()) throw accountChanged();
+          if (fullPointReady()) return { complete: true };
+          point.draw = drawPoint(cache.get(turn, 'draw') || result);
+        }
+      } catch (error) {
+        if (error.name === 'AbortError' || owner !== analysisOwner()) throw error;
+        point.draw = {retryable: true, provisional: phase === 'preview',
+          reason: 'Rack draw analysis failed: ' + error.message};
+      }
+    }
+  }
+  if (owner !== analysisOwner()) throw accountChanged();
+  if (fullPointReady()) return { complete: true };
   const existing = context.quality.points.find(value => value.turnIndex === index);
+  // A cached full move can still have an early draw in flight. Preserve a
+  // newer failed full draw; its retry flag must survive that late early result.
+  if (phase === 'preview' && existing !== savedPoint && existing?.draw?.retryable && !existing.draw.provisional) {
+    return {complete: false};
+  }
   if (point.provisional && existing && !existing.provisional) {
-    return { complete: Boolean(cache.get(turn, 'review')) };
+    return { complete: Boolean(cache.get(turn, 'review')) && drawWorkComplete(context, index) };
   }
   context.quality.points = context.quality.points.filter(value => value.turnIndex !== index).concat(point).sort((a, b) => a.turnIndex - b.turnIndex);
   context.quality.current = context.quality.points.length;
@@ -2554,24 +2704,33 @@ async function analyzeReviewTurn(context, index, phase = 'review', options = {})
     context.quality.message = context.trend.message = 'Analysis paused. A running move can finish and save.';
   }
   syncVisibleContext(context);
-  return { complete: !point.provisional };
+  return { complete: !point.provisional && !point.draw?.provisional &&
+    (phase !== 'preview' || drawWorkComplete(context, index)) };
 }
 function deriveWinTrend(context, done = false) {
-  const points = (context.quality?.points || []).filter(point => Number.isFinite(point.playedWin)).map(point => {
+  const points = (context.quality?.points || []).filter(point => Number.isFinite(point.playedWin)).flatMap(point => {
     const mine = context.review.turns[point.turnIndex].mine ? point.playedWin * 100 : (1 - point.playedWin) * 100;
-    return { x: point.turnIndex, turn: point.turnIndex + 1, mine, theirs: 100 - mine, actual: false,
+    const before = { x: point.turnIndex, phase: 'before-draw', turn: point.turnIndex + 1, mine, theirs: 100 - mine, actual: false,
       provisional: Boolean(point.provisional), samples: point.samples };
+    const draw = point.draw;
+    if (!draw || !draw.drawCount || !Number.isFinite(draw.beforeWin) || !Number.isFinite(draw.afterWin)) return [before];
+    before.mine = (context.review.turns[point.turnIndex].mine ? draw.beforeWin : 1 - draw.beforeWin) * 100;
+    before.theirs = 100 - before.mine;
+    before.provisional = Boolean(draw.provisional);
+    before.samples = draw.samples;
+    const after = (context.review.turns[point.turnIndex].mine ? draw.afterWin : 1 - draw.afterWin) * 100;
+    return [before, {...before, phase: 'after-draw', mine: after, theirs: 100 - after, draw}];
   });
   if (done) {
     const mine = Number(context.review.my_score) === Number(context.review.opponent_score) ? 50 : Number(context.review.my_score) > Number(context.review.opponent_score) ? 100 : 0;
     points.push({ x: context.review.turns.length, mine, theirs: 100 - mine, actual: true });
   }
   return { state: done ? 'done' : 'running', evaluation: MOVE_QUALITY_EVALUATION, points,
-    message: done ? 'Win trend complete. Estimates use the recorded moves.' : 'Win trend uses the same background move estimates.' };
+    message: done ? 'Win trend complete. Estimates separate moves and recorded rack draws.' : 'Win trend adds rack draws as their estimates finish.' };
 }
 async function finishReviewAnalysis(context) {
   if (context.owner !== analysisOwner()) return;
-  if (context.quality?.points.some(point => point.provisional)) return;
+  if (context.quality?.points.some(point => point.provisional || point.draw?.provisional)) return;
   if (!context.quality) context.quality = { evaluation: MOVE_QUALITY_EVALUATION, points: [] };
   context.quality.state = 'done';
   context.quality.message = 'Move-quality analysis complete · ' + context.quality.points.filter(point => Number.isFinite(point.loss)).length + ' of ' + context.review.turns.length + ' moves rated.';
@@ -2616,6 +2775,28 @@ function workerRequest(type, payload = {}, options = {}) {
 function stopWorker() {
   if (quacklePool) quacklePool.stop();
   viewedTurnRequest = null;
+}
+
+async function ensureRackDrawAnalysis(context, turn, phase, options = {}) {
+  const {review, cache, owner} = context;
+  if (owner !== analysisOwner()) throw accountChanged();
+  if (cache.get(turn, 'draw')) return cache.get(turn, 'draw');
+  const kind = phase === 'preview' ? 'draw-preview' : 'draw';
+  const iterations = kind === 'draw-preview' ? PREVIEW_ITERATIONS : SIMULATION_ITERATIONS;
+  const key = cache.key(turn, kind), taskKey = owner + ':' + review.id + ':' + key;
+  const priority = options.priority || (currentReview === review ? 5 : 1);
+  const signal = reviewQueue.controller.signal;
+  return cache.request(turn, kind, async onStart => {
+    const payload = {gridJson: JSON.stringify(turn.grid), rack: turn.rack, rackAfter: turn.rack_after,
+      playerScore: Number(turn.mover_score) || 0, opponentScore: Number(turn.other_score) || 0,
+      bagCount: turn.bag_count, finalTurnsRemaining: turn.bag_count === 0 ? turn.final_turns_remaining : 0,
+      played: CrossplayReview.playedMove(turn), seed: cache.seed(turn), iterations};
+    const result = await workerRequest('simulateDraw', payload, {priority, signal, taskKey, onStart});
+    if (owner !== analysisOwner()) throw accountChanged();
+    if (!CrossplayReview.validDrawResult(result, turn, payload.seed, iterations)) throw new Error('Quackle returned incomplete rack draw results.');
+    recordEngineResult(review, cache, key, result);
+    return result;
+  }, signal, {priority, onPromote: value => quacklePool?.promote(taskKey, value)});
 }
 
 async function ensurePositionAnalysis(review, turn, kind, options = {}) {

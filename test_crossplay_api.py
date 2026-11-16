@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Exercise the real HTTP API and NYT parsing with synthetic upstream data."""
 
+import copy
 import gzip
 import http.client
 import io
@@ -16,7 +17,7 @@ from pathlib import Path
 from unittest.mock import patch
 from urllib.parse import urlsplit
 
-from crossplay_server import CrossplayClient, CrossplayError, Handler, SESSION_COOKIE
+from crossplay_server import CrossplayClient, CrossplayError, Handler, SESSION_COOKIE, game_review
 from tools.mock_nyt import EMPTY_COOKIE, EXPIRED_COOKIE, MOCK_COOKIE, OUTAGE_COOKIE
 from tools.test_support import mock_server
 
@@ -130,6 +131,26 @@ class CrossplayAPITest(unittest.TestCase):
         self.assertEqual(turns[4]['other_score'], 4)
         for before, after in zip(turns, turns[1:]):
             self.assertEqual(before['grid_after'], after['grid'])
+
+    def test_review_exposes_same_player_post_draw_racks_and_final_trays(self):
+        fixture = json.loads((ROOT / 'tools/fixtures/nyt.json').read_text())
+        game = fixture['subscription']['msgs'][0]['recent-games']['games'][0]
+        players = game['game_data']['players']
+        review = game_review(game, game['players'][0]['id'])
+        turns = review['turns']
+        for index, turn in enumerate(turns):
+            later = next((value for value in turns[index + 1:] if value['mine'] == turn['mine']), None)
+            if later:
+                self.assertEqual(turn['rack_after'], later['rack'])
+        self.assertEqual(turns[-2]['rack_after'], players[0]['tray'].replace('*', '?'))
+        self.assertEqual(turns[-1]['rack_after'], players[1]['tray'].replace('*', '?'))
+
+        missing = copy.deepcopy(game)
+        missing['game_data']['players'][0].pop('tray', None)
+        self.assertIsNone(game_review(missing, game['players'][0]['id'])['turns'][-2]['rack_after'])
+        empty = copy.deepcopy(game)
+        empty['game_data']['players'][0]['tray'] = ''
+        self.assertEqual(game_review(empty, game['players'][0]['id'])['turns'][-2]['rack_after'], '')
 
     def test_detail_fallback_and_opponent_opens(self):
         self.connect()

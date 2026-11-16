@@ -3,10 +3,11 @@ import copy
 import json
 import time
 import unittest
+from collections import Counter
 from datetime import datetime, timezone
 from unittest.mock import Mock
 
-from crossplay_server import ANALYSIS_VERSION, CrossplayError, Handler
+from crossplay_server import ANALYSIS_VERSION, TILE_COUNTS, CrossplayError, Handler
 
 
 def review_analysis_entry(kind='review'):
@@ -31,6 +32,20 @@ def review_analysis_entry(kind='review'):
     return key, result
 
 
+def draw_analysis_entry(kind='draw'):
+    iterations = 64 if kind == 'draw-preview' else 277
+    key = json.dumps(['quackle-rack-draw-v1', kind, ['.' * 15] * 15, 'CATERS?',
+                      0, 0, 86, 0, iterations, 2, 21, 'CAT 8G 10', '',
+                      'ERS?AIN', 'rack-draw-v1'], separators=(',', ':'))
+    result = {'simulated': True, 'samplingVersion': 'rack-draw-v1', 'seed': 123,
+              'rackAfter': 'ERS?AIN', 'beforeWin': .4, 'afterWin': .55, 'drawCount': 3,
+              'iterationsRequested': iterations, 'iterationsCompleted': iterations,
+              'bagCount': 86, 'finalTurnsRemaining': 0, 'playToEnd': False,
+              'simulationMode': '2-ply', 'plies': 2, 'winModel': 'bogowin',
+              'selected': {'action': 'place', 'position': '8G', 'tiles': 'CAT'}}
+    return key, result
+
+
 class BackgroundAnalysisTest(unittest.TestCase):
     def setUp(self):
         self.handler = object.__new__(Handler)
@@ -42,6 +57,132 @@ class BackgroundAnalysisTest(unittest.TestCase):
         self.client.me.return_value = {'user_id': 'synthetic-nyt-user'}
         self.client.recent_games.return_value = []
         self.handler.current_session = Mock(return_value=('account-a', self.client))
+
+    def test_draw_estimates_round_trip_both_profiles_without_replacing_moves(self):
+        review_key, review_result = review_analysis_entry()
+        for kind in ('draw', 'draw-preview'):
+            key, result = draw_analysis_entry(kind)
+            body = {'analysis_version': ANALYSIS_VERSION,
+                    'turn_analyses': {key: result, review_key: review_result}}
+            snapshot = self.handler.validate_game_analysis(body)
+            self.assertEqual(snapshot['turn_analyses'], body['turn_analyses'])
+            self.handler.save_game_analysis('account-a', 'game0001', body)
+            self.assertEqual(self.handler.supabase_data_request.call_args.kwargs['payload']['snapshot'], snapshot)
+
+    def test_draw_estimate_rejects_wrong_identity_profile_samples_and_numbers(self):
+        key, original = draw_analysis_entry()
+        cases = [
+            {'beforeWin': float('nan')}, {'afterWin': float('inf')}, {'afterWin': 1.01},
+            {'beforeWin': -.01}, {'beforeWin': True}, {'drawCount': True}, {'drawCount': 2},
+            {'iterationsCompleted': 64}, {'iterationsRequested': 64}, {'seed': -1},
+            {'seed': 2 ** 32}, {'seed': True}, {'bagCount': 85}, {'finalTurnsRemaining': 1},
+            {'playToEnd': True}, {'plies': -1}, {'simulationMode': 'play-to-end'},
+            {'winModel': 'terminal'}, {'simulated': 1}, {'samplingVersion': 'paired-review-v1'},
+            {'rackAfter': 'ERS?ANE'}, {'selected': {'action': 'place', 'position': '8H', 'tiles': 'CAT'}},
+        ]
+        for changes in cases:
+            with self.subTest(changes=changes), self.assertRaises(CrossplayError):
+                self.handler.validate_game_analysis({'analysis_version': ANALYSIS_VERSION,
+                    'turn_analyses': {key: {**original, **changes}}})
+        for index, value in [(0, 'bad'), (1, 'preview'), (8, 64), (9, 3), (10, 20),
+                             (11, 'CAT 8H 10'), (13, 'ERS?ANE'), (14, 'bad')]:
+            identity = json.loads(key)
+            identity[index] = value
+            with self.subTest(index=index), self.assertRaises(CrossplayError):
+                self.handler.validate_game_analysis({'analysis_version': ANALYSIS_VERSION,
+                    'turn_analyses': {json.dumps(identity): original}})
+
+    def test_draw_estimate_requires_retained_tiles_and_available_physical_draws(self):
+        key, original = draw_analysis_entry()
+        for rack_after in ('ERS?ZZZ', 'ERS?AAAQ', 'ERS?AA', 'ERSAINT', '', None):
+            identity = json.loads(key)
+            identity[13] = rack_after
+            result = {**original, 'rackAfter': rack_after}
+            with self.subTest(rack_after=rack_after), self.assertRaises(CrossplayError):
+                self.handler.validate_game_analysis({'analysis_version': ANALYSIS_VERSION,
+                    'turn_analyses': {json.dumps(identity): result}})
+        # All three physical blanks are already on the board or in the current rack.
+        identity = json.loads(key)
+        grid = identity[2].copy()
+        grid[0] = 'ab' + '.' * 13
+        identity[2] = grid; identity[6] = 84; identity[13] = 'ERS??AI'
+        with self.assertRaises(CrossplayError):
+            self.handler.validate_game_analysis({'analysis_version': ANALYSIS_VERSION,
+                'turn_analyses': {json.dumps(identity): {**original, 'bagCount': 84, 'rackAfter': 'ERS??AI'}}})
+
+    def test_pass_draw_estimate_must_have_zero_effect_and_same_rack(self):
+        key, original = draw_analysis_entry()
+        identity = json.loads(key)
+        identity[11] = 'PASS 0'
+        identity[13] = identity[3]
+        result = {**original, 'selected': {'action': 'pass', 'position': '', 'tiles': ''},
+                  'rackAfter': identity[3], 'drawCount': 0, 'afterWin': original['beforeWin']}
+        body = {'analysis_version': ANALYSIS_VERSION, 'turn_analyses': {json.dumps(identity): result}}
+        self.handler.validate_game_analysis(body)
+        result['afterWin'] += .01
+        with self.assertRaises(CrossplayError):
+            self.handler.validate_game_analysis(body)
+
+    def test_exchange_draw_uses_explicit_tiles_and_cannot_redraw_the_only_discarded_copy(self):
+        key, original = draw_analysis_entry()
+        identity = json.loads(key)
+        identity[3] = 'CATERSZ'
+        identity[11:14] = ['swap -- 0', 'Z', 'CATERSA']
+        result = {**original, 'rackAfter': 'CATERSA', 'drawCount': 1,
+                  'selected': {'action': 'exchange', 'position': '', 'tiles': 'Z'}}
+        self.handler.validate_game_analysis({'analysis_version': ANALYSIS_VERSION,
+            'turn_analyses': {json.dumps(identity): result}})
+        identity[13] = 'CATERSZ'; result['rackAfter'] = 'CATERSZ'
+        with self.assertRaises(CrossplayError):
+            self.handler.validate_game_analysis({'analysis_version': ANALYSIS_VERSION,
+                'turn_analyses': {json.dumps(identity): result}})
+
+    def test_draw_estimate_counts_assigned_blank_and_partial_bag_refill(self):
+        key, original = draw_analysis_entry()
+        identity = json.loads(key)
+        identity[11] = 'CAt 8G 10'
+        identity[13] = 'ERSTAIN'
+        result = {**original, 'rackAfter': 'ERSTAIN',
+                  'selected': {'action': 'place', 'position': '8G', 'tiles': 'CAt'}}
+        self.handler.validate_game_analysis({'analysis_version': ANALYSIS_VERSION,
+            'turn_analyses': {json.dumps(identity): result}})
+
+        # A physically possible 85-tile board leaves seven mover tiles, six
+        # hidden opponent tiles and only two tiles in the bag.
+        off_board = Counter('CATERS?' + 'AINLOOU' + 'E')
+        board_tiles = ''.join(letter * (count - off_board[letter])
+                              for letter, count in TILE_COUNTS.items()).replace('?', 'a')
+        self.assertEqual(len(board_tiles), 85)
+        grid = [board_tiles[index:index + 15].ljust(15, '.') for index in range(0, 225, 15)]
+        identity = json.loads(key)
+        identity[2] = grid
+        identity[6] = 2
+        identity[11] = 'CAT 7A 10'; identity[13] = 'ERS?AI'
+        result = {**original, 'rackAfter': 'ERS?AI', 'drawCount': 2, 'bagCount': 2,
+                  'playToEnd': True, 'simulationMode': 'play-to-end', 'winModel': 'terminal', 'plies': -1,
+                  'selected': {'action': 'place', 'position': '7A', 'tiles': 'CAT'}}
+        self.handler.validate_game_analysis({'analysis_version': ANALYSIS_VERSION,
+            'turn_analyses': {json.dumps(identity): result}})
+        identity[13] = 'ERS?AIN'; result['rackAfter'] = 'ERS?AIN'; result['drawCount'] = 3
+        with self.assertRaises(CrossplayError):
+            self.handler.validate_game_analysis({'analysis_version': ANALYSIS_VERSION,
+                'turn_analyses': {json.dumps(identity): result}})
+
+    def test_saved_review_backfills_only_the_next_rack_of_the_same_player(self):
+        review = {'id': 'game0001', 'status': 'completed', 'turns': [
+            {'mine': True, 'rack': 'CATERS?'}, {'mine': False, 'rack': 'TILEDSO'},
+            {'mine': True, 'rack': 'ERS?AIN'}, {'mine': False, 'rack': 'ILEDSOA'}]}
+        original = copy.deepcopy(review)
+        self.handler.supabase_data_request.return_value = [{'review': review, 'share_token': 'share'}]
+        saved = self.handler.saved_game_review('account-a', 'game0001')
+        self.assertEqual(saved['turns'][0].get('rack_after'), 'ERS?AIN')
+        self.assertEqual(saved['turns'][1].get('rack_after'), 'ILEDSOA')
+        self.assertIsNone(saved['turns'][2].get('rack_after'))
+        self.assertIsNone(saved['turns'][3].get('rack_after'))
+        self.assertEqual(review, original)
+        review['turns'].insert(2, {'mine': True, 'rack': None})
+        saved = self.handler.saved_game_review('account-a', 'game0001')
+        self.assertIsNone(saved['turns'][0].get('rack_after'))
 
     def test_incremental_results_use_atomic_merge_scoped_to_owner(self):
         body = {'analysis_version': ANALYSIS_VERSION, 'turn_analyses': {

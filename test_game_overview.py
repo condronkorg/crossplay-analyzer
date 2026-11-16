@@ -1,5 +1,6 @@
 """Game overview checks with synthetic games and deterministic estimates."""
 
+import re
 import unittest
 
 from playwright.sync_api import expect
@@ -30,6 +31,105 @@ class GameOverviewTest(unittest.TestCase):
           trendResults = deriveWinTrend({review: currentReview, quality: moveQualityResults});
           refreshMoveQualityPanel(); refreshTrendPanel();
         }''')
+
+    def set_draw_points(self):
+        self.page.evaluate("""() => {
+          // One recorded placement and one exchange, followed by pass-only turns.
+          currentReview.turns = currentReview.turns.map((turn, index) => ({...turn,
+            action: index === 0 ? 'CAT 8G 10' : index === 1 ? 'swap -- 0' : 'PASS 0',
+            rack: index === 0 ? 'CATERS?' : 'AEIRST?',
+            rack_after: index === 0 ? 'ERS?ING' : index === 1 ? 'AEIRSTZ' : 'AEIRST?',
+            swapped_tiles: index === 1 ? '?' : null,
+            bag_count: 86, grid: Array(15).fill('.'.repeat(15))
+          }));
+          moveQualityResults = {state: 'running', points: [
+            {turnIndex: 0, category: 'mistake', loss: 6, playedWin: .50, bestWin: .56,
+             draw: {beforeWin: .50, afterWin: .62, luck: 12, drawCount: 3,
+               rackAfter: 'ERS?ING', samples: 277, provisional: false}},
+            {turnIndex: 1, category: 'best', loss: 0, playedWin: .60, bestWin: .60,
+             draw: {beforeWin: .60, afterWin: .53, luck: -7, drawCount: 1,
+               rackAfter: 'AEIRSTZ', samples: 64, provisional: true}}
+          ]};
+          trendResults = {state: 'running', points: [
+            {x: 0, phase: 'before-draw', mine: 50},
+            {x: 0, phase: 'after-draw', mine: 62, draw: moveQualityResults.points[0].draw},
+            {x: 1, phase: 'before-draw', mine: 40},
+            {x: 1, phase: 'after-draw', mine: 47, provisional: true, draw: moveQualityResults.points[1].draw}
+          ]};
+          renderReview();
+        }""")
+
+    def test_draw_luck_summary_has_signed_player_totals_and_separate_coverage(self):
+        self.open_summary()
+        self.set_draw_points()
+        expect(self.page.locator('[data-summary-row="draw-luck"] td')).to_have_text(['+12.0 pp', '−7.0 pp'])
+        expect(self.page.locator('[data-summary-row="draw-coverage"] td')).to_have_text(['1 / 1', '1 / 1'])
+        expect(self.page.locator('.overview-status')).to_contain_text('1 early draw estimate')
+        self.page.evaluate("""() => {
+          delete moveQualityResults.points[1].draw;
+          refreshMoveQualityPanel();
+        }""")
+        expect(self.page.locator('[data-summary-row="draw-luck"] td')).to_have_text(['+12.0 pp', '—'])
+        expect(self.page.locator('[data-summary-row="draw-coverage"] td')).to_have_text(['1 / 1', '0 / 1'])
+        expect(self.page.locator('.overview-status')).to_contain_text('1 draw waiting')
+        self.page.evaluate("""() => {
+          currentReview.turns[1].rack_after = null;
+          refreshMoveQualityPanel();
+        }""")
+        expect(self.page.locator('.overview-status')).to_contain_text('1 draw record unavailable')
+
+    def test_chart_draw_points_keep_move_annotations_and_draw_details_separate(self):
+        self.open_summary()
+        self.set_draw_points()
+        chart = self.page.locator('.win-history')
+        before = chart.locator('.win-history-point[data-turn-index="0"][data-phase="before-draw"]')
+        after = chart.locator('.win-history-point[data-turn-index="0"][data-phase="after-draw"]')
+        expect(before).to_have_count(1)
+        expect(after).to_have_count(1)
+        expect(before.locator('.win-history-grade')).to_have_text('?')
+        expect(after.locator('.win-history-grade, .win-history-sweep')).to_have_count(0)
+        expect(after).to_have_attribute('aria-label', re.compile('After rack draw'))
+        self.assertGreater(float(after.locator('.win-history-hit').get_attribute('x')),
+                           float(before.locator('.win-history-hit').get_attribute('x')))
+        after.focus()
+        inspector = chart.locator('.win-history-inspector')
+        expect(inspector).to_have_attribute('data-inspected-phase', 'after-draw')
+        expect(inspector).to_contain_text('+12.0')
+        expect(inspector.locator('[data-move="before-draw"] strong')).to_have_text('50.0%')
+        expect(inspector.locator('[data-move="after-draw"] strong')).to_have_text('62.0%')
+        opponent = chart.locator('.win-history-point[data-turn-index="1"][data-phase="after-draw"]')
+        opponent.focus()
+        expect(inspector).to_contain_text('−7.0')
+        expect(inspector.locator('[data-move="before-draw"] strong')).to_have_text('60.0%')
+        expect(inspector.locator('[data-move="after-draw"] strong')).to_have_text('53.0%')
+        expect(opponent).to_have_attribute('aria-label', re.compile('You: 47.0%'))
+        self.page.keyboard.press('Enter')
+        expect(self.page.get_by_role('combobox', name='Select game turn')).to_have_value('1')
+        expect(self.page.locator('.win-history-point[data-turn-index="1"][data-phase="after-draw"]')).to_be_focused()
+
+    def test_background_refresh_preserves_draw_inspection_and_keyboard_stage(self):
+        self.open_summary()
+        self.set_draw_points()
+        before = self.page.locator('.win-history-point[data-turn-index="0"][data-phase="before-draw"]')
+        after = self.page.locator('.win-history-point[data-turn-index="1"][data-phase="after-draw"]')
+        before.focus()
+        after.hover()
+        for refresh in ['refreshMoveQualityPanel()', 'refreshTrendPanel()']:
+            state = self.page.evaluate("""refresh => {
+              eval(refresh);
+              const inspector = document.querySelector('.win-history-inspector');
+              return {turn: inspector.dataset.inspectedTurn, phase: inspector.dataset.inspectedPhase,
+                focusedTurn: document.activeElement.dataset.turnIndex,
+                focusedPhase: document.activeElement.dataset.phase};
+            }""", refresh)
+            self.assertEqual(state, {'turn': '1', 'phase': 'after-draw',
+                                     'focusedTurn': '0', 'focusedPhase': 'before-draw'})
+        after.focus()
+        self.page.evaluate('refreshMoveQualityPanel(); refreshTrendPanel()')
+        expect(after).to_be_focused()
+        for width in [320, 390, 1440]:
+            self.page.set_viewport_size({'width': width, 'height': 900})
+            self.assertTrue(self.page.evaluate('document.documentElement.scrollWidth <= innerWidth'))
 
     def test_summary_enters_first_turn_and_chart_enters_selected_turn(self):
         self.open_summary()

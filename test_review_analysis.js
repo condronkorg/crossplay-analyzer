@@ -365,3 +365,43 @@ test('preview navigation keeps selected game priority and retains directly loade
   releases.shift()(); await tick();
   queue.close();
 });
+
+
+const drawTurn = {grid: Array(15).fill('.'.repeat(15)), rack: 'CATERS?', action: 'CAT 8G 10',
+  mover_score: 0, other_score: 0, bag_count: 86, rack_after: 'ERS?AEI'};
+
+test('rack draw metadata removes only played physical tiles and preserves retained blanks', () => {
+  const { rackDraw } = require('./review-analysis.js');
+  assert.deepEqual(rackDraw(drawTurn), {rackAfter: 'ERS?AEI', drawCount: 3, drawn: 'AEI', retained: 'ERS?'});
+  assert.deepEqual(rackDraw({...drawTurn, action: 'cAT 8G 10', rack_after: 'CERSAEI'}),
+    {rackAfter: 'CERSAEI', drawCount: 3, drawn: 'AEI', retained: 'CERS'});
+  assert.throws(() => rackDraw({...drawTurn, rack_after: 'ERSAEIO'}), /retained/);
+  assert.throws(() => rackDraw({...drawTurn, rack_after: null}), /recorded rack/);
+  assert.throws(() => rackDraw({...drawTurn, rack_after: 'ERS?ZZZ'}), /tiles|draw/);
+});
+
+test('draws handle pass, explicit exchange, partial bags and missing swap details', () => {
+  const { rackDraw } = require('./review-analysis.js');
+  assert.equal(rackDraw({...drawTurn, action: 'PASS 0', rack_after: undefined}).drawCount, 0);
+  assert.throws(() => rackDraw({...drawTurn, action: 'swap -- 0'}), /exchanged tiles/);
+  assert.equal(rackDraw({...drawTurn, action: 'swap -- 0', swapped_tiles: 'CA', rack_after: 'TERS?AE'}).drawCount, 2);
+  // Inventory is intentionally sparse but the three-tile partial refill is explicit.
+  const grid = drawTurn.grid.slice();
+  grid[0] = 'EEEEEEEEEEEE...';
+  assert.throws(() => rackDraw({...drawTurn, grid}), /tiles/);
+});
+
+test('draw result validation rejects wrong rack, action, probabilities, profile and horizon', () => {
+  const { validDrawResult } = require('./review-analysis.js');
+  const result = {simulated: true, samplingVersion: 'rack-draw-v1', seed: 123, rackAfter: 'ERS?AEI',
+    beforeWin: .4, afterWin: .55, iterationsRequested: 277, iterationsCompleted: 277,
+    bagCount: 86, finalTurnsRemaining: 0, playToEnd: false, simulationMode: '2-ply', winModel: 'bogowin',
+    plies: 2, selected: {action: 'place',position: '8G',tiles: 'CAT'},drawCount: 3};
+  assert.equal(validDrawResult(result, drawTurn, 123), true);
+  for (const change of [{beforeWin: NaN},{afterWin: 1.01},{rackAfter: 'ERS?ZZZ'},
+    {drawCount: 2},{seed: 124},{iterationsCompleted: 64},{samplingVersion: 'old'},
+    {plies: -1},{selected: {...result.selected,tiles: 'cAT'}}]) {
+    assert.equal(validDrawResult({...result,...change},drawTurn,123), false, JSON.stringify(change));
+  }
+  assert.equal(validDrawResult({...result,iterationsCompleted:64,iterationsRequested:64},drawTurn,123,64),true);
+});

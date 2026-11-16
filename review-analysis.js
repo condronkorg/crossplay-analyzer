@@ -27,6 +27,81 @@
     return loss < 2 ? 'best' : loss < 5 ? 'inaccuracy' : loss < 10 ? 'mistake' : 'blunder';
   }
 
+  // Work with physical tile multisets: an assigned lowercase letter is a blank.
+  function rackDraw(turn) {
+    const move = playedMove(turn);
+    const grid = turn.grid;
+    if (!Array.isArray(grid) || grid.length !== 15 ||
+        !grid.every(row => typeof row === 'string' && /^[A-Za-z.]{15}$/.test(row)) ||
+        !/^[A-Z?]{1,7}$/.test(turn.rack) || !Number.isInteger(turn.bag_count) || turn.bag_count < 0) {
+      throw new Error('The recorded rack, board, or bag count is unavailable.');
+    }
+    const remove = (pool, tiles, message) => {
+      for (const tile of tiles) {
+        const index = pool.indexOf(tile);
+        if (index < 0) throw new Error(message);
+        pool.splice(index, 1);
+      }
+    };
+    const counts = typeof module !== 'undefined' && module.exports
+      ? require('./luck-analysis.js').TILE_COUNTS : root.CrossplayLuck.TILE_COUNTS;
+    const unseen = Object.entries(counts).flatMap(([tile, count]) => Array(count).fill(tile));
+    const physical = tile => tile === tile.toLowerCase() ? '?' : tile;
+    remove(unseen, [...grid.join('')].filter(tile => tile !== '.').map(physical), 'The board contains too many physical tiles.');
+    remove(unseen, turn.rack, 'The rack contains too many physical tiles.');
+    const opponentCount = unseen.length - turn.bag_count;
+    if (opponentCount < 0 || opponentCount > 7) throw new Error('The board, racks, and bag tiles do not add up.');
+    let used = '';
+    if (move.action === 'exchange') {
+      if (turn.bag_count < 7) throw new Error('Exchanging requires at least seven bag tiles.');
+      used = move.tiles;
+    } else if (move.action === 'place') {
+      const across = move.position.match(/^(1[0-5]|[1-9])([A-O])$/);
+      const down = move.position.match(/^([A-O])(1[0-5]|[1-9])$/);
+      let row = Number(across ? across[1] : down[2]) - 1;
+      let col = 'ABCDEFGHIJKLMNO'.indexOf(across ? across[2] : down[1]);
+      for (const tile of move.tiles) {
+        if (!grid[row] || col >= 15) throw new Error('The recorded move runs off the board.');
+        const existing = grid[row][col];
+        if (existing === '.') {
+          if (tile === '.') throw new Error('The recorded move refers to a missing tile.');
+          used += physical(tile);
+        } else if (tile !== '.' && existing.toUpperCase() !== tile.toUpperCase()) {
+          throw new Error('The recorded move conflicts with the board.');
+        }
+        if (across) col++; else row++;
+      }
+      if (!used) throw new Error('The recorded move places no tiles.');
+    }
+    const retained = [...turn.rack];
+    remove(retained, used, 'The recorded move uses tiles missing from the rack.');
+    const drawCount = move.action === 'pass' ? 0 : Math.min(7 - retained.length, turn.bag_count);
+    const rackAfter = turn.rack_after ?? (drawCount === 0 ? retained.join('') : null);
+    if (typeof rackAfter !== 'string' || !/^[A-Z?]{0,7}$/.test(rackAfter)) throw new Error('The recorded rack after the draw is unavailable.');
+    const drawn = [...rackAfter];
+    remove(drawn, retained, 'The recorded rack after the draw does not contain the retained tiles.');
+    if (drawn.length !== drawCount) throw new Error('The recorded rack has the wrong number of drawn tiles.');
+    remove(unseen, drawn, 'The recorded draw contains unavailable physical tiles.');
+    return { rackAfter, drawCount, drawn: drawn.join(''), retained: retained.join('') };
+  }
+
+  function validDrawResult(result, turn, seed, iterations = 277) {
+    let draw, move;
+    try { draw = rackDraw(turn); move = playedMove(turn); } catch (_) { return false; }
+    const bag = turn.bag_count, end = bag <= 21;
+    return Boolean(result && result.simulated === true && !result.error &&
+      result.samplingVersion === 'rack-draw-v1' && result.seed === seed &&
+      result.rackAfter === draw.rackAfter && result.drawCount === draw.drawCount &&
+      result.iterationsRequested === iterations && result.iterationsCompleted === iterations &&
+      result.bagCount === bag && result.finalTurnsRemaining === (bag === 0 ? turn.final_turns_remaining : 0) &&
+      result.plies === (end ? -1 : 2) && result.playToEnd === end &&
+      result.simulationMode === (end ? 'play-to-end' : '2-ply') && result.winModel === (end ? 'terminal' : 'bogowin') &&
+      [result.beforeWin, result.afterWin].every(value => Number.isFinite(value) && value >= 0 && value <= 1) &&
+      (draw.drawCount > 0 || result.beforeWin === result.afterWin) &&
+      placementKey(result.selected, turn.grid) !== null &&
+      placementKey(result.selected, turn.grid) === placementKey(move, turn.grid));
+  }
+
   function sweepEvent(turn, candidates = []) {
     const grid = turn?.grid;
     if (!Array.isArray(grid) || grid.length !== 15 ||
@@ -227,7 +302,7 @@
     }
     close() { this.closed = true; this.controller.abort(); }
   }
-  const api = { playedMove, playedCandidateIndex, sweepEvent, qualityBand, validResult, ReviewQueue };
+  const api = { playedMove, playedCandidateIndex, sweepEvent, qualityBand, rackDraw, validDrawResult, validResult, ReviewQueue };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.CrossplayReview = api;
 })(typeof window !== 'undefined' ? window : globalThis);

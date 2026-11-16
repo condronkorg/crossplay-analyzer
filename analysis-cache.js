@@ -14,6 +14,13 @@
     // legacy keys intact for custom move analysis and existing saved results.
     key(turn, kind) {
       const p = this.parameters;
+      if (kind === 'draw' || kind === 'draw-preview') {
+        return JSON.stringify(['quackle-rack-draw-v1', kind, turn.grid, turn.rack,
+          Number(turn.mover_score) || 0, Number(turn.other_score) || 0,
+          Number(turn.bag_count), Number(turn.bag_count) === 0 ? Number(turn.final_turns_remaining) : 0,
+          kind === 'draw-preview' ? p.previewIterations : p.iterations, p.plies, p.terminalBagLimit,
+          String(turn.action || ''), String(turn.swapped_tiles || ''), turn.rack_after ?? null, 'rack-draw-v1']);
+      }
       const review = kind === 'review' || kind === 'preview';
       const sampled = review || kind === 'simulation' || kind === 'trend';
       const values = [review ? 'quackle-review-v1' : 'quackle-position-v1', kind, turn.grid, turn.rack,

@@ -1,8 +1,16 @@
-diff --git a/sim.cpp b/sim.cpp
-index 6271bcd..265aafb 100644
---- a/sim.cpp
-+++ b/sim.cpp
-@@ -434,6 +434,8 @@ void Simulator::simulate(int plies, int iterations)
+diff --git i/sim.cpp w/sim.cpp
+index 6271bcd..fd18cbc 100644
+--- i/sim.cpp
++++ w/sim.cpp
+@@ -426,6 +426,7 @@ void Simulator::simulate(int plies, int iterations)
+ 	SimmedMoveConstants constants;
+ 	constants.game = m_originalGame;
+ 	constants.partialOppoRack = m_partialOppoRack;
++	constants.firstDraw = m_firstDraw;
+ 	constants.startPlayerId = m_originalGame.currentPosition().currentPlayer().id();
+ 	constants.playerCount = int(m_originalGame.currentPosition().players().size());
+ 	// level one's first move is the zeroth ply (the candidate)
+@@ -434,6 +435,8 @@ void Simulator::simulate(int plies, int iterations)
  	constants.levelCount = (int)((plies - constants.decimalTurns) / constants.playerCount);
  	constants.ignoreOppos = m_ignoreOppos;
  	constants.isLogging = isLogging();
@@ -11,12 +19,14 @@ index 6271bcd..265aafb 100644
  
  	if (isLogging() && !m_hasHeader)
  		writeLogHeader();
-@@ -668,8 +670,17 @@ void Simulator::simulateOnePosition(SimmedMoveMessage &message, const SimmedMove
+@@ -668,10 +671,47 @@ void Simulator::simulateOnePosition(SimmedMoveMessage &message, const SimmedMove
  {
  	Game game = constants.game;
  
 -	// Randomize here rather than once per iteration so that each
 -	// playahead sees an independent draw of oppo racks and tiles.
+-	randomizeOppoRacks(game.currentPosition(), constants.partialOppoRack);
+-	randomizeDrawingOrder(game.currentPosition());
 +	// Review comparisons use a deterministic trial seed for each candidate.
 +	// The initial hidden rack and bag order are common. Later draws can diverge
 +	// as different plays consume different tiles and random numbers.
@@ -28,14 +38,51 @@ index 6271bcd..265aafb 100644
 +		QUACKLE_DATAMANAGER->seedRandomNumbers(seed ^ (seed >> 16));
 +	}
 +	// Other callers retain independent draws for each playahead.
- 	randomizeOppoRacks(game.currentPosition(), constants.partialOppoRack);
- 	randomizeDrawingOrder(game.currentPosition());
++	if (constants.firstDraw.empty())
++	{
++		randomizeOppoRacks(game.currentPosition(), constants.partialOppoRack);
++		randomizeDrawingOrder(game.currentPosition());
++	}
++	else
++	{
++		// The known tiles came from the bag, so hidden opponent racks must
++		// be sampled from the remaining unseen tiles. Do not move tiles out
++		// of a sampled opponent rack after sampling; that biases the result.
++		GamePosition &position = game.currentPosition();
++		Bag available(position.unseenBag());
++		if (!available.removeLetters(constants.firstDraw.tiles()))
++			throw std::invalid_argument("The recorded draw contains unavailable tiles");
++		for (const auto &player : position.players())
++		{
++			if (player.id() == position.currentPlayer().id())
++				continue;
++			Rack hidden = constants.partialOppoRack;
++			if (!available.removeLetters(hidden.tiles()))
++				throw std::invalid_argument("The hidden rack conflicts with the recorded draw");
++			available.refill(hidden);
++			position.setPlayerRack(player.id(), hidden, false);
++		}
++		available.toss(constants.firstDraw.tiles());
++		position.setBag(available);
++		// This order covers exactly the first refill. incrementTurn clears
++		// it afterward, and later turns draw randomly from the remaining bag.
++		position.setDrawingOrder(constants.firstDraw.tiles());
++	}
  
-diff --git a/sim.h b/sim.h
-index b236a24..8d3464a 100644
---- a/sim.h
-+++ b/sim.h
-@@ -234,6 +234,8 @@ public:
+ 	double residual = 0;
+ 
+diff --git i/sim.h w/sim.h
+index b236a24..661b063 100644
+--- i/sim.h
++++ w/sim.h
+@@ -228,12 +228,15 @@ class SimmedMoveConstants
+ public:
+ 	Game game;
+ 	Rack partialOppoRack;
++	Rack firstDraw;
+ 	int startPlayerId;
+ 	int playerCount;
+ 	int decimalTurns;
  	int levelCount;
  	bool ignoreOppos;
  	bool isLogging;
@@ -44,7 +91,7 @@ index b236a24..8d3464a 100644
  };
  
  class SimmedMoveMessageQueue
-@@ -309,6 +311,10 @@ public:
+@@ -309,6 +312,13 @@ public:
  	// to front of simmed move list and level values zeroed.
  	void setIncludedMoves(const MoveList &moves);
  
@@ -52,22 +99,26 @@ index b236a24..8d3464a 100644
 +	// Trial seeds do not depend on candidate order, count, or worker scheduling.
 +	void setPairedSampleSeed(unsigned int seed) { m_pairedSamples = true; m_sampleSeed = seed; }
 +
++	// Reserve a known first draw before sampling hidden opponent tiles.
++	void setFirstDraw(const Rack &rack) { m_firstDraw = rack; }
++
  	void makeSureConsideredMovesAreIncluded();
  	void moveConsideredMovesToBeginning(MoveList &moves) const;
  
-@@ -441,6 +447,8 @@ protected:
+@@ -441,6 +451,9 @@ protected:
  
  	int m_iterations;
  	bool m_ignoreOppos;
 +	bool m_pairedSamples = false;
 +	unsigned int m_sampleSeed = 0;
++	Rack m_firstDraw;
  
  	std::vector<std::thread> m_threadPool;
  	// requested; m_threadPool stays empty until the first simulate()
-diff --git a/wasm/build.sh b/wasm/build.sh
+diff --git i/wasm/build.sh w/wasm/build.sh
 index c87b8ad..075eeee 100755
---- a/wasm/build.sh
-+++ b/wasm/build.sh
+--- i/wasm/build.sh
++++ w/wasm/build.sh
 @@ -79,6 +79,7 @@ em++ \
      -s MAXIMUM_MEMORY=268435456 \
      -s STACK_SIZE=1048576 \
@@ -76,19 +127,20 @@ index c87b8ad..075eeee 100755
      -s ENVIRONMENT=web,worker \
      --bind \
      --preload-file "$DATA_DIR/alphabets/crossplay.quackle_alphabet@/data/alphabets/crossplay.quackle_alphabet" \
-diff --git a/wasm/quackle_wasm.cpp b/wasm/quackle_wasm.cpp
-index 6de2970..3b5ac74 100644
---- a/wasm/quackle_wasm.cpp
-+++ b/wasm/quackle_wasm.cpp
-@@ -14,6 +14,7 @@
+diff --git i/wasm/quackle_wasm.cpp w/wasm/quackle_wasm.cpp
+index 6de2970..20cb85f 100644
+--- i/wasm/quackle_wasm.cpp
++++ w/wasm/quackle_wasm.cpp
+@@ -14,6 +14,8 @@
  #include <iostream>
  #include <algorithm>
  #include <cctype>
++#include <cmath>
 +#include <stdexcept>
  
  #include "alphabetparameters.h"
  #include "boardparameters.h"
-@@ -549,6 +550,193 @@ emscripten::val simulateKibitz(std::string gridJson, std::string rackStr, int pl
+@@ -549,6 +551,284 @@ emscripten::val simulateKibitz(std::string gridJson, std::string rackStr, int pl
      return result;
  }
  
@@ -279,14 +331,106 @@ index 6de2970..3b5ac74 100644
 +    return result;
 +}
 +
++emscripten::val simulateReviewDraw(std::string gridJson, std::string rackStr, int playerScore, int oppScore,
++                                  int numMoves, int iterations, int bagCount, int finalTurnsRemaining,
++                                  emscripten::val played, double seedValue, std::string rackAfter)
++{
++    emscripten::val result = emscripten::val::object();
++    result.set("simulated", false);
++    result.set("samplingVersion", std::string("rack-draw-v1"));
++    result.set("rackAfter", rackAfter);
++    try
++    {
++        if (!s_dm || !s_dm->isGood()) throw std::invalid_argument("Engine not initialized");
++        if (numMoves < 1 || numMoves > 15) throw std::invalid_argument("Review candidate count must be between 1 and 15");
++        if (iterations < 1 || iterations > 277) throw std::invalid_argument("Simulation iterations must be between 1 and 277");
++        if (!std::isfinite(seedValue) || seedValue < 0 || seedValue > 4294967295.0 || std::floor(seedValue) != seedValue)
++            throw std::invalid_argument("Review seed must be an unsigned 32-bit integer");
++        const unsigned int seed = static_cast<unsigned int>(seedValue);
++        result.set("seed", seed);
++        s_dm->seedRandomNumbers(seed);
++        Quackle::Game game;
++        std::string error;
++        if (!prepareGame(gridJson, rackStr, playerScore, oppScore, numMoves,
++                         bagCount, finalTurnsRemaining, true, game, &error))
++            throw std::invalid_argument(error);
++        Quackle::GamePosition &pos = game.currentPosition();
++        if (bagCount > 0 && rackStr.size() != 7)
++            throw std::invalid_argument("A nonempty bag requires a full mover rack");
++        Quackle::Move actual = recordedMove(pos, played);
++        const std::string actualKey = physicalMoveKey(actual);
++        for (const auto &move : pos.moves())
++            if (physicalMoveKey(move) == actualKey) { actual = move; break; }
++        if (rackAfter.size() > 7 || !std::all_of(rackAfter.begin(), rackAfter.end(),
++            [](char c) { return c == '?' || (c >= 'A' && c <= 'Z'); }))
++            throw std::invalid_argument("The rack after the draw must contain at most seven physical tiles");
++        Quackle::LetterString lettersAfter;
++        for (char c : rackAfter)
++            lettersAfter.push_back(c == '?' ? QUACKLE_BLANK_MARK : charToLetter(c));
++        const Quackle::Rack retained = pos.currentPlayer().rack() - actual;
++        Quackle::Rack drawn(lettersAfter);
++        if (!drawn.unload(retained.tiles()))
++            throw std::invalid_argument("The rack after the draw is missing retained tiles");
++        const int drawCount = actual.action == Quackle::Move::Pass ? 0
++            : std::min(bagCount, 7 - static_cast<int>(retained.size()));
++        if (static_cast<int>(drawn.size()) != drawCount)
++            throw std::invalid_argument("The rack after the draw has the wrong number of new tiles");
++        Quackle::Bag unseen(pos.unseenBag());
++        if (!unseen.removeLetters(drawn.tiles()))
++            throw std::invalid_argument("The recorded draw contains unavailable tiles");
++        const bool playToEnd = bagCount <= 21;
++        const int plies = playToEnd ? -1 : 2;
++        auto estimate = [&](bool conditionDraw) {
++            Quackle::Simulator simulator;
++            simulator.setThreadCount(0);
++            simulator.setPosition(pos);
++            Quackle::MoveList moves;
++            moves.push_back(actual);
++            simulator.setIncludedMoves(moves);
++            simulator.setPairedSampleSeed(seed);
++            simulator.setIgnoreOppos(false);
++            if (conditionDraw) simulator.setFirstDraw(drawn);
++            simulator.simulate(plies, iterations);
++            const auto &simmed = simulator.simmedMoveForMove(actual);
++            if (simulator.iterations() != iterations || simmed.wins.incorporatedValues() != iterations ||
++                (playToEnd && simmed.terminalResults.averagedValue() != 1))
++                throw std::invalid_argument("The rack draw simulation did not finish all requested samples");
++            return simmed.wins.averagedValue();
++        };
++        const double beforeWin = estimate(false);
++        const double afterWin = drawCount == 0 ? beforeWin : estimate(true);
++        emscripten::val selected = emscripten::val::object();
++        selected.set("action", moveActionStr(actual.action));
++        selected.set("position", positionString(actual));
++        selected.set("tiles", tilesToString(actual.prettyTiles()));
++        result.set("selected", selected);
++        result.set("beforeWin", beforeWin);
++        result.set("afterWin", afterWin);
++        result.set("drawCount", drawCount);
++        result.set("iterationsRequested", iterations);
++        result.set("iterationsCompleted", iterations);
++        result.set("bagCount", bagCount);
++        result.set("finalTurnsRemaining", finalTurnsRemaining);
++        result.set("plies", plies);
++        result.set("playToEnd", playToEnd);
++        result.set("simulationMode", std::string(playToEnd ? "play-to-end" : "2-ply"));
++        result.set("winModel", std::string(playToEnd ? "terminal" : "bogowin"));
++        result.set("simulated", true);
++        result.set("error", std::string(""));
++    }
++    catch (const std::exception &error) { result.set("error", std::string(error.what())); }
++    return result;
++}
++
  bool isWordValid(std::string word)
  {
      if (!s_dm || !s_dm->isGood())
-@@ -587,6 +775,7 @@ EMSCRIPTEN_BINDINGS(quackle)
+@@ -587,6 +867,8 @@ EMSCRIPTEN_BINDINGS(quackle)
      emscripten::function("initEngine", &initEngine);
      emscripten::function("kibitz", &kibitz);
      emscripten::function("simulateKibitz", &simulateKibitz);
 +    emscripten::function("simulateReviewMove", &simulateReviewMove);
++    emscripten::function("simulateReviewDraw", &simulateReviewDraw);
      emscripten::function("isWordValid", &isWordValid);
      emscripten::function("getEngineInfo", &getEngineInfo);
  }

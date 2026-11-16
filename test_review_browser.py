@@ -7,6 +7,7 @@ an already-running `npm run frontend` server instead. External requests fail.
 
 import json
 import os
+import re
 import unittest
 from contextlib import ExitStack
 from pathlib import Path
@@ -482,12 +483,12 @@ class ReviewBrowserTest(unittest.TestCase):
                 expect(played.locator('td').first).to_have_css('background-color', 'rgb(255, 244, 212)')
                 # The best alternative must not look like the played move.
                 if turn_index != 4:
-                    expect(rows.first).not_to_have_class('played-move')
+                    expect(rows.first).not_to_have_class(re.compile(r'(^|\s)played-move(\s|$)'))
                     expect(rows.first.locator('td').first).to_have_css('font-weight', '400')
                     expect(rows.first.locator('td').first).to_have_css('color', 'rgb(32, 51, 45)')
-                    expect(rows.nth(1)).to_have_class('played-move')
+                    expect(rows.nth(1)).to_have_class(re.compile(r'(^|\s)played-move(\s|$)'))
                 else:
-                    expect(rows.first).to_have_class('played-move')
+                    expect(rows.first).to_have_class(re.compile(r'(^|\s)played-move(\s|$)'))
 
     def test_table_previews_blank_alternatives_and_restores_the_recorded_board(self):
         self.use_saved_analysis()
@@ -547,6 +548,12 @@ class ReviewBrowserTest(unittest.TestCase):
     def test_continuation_recomputes_replies_and_can_undo_without_changing_review(self):
         self.open_game()
         self.page.evaluate('''() => {
+          window.continuationRequests = [];
+          const request = workerRequest;
+          workerRequest = (type, payload, options) => {
+            continuationRequests.push({type, iterations: payload.iterations, grid: payload.gridJson});
+            return request(type, payload, options);
+          };
           const turn = currentReview.turns[0];
           positionCache.results[positionCache.key(turn, 'candidates')] = {
             moves: [{action: 'place', position: '8G', tiles: 'ACT', score: 5}]
@@ -595,36 +602,90 @@ class ReviewBrowserTest(unittest.TestCase):
         self.assertEqual(panel.locator('.board').inner_text(), board)
         self.assertEqual(replies.first.locator('button').inner_text(), first_reply)
         self.assertEqual(replies.all_text_contents(), first_estimates)
-        panel.get_by_role('button', name='Play best reply →', exact=True).click()
-        expect(panel).to_contain_text('After 2 hypothetical moves')
-        expect(replies.first).to_be_visible(timeout=120_000)
-        for _ in range(100):
-            state = self.page.evaluate('''() => ({
-              finished: continuationExplorer.history.at(-1).finished,
-              error: continuationExplorer.error
-            })''')
-            self.assertIsNone(state['error'])
-            if state['finished']:
-                break
-            panel.get_by_role('button', name='Play best reply →', exact=True).click()
-            self.page.wait_for_function('continuationExplorer && !continuationExplorer.busy', timeout=120_000)
-        expect(panel).to_contain_text('Line complete')
-        self.assertEqual(self.page.evaluate('''() => {
-          const state = continuationExplorer.history.at(-1);
-          return [state.bag.length, state.finalTurns];
-        }'''), [0, 0])
+        # Three real reply lists prove recomputation. Undo must use the saved
+        # lists, without simulating an entire game at 277 samples.
+        requests = self.page.evaluate('continuationRequests')
+        self.assertEqual([(item['type'], item['iterations']) for item in requests],
+                         [('simulateReview', 277)] * 3)
+        self.assertEqual(json.loads(requests[0]['grid'])[7], '......ACT......')
+        self.assertIsNone(self.page.evaluate('continuationExplorer.error'))
         self.assertEqual(self.page.evaluate('JSON.stringify(currentReview)'), original)
         self.page.get_by_role('button', name='Next →', exact=True).click()
         expect(panel).to_have_count(0)
         expect(self.page.locator('.board-preview-note')).to_have_count(0)
 
+    def test_continuation_final_empty_bag_turn_finishes_without_a_worker(self):
+        self.open_game()
+        result = self.page.evaluate("""() => {
+          // The model tests cover draining the bag and both final turns. This
+          // small observed final-turn fixture checks the terminal UI directly.
+          // Reuse the physical empty-bag position from the WASM regressions.
+          const grid = [
+            'CD........G....', '.......A.NOUN.Y', '.......L...TAME',
+            '......YEAH...E.', '.........ab.yA.', '......LOB.OWED.',
+            '..PROG..I.TEN.F', '....D..JOGS...I', '...LASSI.O..RUN',
+            '.......V.R.MI..', '...C...E..HIPS.', '...A.BASE.A.E..',
+            '...R.O..D.V....', '..RENT.LITER...', '.....H..T......'
+          ];
+          const rack = 'WEAFTUO';
+          const pool = Object.entries(CrossplayLuck.TILE_COUNTS)
+            .flatMap(([tile, count]) => Array(count).fill(tile));
+          const boardTiles = [...grid.join('')].filter(tile => tile !== '.')
+            .map(tile => tile === tile.toLowerCase() ? '?' : tile);
+          for (const tile of [...boardTiles, ...rack]) pool.splice(pool.indexOf(tile), 1);
+          let requests = 0;
+          continuationExplorer = new MoveContinuation.Explorer({
+            turn: {grid, rack, bag_count: 0, final_turns_remaining: 1,
+              mover_score: 20, other_score: 10},
+            opponentRack: pool.join(''), seed: 1, move: {action: 'pass', tiles: '', score: 0},
+            names: ['You', 'Demo Cedar'], renderBoard,
+            request: () => { requests++; throw new Error('The completed line must not simulate replies.'); }
+          });
+          document.querySelector('.turn-panel').append(continuationExplorer.root);
+          const state = continuationExplorer.history.at(-1);
+          return {requests, bag: state.bag.length, finalTurns: state.finalTurns, finished: state.finished,
+            error: continuationExplorer.error};
+        }""")
+        panel = self.page.get_by_role('region', name='Hypothetical continuation')
+        expect(panel).to_contain_text('Line complete · You: 20 · Demo Cedar: 10')
+        expect(panel.get_by_role('button', name='Play best reply →', exact=True)).to_have_count(0)
+        expect(panel.get_by_role('button', name='← Undo reply', exact=True)).to_be_disabled()
+        self.assertEqual(result, {'requests': 0, 'bag': 0, 'finalTurns': 0, 'finished': True, 'error': None})
+        self.page.get_by_role('button', name='Next →', exact=True).click()
+        expect(panel).to_have_count(0)
+
     def install_review_worker(self, delay=0):
         worker = r"""
           self.onmessage = ({data: {id, type, payload: p}}) => {
             if (type === 'init') return self.postMessage({id, result: {}});
+            const win = p.rack === 'ACERSTU' ? .3 : p.rack === '?EINRSU' ? .43 : .5;
+            if (type === 'simulateDraw') {
+              const move = p.played, grid = JSON.parse(p.gridJson);
+              let used = move.action === 'exchange' ? move.tiles.length : 0;
+              if (move.action === 'place') {
+                const across = move.position.match(/^(\d+)([A-O])$/);
+                const down = move.position.match(/^([A-O])(\d+)$/);
+                let row = Number(across ? across[1] : down[2]) - 1;
+                let col = 'ABCDEFGHIJKLMNO'.indexOf(across ? across[2] : down[1]);
+                for (const tile of move.tiles) {
+                  if (grid[row][col] === '.' && tile !== '.') used++;
+                  if (across) col++; else row++;
+                }
+              }
+              const drawCount = move.action === 'pass' ? 0 : Math.min(p.bagCount, 7 - (p.rack.length - used));
+              const end = p.bagCount <= 21;
+              const result = {simulated: true, samplingVersion: 'rack-draw-v1', seed: p.seed,
+                selected: {...move}, rackAfter: p.rackAfter, drawCount, beforeWin: win,
+                afterWin: drawCount ? Math.min(1, win + .05) : win,
+                plies: end ? -1 : 2, playToEnd: end, simulationMode: end ? 'play-to-end' : '2-ply',
+                winModel: end ? 'terminal' : 'bogowin', bagCount: p.bagCount,
+                finalTurnsRemaining: p.finalTurnsRemaining,
+                iterationsRequested: p.iterations, iterationsCompleted: p.iterations};
+              return setTimeout(() => self.postMessage({id, result}), DELAY);
+            }
             if (type !== 'simulateReview') return self.postMessage({id, error: 'Unexpected request: ' + type});
             const selected = {...p.played, score: 5, leave: 'ERSU', equity: 2, staticEquity: 2,
-              win: p.rack === 'ACERSTU' ? .3 : p.rack === '?EINRSU' ? .43 : .5, samples: p.iterations};
+              win, samples: p.iterations};
             const best = p.rack === 'ACERSTU' || p.rack === '?EINRSU'
               ? {...selected, position: p.rack === 'ACERSTU' ? '8G' : '8F',
                  tiles: p.rack === 'ACERSTU' ? 'ACT' : 'S...', win: .5, equity: 12, staticEquity: 12} : selected;
@@ -651,7 +712,7 @@ class ReviewBrowserTest(unittest.TestCase):
           const context = contextFor(currentReview);
           const calls = [], request = workerRequest;
           workerRequest = (type, payload, options) => {
-            calls.push({iterations: payload.iterations, count: payload.numMoves, seed: payload.seed});
+            calls.push({type, iterations: payload.iterations, count: payload.numMoves, seed: payload.seed});
             return request(type, payload, options);
           };
           await analyzeReviewTurn(context, 0, 'preview');
@@ -670,11 +731,18 @@ class ReviewBrowserTest(unittest.TestCase):
         self.assertEqual(result['earlyLabel'], 'Early estimate')
         self.assertFalse(result['full']['provisional'])
         self.assertEqual(result['full']['samples'], 277)
-        self.assertEqual([(call['iterations'], call['count']) for call in result['calls']], [(64, 5), (277, 15)])
+        self.assertEqual([(call['iterations'], call['count']) for call in result['calls']
+                          if call['type'] == 'simulateReview'], [(64, 5), (277, 15)])
+        self.assertEqual([(call['iterations'], call['type']) for call in result['calls']],
+                         [(64, 'simulateReview'), (64, 'simulateDraw'),
+                          (277, 'simulateReview'), (277, 'simulateDraw')])
+        self.assertEqual(result['early']['draw']['samples'], 64)
+        self.assertEqual(result['full']['draw']['samples'], 277)
+        self.assertAlmostEqual(result['full']['draw']['luck'], 5)
         self.assertEqual(result['calls'][0]['seed'], result['calls'][1]['seed'])
         self.assertTrue(result['complete']['complete'])
         self.assertTrue(result['resumed'])
-        self.assertCountEqual(result['keys'], ['preview', 'review'])
+        self.assertCountEqual(result['keys'], ['preview', 'review', 'draw-preview', 'draw'])
         expect(self.page.locator('.win-estimate-state')).to_have_text('Full estimate')
 
     def test_late_preview_cannot_replace_a_full_result(self):
@@ -708,7 +776,7 @@ class ReviewBrowserTest(unittest.TestCase):
         self.page.get_by_role('button', name='Review game against Demo Cedar').click()
         self.start_review()
         expect(self.page.locator('.quality-panel .trend-status')).to_contain_text('Your review is ready')
-        self.assertEqual(self.page.evaluate('resumeCalls'), [277] * 6)
+        self.assertEqual(self.page.evaluate('resumeCalls'), [277] * 10)
         self.assertTrue(self.page.evaluate('moveQualityResults.points.every(point => !point.provisional && point.samples === 277)'))
 
     def test_late_visible_preview_preserves_completed_review_and_final_result(self):
@@ -717,7 +785,7 @@ class ReviewBrowserTest(unittest.TestCase):
         result = self.page.evaluate("""async () => {
           const context = contextFor(currentReview), request = workerRequest;
           let release;
-          workerRequest = (type, payload, options) => payload.iterations === 64
+          workerRequest = (type, payload, options) => type === 'simulateReview' && payload.iterations === 64
             ? new Promise(resolve => { release = () => resolve(request(type, payload, options)); })
             : request(type, payload, options);
           const pending = analyzeReviewTurn(context, 0, 'preview');
@@ -746,7 +814,7 @@ class ReviewBrowserTest(unittest.TestCase):
         result = self.page.evaluate("""async () => {
           const context = contextFor(currentReview), request = workerRequest;
           let release;
-          workerRequest = (type, payload, options) => payload.iterations === 64
+          workerRequest = (type, payload, options) => type === 'simulateReview' && payload.iterations === 64
             ? new Promise(resolve => { release = () => resolve(request(type, payload, options)); })
             : payload.rack === 'ACERSTU' ? Promise.reject(new Error('Full analysis failed'))
             : request(type, payload, options);
@@ -1156,7 +1224,7 @@ class ReviewBrowserTest(unittest.TestCase):
         expect(self.page.locator('#backgroundStatus')).to_contain_text('2/2 games', timeout=15_000)
         states = self.page.evaluate('Array.from(reviewQueue.contexts.values(), c => ({id:c.review.id, keys:Object.keys(c.cache.results).length, points:c.quality.points.length}))')
         self.assertEqual({state['id'] for state in states}, {'mockgame01', 'mockgame02'})
-        self.assertTrue(all(state['keys'] == 12 and state['points'] == 6 for state in states))
+        self.assertTrue(all(state['keys'] == 20 and state['points'] == 6 for state in states), states)
         self.page.evaluate('Promise.all(Array.from(reviewQueue.contexts.values(), c => flushAnalysisSave(c.review, c.cache)))')
         self.page.get_by_role('button', name='Review game against Demo Cedar').click()
         self.start_review()
@@ -1198,7 +1266,7 @@ class ReviewBrowserTest(unittest.TestCase):
         self.assertEqual(self.page.evaluate('retryCalls'), 4)
         completed = [value for value in saved if 'move_quality' in value]
         self.assertEqual(completed[-1]['move_quality']['points'][0]['category'], 'blunder')
-        self.assertEqual(len(completed[-1]['win_trend']['points']), 7)
+        self.assertEqual(len(completed[-1]['win_trend']['points']), 11)
 
     def test_navigation_during_turn_retry_saves_each_game_to_its_own_id(self):
         self.install_review_worker()
@@ -1253,7 +1321,7 @@ class ReviewBrowserTest(unittest.TestCase):
         self.start_review()
         expect(self.page.locator('.quality-panel .trend-status')).to_contain_text('Your review is ready')
         self.assertEqual(self.page.evaluate("resumeCalls.filter(call => call.key.includes(':mockgame01:')).map(call => call.type)"), ['simulateReview'])
-        self.assertEqual(self.page.evaluate('Object.keys(positionCache.results).length'), 12)
+        self.assertEqual(self.page.evaluate('Object.keys(positionCache.results).length'), 20)
 
     def test_auth_failure_keeps_unsaved_results_and_account_reset_discards_old_work(self):
         self.install_review_worker(delay=100)
@@ -1327,7 +1395,7 @@ class ReviewBrowserTest(unittest.TestCase):
         expect(self.page.get_by_role('button', name='Retry this turn', exact=True)).to_be_hidden()
         kinds = self.page.evaluate('Object.keys(positionCache.results).map(key => JSON.parse(key)[1])')
         self.assertEqual({kind: kinds.count(kind) for kind in set(kinds)},
-                         {'preview': 6, 'review': 6})
+                         {'preview': 6, 'review': 6, 'draw-preview': 4, 'draw': 4})
         self.page.evaluate('flushAnalysisSave()')
         results = self.page.evaluate('positionCache.results')
         saved_keys = [key for snapshot in saved for key in snapshot['turn_analyses']]
