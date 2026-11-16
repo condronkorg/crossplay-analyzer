@@ -139,3 +139,17 @@ test('a viewed turn promotes pending background work without a duplicate computa
   assert.equal(calls, 1);
   assert.deepEqual(promotions, [100]);
 });
+
+
+test('rack draws have separate early and full identities without invalidating move estimates', () => {
+  const cache = new AnalysisCache();
+  const played = { ...turn, action: 'CAT 8G 10', rack_after: 'ERSTUAE' };
+  const full = cache.key(played, 'draw');
+  assert.deepEqual(JSON.parse(full), ['quackle-rack-draw-v1', 'draw', played.grid, played.rack,
+    0, 0, 86, 0, 277, 2, 21, played.action, '', played.rack_after, 'rack-draw-v1']);
+  assert.notEqual(full, cache.key(played, 'draw-preview'));
+  assert.notEqual(full, cache.key({ ...played, rack_after: 'ERSTU??' }, 'draw'));
+  assert.notEqual(full, cache.key({ ...played, swapped_tiles: 'AE' }, 'draw'));
+  assert.equal(cache.key(played, 'review'), cache.key({ ...played, rack_after: 'ERSTU??' }, 'review'));
+  assert.equal(cache.seed(played), cache.seed({ ...played, rack_after: 'ERSTU??' }));
+});

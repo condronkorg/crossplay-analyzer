@@ -1,4 +1,5 @@
 importScripts('quackle.js');
+importScripts('luck-analysis.js', 'review-analysis.js');
 
 let modulePromise = null;
 
@@ -193,6 +194,50 @@ function simulateRecordedMove(module, payload) {
   return result;
 }
 
+function simulateRackDraw(module, payload) {
+  if (!Number.isInteger(payload.seed) || payload.seed < 0 || payload.seed > 0xffffffff ||
+      !Number.isInteger(payload.iterations) || payload.iterations < 1 || payload.iterations > 277 ||
+      !Number.isInteger(payload.playerScore) || !Number.isInteger(payload.opponentScore) ||
+      !Number.isInteger(payload.finalTurnsRemaining) ||
+      (payload.bagCount === 0 ? ![1, 2].includes(payload.finalTurnsRemaining) : payload.finalTurnsRemaining !== 0)) {
+    throw new Error('Rack draw simulation requires valid scores, seed, samples, and final-turn state.');
+  }
+  const move = payload.played || {};
+  if (!['place', 'pass', 'exchange'].includes(move.action) || typeof move.tiles !== 'string' || typeof move.position !== 'string') {
+    throw new Error('The recorded move must specify its action, position, and tiles.');
+  }
+  const result = module.simulateReviewDraw(
+    payload.gridJson, payload.rack, payload.playerScore, payload.opponentScore,
+    1, payload.iterations, payload.bagCount, payload.finalTurnsRemaining,
+    { action: move.action, position: move.position, tiles: move.tiles }, payload.seed, payload.rackAfter,
+  );
+  if (result.error) throw new Error(result.error);
+  const turn = {grid: JSON.parse(payload.gridJson), rack: payload.rack, rack_after: payload.rackAfter,
+    bag_count: payload.bagCount, final_turns_remaining: payload.finalTurnsRemaining,
+    action: move.action === 'pass' ? 'PASS 0' : move.action === 'exchange' ? 'SWAP 0' : '',
+    swapped_tiles: move.action === 'exchange' ? move.tiles : ''};
+  // The canonical move uses dots for existing tiles; reconstruct only the import
+  // notation needed by the shared physical-placement validator.
+  if (move.action === 'place') {
+    const across = move.position.match(/^(\d{1,2})([A-O])$/);
+    const down = move.position.match(/^([A-O])(\d{1,2})$/);
+    if (!across && !down) throw new Error('Invalid recorded move position.');
+    let row = Number(across ? across[1] : down[2]) - 1;
+    let col = 'ABCDEFGHIJKLMNO'.indexOf(across ? across[2] : down[1]);
+    let word = '';
+    for (const tile of move.tiles) {
+      if (!turn.grid[row] || col < 0 || col > 14) throw new Error('Invalid recorded move position.');
+      word += tile === '.' ? '(' + turn.grid[row][col] + ')' : tile;
+      if (across) col++; else row++;
+    }
+    turn.action = word + ' ' + move.position + ' 0';
+  }
+  if (!CrossplayReview.validDrawResult(result, turn, payload.seed, payload.iterations)) {
+    throw new Error('Quackle returned incomplete rack draw results.');
+  }
+  return result;
+}
+
 self.addEventListener('message', async event => {
   const { id, type, payload = {} } = event.data || {};
   try {
@@ -205,6 +250,8 @@ self.addEventListener('message', async event => {
       result = evaluateCustomMove(module, payload, type === 'simulateMove');
     } else if (type === 'simulateReview') {
       result = simulateRecordedMove(module, payload);
+    } else if (type === 'simulateDraw') {
+      result = simulateRackDraw(module, payload);
     } else if (type === 'kibitz') {
       result = module.kibitz(
         payload.gridJson,

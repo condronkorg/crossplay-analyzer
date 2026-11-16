@@ -16,8 +16,8 @@ repository (SHA-256
 Artifact SHA-256 values:
 
 ```text
-quackle.js    ac16b1ca6c448ab3a1cb88ed45885ffb121f8229f66d7a0fd60593a464b0b425
-quackle.wasm  3641b36a04ba3413a49f8227e86b45ac5e12b496c4d0b97c9b6d0cbafd6afbf0
+quackle.js    1b9f62da89666b75b551506c4743bca5411ad56db3c9860a7163acf93024746e
+quackle.wasm  570ffcff3e68e3bb8778cb27c0e9eb4826a2dc88a9e914c78ce6a02ef9f9a4c5
 quackle.data  0f7b4e8cdcf4cb743c5423d6befe23ea77691c588f7c7dfb603bf475c1fbf8f3
 ```
 
@@ -38,7 +38,25 @@ the Crossplay finish; otherwise they use two future moves and Quackle's Bogowin
 model. Ties at the finish count as half a win. These are estimates under Quackle's
 play model, not measured human win rates.
 
+`simulateReviewDraw` accepts the same position, recorded move, settings, and seed,
+plus the mover's recorded rack after the draw. It simulates only the recorded
+move. `beforeWin` repeats that move's existing unconditional estimate at the same
+horizon. `afterWin` uses the same move with its actual first draw fixed. The
+engine removes those physical tiles from the unseen pool before it samples the
+hidden opponent rack, then returns them to the bag and forces the first refill.
+Later moves use the existing play model. Both estimates use the mover's
+perspective; their difference in percentage points is the draw-luck estimate.
+
+The engine checks retained tiles, physical blanks, the number of drawn tiles,
+and tile availability. An exchange draws before the discarded tiles return to
+the bag. Passes and empty-bag moves have no draw and return exactly equal before
+and after estimates. Results include `samplingVersion: "rack-draw-v1"`, the seed,
+`rackAfter`, `drawCount`, and the same horizon and sample-count metadata as review
+results. These two sampled estimates can include sampling noise.
+
 The patch enables C++ exception handling so invalid moves return an error without
 stopping the worker. Existing `simulateKibitz` callers retain their prior sample
 behavior. Run `python3 -m unittest -v test_review_simulation` for real browser/WASM
 checks of candidate inclusion, determinism, blanks, exchanges, and final turns.
+Run `python3 -m unittest -v test_rack_draw_simulation` for real WASM checks of
+draw conditioning, retained tiles, partial bags, and exact zero-draw deltas.

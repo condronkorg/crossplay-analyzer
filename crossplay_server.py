@@ -38,6 +38,7 @@ import threading
 import time
 import urllib.error
 import urllib.request
+from collections import Counter
 from datetime import datetime, timezone
 from http.cookies import CookieError, SimpleCookie
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
@@ -61,6 +62,12 @@ LIST_CACHE_SECONDS = 15
 ANALYSIS_VERSION = 'quackle-equity-v1'
 DAILY_REFRESH_SECONDS = 24 * 60 * 60
 TOTAL_TILES = 100
+# The bundled Quackle Crossplay alphabet, including three physical blanks.
+TILE_COUNTS = {
+    'A': 9, 'B': 2, 'C': 2, 'D': 4, 'E': 12, 'F': 2, 'G': 3, 'H': 3, 'I': 8,
+    'J': 1, 'K': 1, 'L': 4, 'M': 2, 'N': 5, 'O': 8, 'P': 2, 'Q': 1, 'R': 6,
+    'S': 5, 'T': 6, 'U': 3, 'V': 2, 'W': 2, 'X': 1, 'Y': 2, 'Z': 1, '?': 3,
+}
 CENTER = (7, 7)
 
 
@@ -179,13 +186,13 @@ def game_timeline(game, me):
     remained, so it can be handed straight to the Quackle worker.
     """
     order = turn_order(game)
-    final_trays = {p['id']: p.get('tray') or '' for p in game['game_data']['players']}
+    final_trays = {p['id']: p.get('tray') for p in game['game_data']['players']}
 
     def rack_at(player_id, index):
         """The rack player_id held at turn index (before any later play)."""
         for j in range(index, len(order)):
             if order[j][0]['id'] == player_id:
-                return order[j][1].get('tray') or ''
+                return order[j][1].get('tray')
         return final_trays[player_id]
 
     board = [['.'] * 15 for _ in range(15)]
@@ -196,9 +203,10 @@ def game_timeline(game, me):
         other = next(o for o in scores if o != pid)
         rack = normalize_rack(play.get('tray'))
         on_board = sum(ch != '.' for row in board for ch in row)
-        bag = TOTAL_TILES - on_board - len(rack) - len(rack_at(other, index))
+        bag = TOTAL_TILES - on_board - len(rack) - len(normalize_rack(rack_at(other, index)))
         if bag < 0:
             raise ValueError('Tile counts do not add up')
+        rack_after = rack_at(pid, index + 1)
         turns.append({
             'index': index,
             'mine': pid == me,
@@ -206,6 +214,7 @@ def game_timeline(game, me):
             'swapped_tiles': play.get('swapped_tiles'),
             'score': play_score(play['action']),
             'rack': rack,
+            'rack_after': normalize_rack(rack_after) if isinstance(rack_after, str) else None,
             'grid': [''.join(row) for row in board],
             'mover_score': scores[pid],
             'other_score': scores[other],
@@ -218,6 +227,26 @@ def game_timeline(game, me):
         turns[-1]['grid_after'] = [''.join(row) for row in board]
         scores[pid] += turns[-1]['score']
     return turns
+
+
+def backfill_review_racks(review):
+    """Use the same player's next rack when an older review has no draw data."""
+    review = dict(review)
+    if not isinstance(review.get('turns'), list):
+        return review
+    turns = [dict(turn) for turn in review['turns']]
+    next_racks = {}
+    for turn in reversed(turns):
+        mine = turn.get('mine')
+        if type(mine) is not bool:
+            continue
+        if turn.get('rack_after') is None and isinstance(next_racks.get(mine), str):
+            turn['rack_after'] = next_racks[mine]
+        # Do not skip an unknown next rack and substitute a later draw.
+        rack = turn.get('rack')
+        next_racks[mine] = normalize_rack(rack) if isinstance(rack, str) else None
+    review['turns'] = turns
+    return review
 
 
 def split_players(game, me):
@@ -606,7 +635,7 @@ class Handler(SimpleHTTPRequestHandler):
         })
         if not rows or not rows[0].get('review'):
             return None
-        review = dict(rows[0]['review'])
+        review = backfill_review_racks(rows[0]['review'])
         review['share_token'] = rows[0].get('share_token')
         return review
 
@@ -651,7 +680,7 @@ class Handler(SimpleHTTPRequestHandler):
                 'limit': '1',
             })
             if rows and isinstance(rows[0].get('review'), dict):
-                review = dict(rows[0]['review'])
+                review = backfill_review_racks(rows[0]['review'])
                 if review.get('status') == 'completed':
                     review['stored_analysis'] = self.saved_game_analysis(rows[0]['user_id'], rows[0]['nyt_game_id'])
         else:
@@ -660,7 +689,7 @@ class Handler(SimpleHTTPRequestHandler):
                 for session in Handler.sessions.values():
                     saved = session.get('shared_reviews', {}).get(token)
                     if saved:
-                        review = dict(saved)
+                        review = backfill_review_racks(saved)
                         break
         if not review or review.get('status') != 'completed':
             raise CrossplayError('Shared game not found. Check the link with its sender.', 404)
@@ -699,12 +728,19 @@ class Handler(SimpleHTTPRequestHandler):
         if not isinstance(entries, dict) or len(entries) > 512:
             raise CrossplayError('Invalid turn analysis cache.', 400)
         for key, result in entries.items():
-            if not isinstance(key, str) or len(key) > 2048 or not isinstance(result, dict) or result.get('error') or not isinstance(result.get('moves'), list):
+            if not isinstance(key, str) or len(key) > 2048 or not isinstance(result, dict) or result.get('error'):
                 raise CrossplayError('Invalid turn analysis result.', 400)
             try:
                 identity = json.loads(key)
             except ValueError:
                 identity = None
+            is_draw = (isinstance(identity, list) and len(identity) > 1
+                       and (identity[0] == 'quackle-rack-draw-v1' or identity[1] in ('draw', 'draw-preview')))
+            if is_draw or result.get('samplingVersion') == 'rack-draw-v1':
+                Handler.validate_draw_result(identity, result)
+                continue
+            if not isinstance(result.get('moves'), list):
+                raise CrossplayError('Invalid turn analysis result.', 400)
             is_review = isinstance(identity, list) and len(identity) > 1 and identity[1] in ('review', 'preview')
             if is_review or 'samplingVersion' in result:
                 Handler.validate_review_result(identity, result)
@@ -819,6 +855,101 @@ class Handler(SimpleHTTPRequestHandler):
                 invalid()
         if (not Handler.finite_number(result.get('bestStaticEquity'))
                 or result['bestStaticEquity'] != max(move['equity'] for move in static_moves)):
+            invalid()
+
+    @staticmethod
+    def validate_draw_result(identity, result):
+        def invalid():
+            raise CrossplayError('Invalid rack-draw analysis result.', 400)
+
+        if (not isinstance(identity, list) or len(identity) != 15
+                or identity[0] != 'quackle-rack-draw-v1' or identity[1] not in ('draw', 'draw-preview')
+                or identity[14] != 'rack-draw-v1'
+                or not all(isinstance(value, str) for value in identity[11:14])):
+            invalid()
+        iterations = 64 if identity[1] == 'draw-preview' else 277
+        if (not all(type(value) is int for value in identity[4:11])
+                or identity[8:11] != [iterations, 2, 21]):
+            invalid()
+        grid, rack, score, other, bag, final = identity[2:8]
+        rack_after = identity[13]
+        if (not isinstance(grid, list) or len(grid) != 15
+                or not all(isinstance(row, str) and re.fullmatch(r'[A-Za-z.]{15}', row) for row in grid)
+                or not isinstance(rack, str) or not re.fullmatch(r'[A-Z?]{1,7}', rack)
+                or not re.fullmatch(r'[A-Z?]{0,7}', rack_after)
+                or not 0 <= bag <= 100 or (final not in (1, 2) if bag == 0 else final != 0)
+                or (bag > 0 and len(rack) != 7)):
+            invalid()
+        play_to_end = bag <= 21
+        integers = ('seed', 'iterationsRequested', 'iterationsCompleted', 'bagCount',
+                    'finalTurnsRemaining', 'plies', 'drawCount')
+        if (not all(type(result.get(field)) is int for field in integers)
+                or not 0 <= result['seed'] < 2 ** 32
+                or result.get('simulated') is not True or result.get('samplingVersion') != 'rack-draw-v1'
+                or result.get('rackAfter') != rack_after
+                or result['iterationsRequested'] != iterations or result['iterationsCompleted'] != iterations
+                or result['bagCount'] != bag or result['finalTurnsRemaining'] != final
+                or result.get('playToEnd') is not play_to_end
+                or result.get('simulationMode') != ('play-to-end' if play_to_end else '2-ply')
+                or result.get('winModel') != ('terminal' if play_to_end else 'bogowin')
+                or result['plies'] != (-1 if play_to_end else 2)
+                or not all(Handler.finite_number(result.get(field)) and 0 <= result[field] <= 1
+                           for field in ('beforeWin', 'afterWin'))):
+            invalid()
+        selected = result.get('selected')
+        if (not isinstance(selected, dict) or selected.get('action') not in ('place', 'pass', 'exchange')
+                or not all(isinstance(selected.get(field), str) for field in ('position', 'tiles'))
+                or not Handler.recorded_move_matches(grid, identity[11], identity[12], selected)):
+            invalid()
+        action = selected['action']
+        if action == 'pass':
+            if selected['tiles'] or selected['position']:
+                invalid()
+            used = ''
+        elif action == 'exchange':
+            if bag < 7 or selected['position'] or not re.fullmatch(r'[A-Z?]{1,7}', selected['tiles']):
+                invalid()
+            used = selected['tiles']
+        else:
+            across = ACROSS_RE.fullmatch(selected['position'])
+            down = DOWN_RE.fullmatch(selected['position'])
+            if not across and not down:
+                invalid()
+            row = int(across[1] if across else down[2]) - 1
+            col = COLS.index(across[2] if across else down[1])
+            used = ''
+            for letter in selected['tiles']:
+                if not (0 <= row < 15 and 0 <= col < 15):
+                    invalid()
+                if grid[row][col] == '.':
+                    used += '?' if letter.islower() else letter
+                if across:
+                    col += 1
+                else:
+                    row += 1
+        retained = Counter(rack)
+        retained.subtract(used)
+        if any(count < 0 for count in retained.values()):
+            invalid()
+        retained = +retained
+        draws = Counter(rack_after)
+        draws.subtract(retained)
+        draw_count = 0 if action == 'pass' else min(bag, 7 - sum(retained.values()))
+        if (any(count < 0 for count in draws.values()) or sum(draws.values()) != draw_count
+                or result['drawCount'] != draw_count
+                or (draw_count == 0 and result['beforeWin'] != result['afterWin'])):
+            invalid()
+        available = Counter(TILE_COUNTS)
+        for letter in ''.join(grid):
+            if letter != '.':
+                available['?' if letter.islower() else letter] -= 1
+        available.subtract(rack)
+        if (any(count < 0 for count in available.values())
+                or not 0 <= sum(available.values()) - bag <= 7):
+            invalid()
+        # Exchanged tiles go back only after this refill, so they are not added.
+        available.subtract(draws)
+        if any(count < 0 for count in available.values()):
             invalid()
 
     @staticmethod
