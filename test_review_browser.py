@@ -559,9 +559,15 @@ class ReviewBrowserTest(unittest.TestCase):
         self.page.get_by_role('button', name='Explore continuations', exact=True).click()
         panel = self.page.get_by_role('region', name='Hypothetical continuation')
         replies = panel.locator('.continuation-moves tbody tr')
-        expect(replies.first).to_be_visible(timeout=30_000)
+        expect(replies.first).to_be_visible(timeout=120_000)
         expect(panel).to_contain_text('Future draws are sampled')
         expect(panel).to_contain_text('Demo Cedar to move')
+        expect(panel).to_contain_text('277 simulations per reply')
+        expect(panel.get_by_role('columnheader', name='Win % (Demo Cedar)', exact=True)).to_be_visible()
+        wins = replies.locator('td:nth-child(4)').all_text_contents()
+        self.assertTrue(all(value.endswith('%') for value in wins))
+        self.assertEqual(wins, sorted(wins, key=lambda value: float(value[:-1]), reverse=True))
+        first_estimates = replies.all_text_contents()
         expect(panel.locator('.board .tile')).to_have_count(3)
         board = panel.locator('.board').inner_text()
         first_reply = replies.first.locator('button').inner_text()
@@ -572,19 +578,26 @@ class ReviewBrowserTest(unittest.TestCase):
         }'''))
         replies.first.locator('button').click()
         expect(panel).to_contain_text('After 2 hypothetical moves')
-        expect(replies.first).to_be_visible(timeout=30_000)
+        expect(replies.first).to_be_visible(timeout=120_000)
         expect(panel).to_contain_text('You to move')
+        expect(panel.get_by_role('columnheader', name='Win % (You)', exact=True)).to_be_visible()
+        best_action = self.page.evaluate('''() => {
+          const state = continuationExplorer.history.at(-1);
+          return MoveContinuation.play(state, state.moves[0]).action;
+        }''')
         panel.get_by_role('button', name='Play best reply →', exact=True).click()
         expect(panel).to_contain_text('After 3 hypothetical moves')
-        expect(replies.first).to_be_visible(timeout=30_000)
+        self.assertEqual(self.page.evaluate('continuationExplorer.history.at(-1).action'), best_action)
+        expect(replies.first).to_be_visible(timeout=120_000)
         panel.get_by_role('button', name='← Undo reply', exact=True).click()
         panel.get_by_role('button', name='← Undo reply', exact=True).click()
         expect(panel).to_contain_text('After 1 hypothetical move')
         self.assertEqual(panel.locator('.board').inner_text(), board)
         self.assertEqual(replies.first.locator('button').inner_text(), first_reply)
+        self.assertEqual(replies.all_text_contents(), first_estimates)
         panel.get_by_role('button', name='Play best reply →', exact=True).click()
         expect(panel).to_contain_text('After 2 hypothetical moves')
-        expect(replies.first).to_be_visible(timeout=30_000)
+        expect(replies.first).to_be_visible(timeout=120_000)
         for _ in range(100):
             state = self.page.evaluate('''() => ({
               finished: continuationExplorer.history.at(-1).finished,
@@ -594,7 +607,7 @@ class ReviewBrowserTest(unittest.TestCase):
             if state['finished']:
                 break
             panel.get_by_role('button', name='Play best reply →', exact=True).click()
-            self.page.wait_for_function('continuationExplorer && !continuationExplorer.busy')
+            self.page.wait_for_function('continuationExplorer && !continuationExplorer.busy', timeout=120_000)
         expect(panel).to_contain_text('Line complete')
         self.assertEqual(self.page.evaluate('''() => {
           const state = continuationExplorer.history.at(-1);

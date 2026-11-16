@@ -56,6 +56,7 @@
     const next = { ...position, grid: position.grid.slice(), racks: position.racks.slice(),
       scores: position.scores.slice(), bag: position.bag.slice() };
     delete next.moves;
+    delete next.analysis;
     const actor = position.actor;
     const rack = [...position.racks[actor]];
     let used = '', action = '';
@@ -106,6 +107,39 @@
     return next;
   }
 
+  async function analyze(position, request, options = {}) {
+    const pass = { action: 'pass', position: '', tiles: '', score: 0, leave: '' };
+    const actor = position.actor;
+    if (!position.racks[actor]) {
+      // An empty rack still consumes a Crossplay final turn. Evaluate the
+      // forced pass from the next player's perspective, or the final score.
+      const next = play(position, pass);
+      const win = next.finished
+        ? position.scores[actor] === position.scores[1 - actor] ? .5
+          : Number(position.scores[actor] > position.scores[1 - actor])
+        : 1 - (await analyze(next, request, options)).moves[0].win;
+      return { moves: [{ ...pass, win }], forcedPass: true };
+    }
+    const payload = {
+      gridJson: JSON.stringify(position.grid), rack: position.racks[actor],
+      playerScore: position.scores[actor], opponentScore: position.scores[1 - actor],
+      bagCount: position.bag.length, finalTurnsRemaining: position.finalTurns || 0,
+      numMoves: 15, iterations: 277, seed: position.seed,
+      played: { action: 'pass', position: '', tiles: '' }
+    };
+    // Include pass even when it falls outside the static shortlist. This uses
+    // the same paired samples and validation as recorded-move win estimates.
+    const result = await request('simulateReview', payload, options);
+    const review = typeof module !== 'undefined' && module.exports
+      ? require('./review-analysis.js') : root.CrossplayReview;
+    if (!review.validResult(result, { grid: position.grid, action: 'PASS',
+      bag_count: payload.bagCount, final_turns_remaining: payload.finalTurnsRemaining },
+      payload.seed, payload.iterations, payload.numMoves)) {
+      throw new Error(result?.error || 'Quackle returned incomplete continuation simulations.');
+    }
+    return { ...result, moves: result.moves.slice().sort((a, b) => b.win - a.win || b.equity - a.equity) };
+  }
+
   class Explorer {
     constructor({ turn, opponentRack, seed, move, names, request, renderBoard }) {
       this.root = document.createElement('section');
@@ -142,18 +176,10 @@
       if (position.finished) return;
       try {
         if (!position.moves) {
-          const rack = position.racks[position.actor];
-          const result = rack ? await this.request('kibitz', {
-            gridJson: JSON.stringify(position.grid), rack,
-            playerScore: position.scores[position.actor], opponentScore: position.scores[1 - position.actor], numMoves: 15
-          }, { signal: this.controller.signal }) : { moves: [] };
+          const result = await analyze(position, this.request, { signal: this.controller.signal });
           if (sequence !== this.sequence) return;
-          if (result.error || !Array.isArray(result.moves)) throw new Error(result.error || 'The engine did not return replies.');
-          position.moves = result.moves.filter(move => move.action !== 'exchange' || position.bag.length >= 7)
-            .sort((a, b) => b.equity - a.equity);
-          if (!position.moves.some(move => move.action === 'pass')) {
-            position.moves.push({ action: 'pass', tiles: '', position: '', score: 0 });
-          }
+          position.analysis = result;
+          position.moves = result.moves;
         }
       } catch (error) {
         if (sequence !== this.sequence || this.controller.signal.aborted) return;
@@ -193,7 +219,7 @@
       this.root.replaceChildren();
       if (focused) this.root.focus({ preventScroll: true });
       add(this.root, 'h3', 'Explore this line');
-      add(this.root, 'p', 'Future draws are sampled from the remaining Crossplay tiles. This is one possible continuation. Replies are ranked by static equity, not win chance.', 'analysis-note');
+      add(this.root, 'p', 'Future draws are sampled from the remaining Crossplay tiles. This is one possible continuation. Replies are ranked by simulated win chance for the player to move. Win estimates sample hidden opponent racks and future draws independently of the displayed line; ties count as half a win.', 'analysis-note');
       const position = this.history.at(-1);
       if (!position) {
         add(this.root, 'p', this.error, 'analysis-status').setAttribute('role', 'status');
@@ -213,24 +239,30 @@
       add(this.root, 'p', this.names.map((name, index) => name + ' rack: ' + (position.racks[index] || '(empty)')).join(' · '), 'continuation-racks');
       if (position.sampledOpponent) add(this.root, 'p', 'The starting opponent rack was also sampled because it was unavailable in the review.', 'analysis-note');
       const status = add(this.root, 'p', this.error || (position.finished ? 'Line complete · ' + scores
-        : this.busy ? 'Finding replies…' : this.names[position.actor] + ' to move. Select a reply to continue.'), 'analysis-status');
+        : this.busy ? 'Simulating reply win chances…' : this.names[position.actor] + ' to move. Select a reply to continue.'), 'analysis-status');
       status.setAttribute('role', 'status');
       if (this.error) button(this.root, 'Retry replies', () => this.load());
       if (position.finished || this.busy || this.error) return;
+      add(this.root, 'p', position.analysis.forcedPass ? 'Empty rack · pass is the only reply.'
+        : position.analysis.iterationsCompleted + ' simulations per reply · ' +
+          (position.analysis.playToEnd ? 'Played to the Crossplay finish.' : 'Two-ply play with Quackle’s win model.') +
+          ' Engine estimates can change with more samples.', 'analysis-note');
       const table = add(this.root, 'table', '', 'moves-table continuation-moves');
       const header = table.createTHead().insertRow();
-      for (const label of ['Reply', 'Score', 'Leave', 'Static equity']) add(header, 'th', label);
+      for (const label of ['Reply', 'Score', 'Leave', 'Win % (' + this.names[position.actor] + ')', 'Static equity']) add(header, 'th', label);
+      const body = table.createTBody();
       for (const move of position.moves) {
-        const row = table.insertRow();
+        const row = body.insertRow();
         const play = move.action === 'pass' ? 'Pass' : move.action === 'exchange' ? 'Exchange ' + move.tiles : move.position + ' ' + move.tiles;
         const cell = row.insertCell();
         button(cell, play, () => this.advance(move)).className = 'move-preview-button';
-        for (const value of [move.score, move.leave || '', Number.isFinite(move.equity) ? move.equity.toFixed(1) : '—']) add(row, 'td', value);
+        for (const value of [move.score, move.leave || '', (move.win * 100).toFixed(1) + '%',
+          Number.isFinite(move.staticEquity) ? move.staticEquity.toFixed(1) : '—']) add(row, 'td', value);
       }
     }
   }
 
-  const api = { start, play, Explorer };
+  const api = { start, play, analyze, Explorer };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.MoveContinuation = api;
 })(globalThis);

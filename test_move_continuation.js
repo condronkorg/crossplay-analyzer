@@ -84,3 +84,92 @@ test('emptying the bag starts two final turns, then ends the line', () => {
   assert.equal(inventory(done), inventory(initial));
   assert.throws(() => play(done, move), /finish/);
 });
+
+const { analyze } = require('./move-continuation.js');
+
+function simulated(payload) {
+  const end = payload.bagCount <= 21;
+  const pass = { action: 'pass', position: '', tiles: '', score: 0, equity: -5,
+    staticEquity: -10, win: .7, samples: payload.iterations, terminalSamples: end ? payload.iterations : 0 };
+  const placement = { ...pass, action: 'place', position: '8G', tiles: 'AT', score: 5,
+    equity: 20, staticEquity: 25, win: .4 };
+  const moves = [placement, pass];
+  return { moves, selected: pass, best: pass, simulated: true,
+    seed: payload.seed, samplingVersion: 'paired-review-v1',
+    iterationsRequested: payload.iterations, iterationsCompleted: payload.iterations,
+    candidateCount: moves.length, totalPlayaheads: moves.length * payload.iterations,
+    bagCount: payload.bagCount, finalTurnsRemaining: payload.finalTurnsRemaining,
+    plies: end ? -1 : 2, playToEnd: end, simulationMode: end ? 'play-to-end' : '2-ply',
+    winModel: end ? 'terminal' : 'bogowin', bestStaticEquity: 25,
+    staticMoves: moves.map(move => ({ ...move, equity: move.staticEquity })) };
+}
+
+test('continuation simulations use the new position and rank win chance ahead of equity', async () => {
+  const position = play(start(turn, 'AEINRST', 123), move);
+  const snapshot = structuredClone(position);
+  const controller = new AbortController();
+  const result = await analyze(position, async (type, payload, options) => {
+    assert.equal(type, 'simulateReview');
+    assert.equal(payload.gridJson, JSON.stringify(position.grid));
+    assert.equal(payload.rack, position.racks[1]);
+    assert.equal(payload.playerScore, 20);
+    assert.equal(payload.opponentScore, 15);
+    assert.equal(payload.bagCount, 83);
+    assert.equal(payload.finalTurnsRemaining, 0);
+    assert.equal(payload.iterations, 277);
+    assert.equal(payload.seed, position.seed);
+    assert.equal(payload.played.action, 'pass');
+    assert.equal(options.signal, controller.signal);
+    return simulated(payload);
+  }, { signal: controller.signal });
+  assert.equal(result.moves[0].action, 'pass');
+  assert.ok(result.moves[0].staticEquity < result.moves[1].staticEquity);
+  assert.deepEqual(position, snapshot);
+  const next = play({ ...position, moves: result.moves, analysis: result }, result.moves[0]);
+  assert.equal(next.moves, undefined);
+  assert.equal(next.analysis, undefined);
+});
+
+test('final-turn context is passed through and incomplete or invalid win estimates are rejected', async () => {
+  const position = { ...start(turn, 'AEINRST', 123), bag: [], finalTurns: 1 };
+  const result = await analyze(position, async (_, payload) => {
+    assert.equal(payload.bagCount, 0);
+    assert.equal(payload.finalTurnsRemaining, 1);
+    return simulated(payload);
+  });
+  assert.equal(result.playToEnd, true);
+  for (const corrupt of [
+    result => { result.moves[0].win = NaN; },
+    result => { result.moves[0].samples--; },
+    result => { result.moves[0].terminalSamples = 0; },
+    result => { result.seed++; },
+    result => { result.bagCount = 1; },
+    result => { result.finalTurnsRemaining = 2; },
+    result => { result.selected = result.moves[0]; },
+  ]) {
+    await assert.rejects(analyze(position, async (_, payload) => {
+      const response = simulated(payload);
+      corrupt(response);
+      return response;
+    }), /incomplete/);
+  }
+  await assert.rejects(analyze(position, async () => { throw new Error('Worker cancelled'); }), /cancelled/);
+});
+
+test('empty racks force a pass, preserving win perspective and terminal ties', async () => {
+  const position = { ...start(turn, 'AEINRST', 123), racks: ['', 'AEINRST'],
+    bag: [], finalTurns: 2 };
+  const result = await analyze(position, async (_, payload) => {
+    assert.equal(payload.rack, 'AEINRST');
+    assert.equal(payload.finalTurnsRemaining, 1);
+    return simulated(payload);
+  });
+  assert.equal(result.moves[0].action, 'pass');
+  assert.ok(Math.abs(result.moves[0].win - .3) < 1e-10);
+  for (const [scores, win] of [[[20, 10], 1], [[10, 20], 0], [[20, 20], .5]]) {
+    const terminal = await analyze({ ...position, scores, finalTurns: 1 }, async () => {
+      assert.fail('A forced final pass needs no simulation');
+    });
+    assert.equal(terminal.moves[0].win, win);
+  }
+});
