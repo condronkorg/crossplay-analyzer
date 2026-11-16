@@ -548,6 +548,12 @@ class ReviewBrowserTest(unittest.TestCase):
     def test_continuation_recomputes_replies_and_can_undo_without_changing_review(self):
         self.open_game()
         self.page.evaluate('''() => {
+          window.continuationRequests = [];
+          const request = workerRequest;
+          workerRequest = (type, payload, options) => {
+            continuationRequests.push({type, iterations: payload.iterations, grid: payload.gridJson});
+            return request(type, payload, options);
+          };
           const turn = currentReview.turns[0];
           positionCache.results[positionCache.key(turn, 'candidates')] = {
             moves: [{action: 'place', position: '8G', tiles: 'ACT', score: 5}]
@@ -596,28 +602,57 @@ class ReviewBrowserTest(unittest.TestCase):
         self.assertEqual(panel.locator('.board').inner_text(), board)
         self.assertEqual(replies.first.locator('button').inner_text(), first_reply)
         self.assertEqual(replies.all_text_contents(), first_estimates)
-        panel.get_by_role('button', name='Play best reply →', exact=True).click()
-        expect(panel).to_contain_text('After 2 hypothetical moves')
-        expect(replies.first).to_be_visible(timeout=120_000)
-        for _ in range(100):
-            state = self.page.evaluate('''() => ({
-              finished: continuationExplorer.history.at(-1).finished,
-              error: continuationExplorer.error
-            })''')
-            self.assertIsNone(state['error'])
-            if state['finished']:
-                break
-            panel.get_by_role('button', name='Play best reply →', exact=True).click()
-            self.page.wait_for_function('continuationExplorer && !continuationExplorer.busy', timeout=120_000)
-        expect(panel).to_contain_text('Line complete')
-        self.assertEqual(self.page.evaluate('''() => {
-          const state = continuationExplorer.history.at(-1);
-          return [state.bag.length, state.finalTurns];
-        }'''), [0, 0])
+        # Three real reply lists prove recomputation. Undo must use the saved
+        # lists, without simulating an entire game at 277 samples.
+        requests = self.page.evaluate('continuationRequests')
+        self.assertEqual([(item['type'], item['iterations']) for item in requests],
+                         [('simulateReview', 277)] * 3)
+        self.assertEqual(json.loads(requests[0]['grid'])[7], '......ACT......')
+        self.assertIsNone(self.page.evaluate('continuationExplorer.error'))
         self.assertEqual(self.page.evaluate('JSON.stringify(currentReview)'), original)
         self.page.get_by_role('button', name='Next →', exact=True).click()
         expect(panel).to_have_count(0)
         expect(self.page.locator('.board-preview-note')).to_have_count(0)
+
+    def test_continuation_final_empty_bag_turn_finishes_without_a_worker(self):
+        self.open_game()
+        result = self.page.evaluate("""() => {
+          // The model tests cover draining the bag and both final turns. This
+          // small observed final-turn fixture checks the terminal UI directly.
+          // Reuse the physical empty-bag position from the WASM regressions.
+          const grid = [
+            'CD........G....', '.......A.NOUN.Y', '.......L...TAME',
+            '......YEAH...E.', '.........ab.yA.', '......LOB.OWED.',
+            '..PROG..I.TEN.F', '....D..JOGS...I', '...LASSI.O..RUN',
+            '.......V.R.MI..', '...C...E..HIPS.', '...A.BASE.A.E..',
+            '...R.O..D.V....', '..RENT.LITER...', '.....H..T......'
+          ];
+          const rack = 'WEAFTUO';
+          const pool = Object.entries(CrossplayLuck.TILE_COUNTS)
+            .flatMap(([tile, count]) => Array(count).fill(tile));
+          const boardTiles = [...grid.join('')].filter(tile => tile !== '.')
+            .map(tile => tile === tile.toLowerCase() ? '?' : tile);
+          for (const tile of [...boardTiles, ...rack]) pool.splice(pool.indexOf(tile), 1);
+          let requests = 0;
+          continuationExplorer = new MoveContinuation.Explorer({
+            turn: {grid, rack, bag_count: 0, final_turns_remaining: 1,
+              mover_score: 20, other_score: 10},
+            opponentRack: pool.join(''), seed: 1, move: {action: 'pass', tiles: '', score: 0},
+            names: ['You', 'Demo Cedar'], renderBoard,
+            request: () => { requests++; throw new Error('The completed line must not simulate replies.'); }
+          });
+          document.querySelector('.turn-panel').append(continuationExplorer.root);
+          const state = continuationExplorer.history.at(-1);
+          return {requests, bag: state.bag.length, finalTurns: state.finalTurns, finished: state.finished,
+            error: continuationExplorer.error};
+        }""")
+        panel = self.page.get_by_role('region', name='Hypothetical continuation')
+        expect(panel).to_contain_text('Line complete · You: 20 · Demo Cedar: 10')
+        expect(panel.get_by_role('button', name='Play best reply →', exact=True)).to_have_count(0)
+        expect(panel.get_by_role('button', name='← Undo reply', exact=True)).to_be_disabled()
+        self.assertEqual(result, {'requests': 0, 'bag': 0, 'finalTurns': 0, 'finished': True, 'error': None})
+        self.page.get_by_role('button', name='Next →', exact=True).click()
+        expect(panel).to_have_count(0)
 
     def install_review_worker(self, delay=0):
         worker = r"""
