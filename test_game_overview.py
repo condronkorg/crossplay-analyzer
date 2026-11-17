@@ -451,6 +451,7 @@ class GameOverviewTest(unittest.TestCase):
         self.page.set_viewport_size({'width': 1440, 'height': 1000})
         self.open_summary()
         self.set_points()
+        self.wait_for_timeline_layout()
         chart = self.page.locator('.overview-chart .win-history-scroll')
         geometry = chart.evaluate('''node => ({
           width: node.getBoundingClientRect().width,
@@ -469,6 +470,7 @@ class GameOverviewTest(unittest.TestCase):
         expect(chart.locator('.win-history-grade')).to_have_text(['??', '?'])
         expect(chart.locator('[data-turn-index="3"]')).to_have_attribute('data-quality', 'mistake')
         self.page.set_viewport_size({'width': 320, 'height': 844})
+        self.wait_for_timeline_layout()
         self.assertLessEqual(chart.bounding_box()['height'], 240)
         self.assertGreater(inspector.bounding_box()['y'], visual.bounding_box()['y'] + visual.bounding_box()['height'])
         heading = inspector.locator('.win-history-inspector-head').bounding_box()
