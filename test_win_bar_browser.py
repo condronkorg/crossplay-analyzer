@@ -358,7 +358,7 @@ class WinBarBrowserTest(unittest.TestCase):
         self.page.evaluate('moveQualityResults.points[1].category = "best"; refreshMoveQualityPanel(); refreshTrendPanel()')
         expect(self.page.locator('.overview-chart .win-history-grade')).to_have_text(['?', '?'])
 
-    def test_large_history_preserves_scroll_and_keyboard_selection(self):
+    def test_large_history_fits_and_preserves_keyboard_selection(self):
         self.page.set_viewport_size({'width': 390, 'height': 844})
         self.open_game()
         self.page.evaluate('''() => {
@@ -368,11 +368,11 @@ class WinBarBrowserTest(unittest.TestCase):
         self.set_points([{**self.point(index, .5), 'category': 'blunder', 'loss': 12}
                          for index in range(42)])
         viewport = self.page.locator('.win-history-scroll')
-        self.assertGreaterEqual(viewport.bounding_box()['height'], 300)
-        self.assertGreater(viewport.evaluate('node => node.scrollWidth'), viewport.evaluate('node => node.clientWidth'))
+        self.assertLessEqual(viewport.bounding_box()['height'], 240)
+        self.page.wait_for_function("() => document.querySelector('.win-history-scroll').scrollWidth === document.querySelector('.win-history-scroll').clientWidth")
         viewport.evaluate('node => node.scrollLeft = 500')
         self.page.evaluate('refreshTrendPanel()')
-        self.assertAlmostEqual(viewport.evaluate('node => node.scrollLeft'), 500, delta=1)
+        self.assertEqual(viewport.evaluate('node => node.scrollLeft'), 0)
         point = self.page.locator('.win-history-point[data-turn-index="30"]')
         point.focus()
         scroll_before = viewport.evaluate('node => node.scrollLeft')
@@ -616,6 +616,7 @@ class WinBarBrowserTest(unittest.TestCase):
         panel = self.page.locator('.game-overview')
         for width in [320, 390, 400, 401, 600, 760, 761, 800, 1024, 1100, 1101, 1280]:
             self.page.set_viewport_size({'width': width, 'height': 844})
+            self.page.wait_for_function("() => Math.abs(document.querySelector('.win-history svg').viewBox.baseVal.width - document.querySelector('.win-history-scroll').clientWidth) <= 1")
             bounds = panel.evaluate('''node => ({
               right: node.getBoundingClientRect().right, left: node.getBoundingClientRect().left,
               client: node.clientWidth, scroll: node.scrollWidth,
@@ -628,7 +629,7 @@ class WinBarBrowserTest(unittest.TestCase):
             self.assertEqual(bounds['chartScroll'], bounds['chartClient'])
             text_geometry = panel.locator('.win-history svg').evaluate('''svg => {
               const chart = svg.getBoundingClientRect();
-              return [...svg.querySelectorAll('text')].map(label => {
+              return [...svg.querySelectorAll('text')].filter(label => label.getClientRects().length).map(label => {
                 const rect = label.getBoundingClientRect(), matrix = label.getScreenCTM();
                 return {text: label.textContent,
                   fontSize: parseFloat(getComputedStyle(label).fontSize) * Math.hypot(matrix.c, matrix.d),
@@ -643,7 +644,7 @@ class WinBarBrowserTest(unittest.TestCase):
         self.assertLess(panel.locator('.win-history').bounding_box()['y'],
                         self.page.locator('.win-evaluation').bounding_box()['y'])
         expect(self.page.locator('.win-history-point')).to_have_count(43)
-        badges = panel.locator('.win-history-grade').evaluate_all('''nodes => nodes.map(node => {
+        badges = panel.locator('.win-history-grade:visible').evaluate_all('''nodes => nodes.map(node => {
           const r = node.getBoundingClientRect(); return {left: r.left, right: r.right};
         })''')
         for previous, following in zip(badges, badges[1:]):

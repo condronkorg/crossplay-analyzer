@@ -187,6 +187,87 @@ class GameOverviewTest(unittest.TestCase):
             self.page.set_viewport_size({'width': width, 'height': 900})
             self.assertTrue(self.page.evaluate('document.documentElement.scrollWidth <= innerWidth'))
 
+    def set_long_draw_history(self):
+        self.set_draw_points()
+        self.page.evaluate("""() => {
+          const turn = currentReview.turns[0], point = moveQualityResults.points[0];
+          currentReview.turns = Array.from({length: 80}, (_, index) => ({...turn, mine: index % 2 === 0}));
+          moveQualityResults = {state: 'done', points: currentReview.turns.map((turn, turnIndex) => ({
+            ...point, turnIndex, loss: 7, category: 'mistake', playedWin: .5, bestWin: .57,
+            draw: {...point.draw, beforeWin: .5, afterWin: .55}
+          }))};
+          trendResults = {state: 'done', points: currentReview.turns.flatMap((turn, x) => [
+            {x, phase: 'before-draw', mine: 50},
+            {x, phase: 'after-draw', mine: turn.mine ? 55 : 45, draw: moveQualityResults.points[x].draw}
+          ])};
+          renderReview();
+        }""")
+
+    def wait_for_timeline_layout(self):
+        self.page.wait_for_function("""() => {
+          const viewport = document.querySelector('.win-history-scroll');
+          return Math.abs(viewport.querySelector('svg').viewBox.baseVal.width - viewport.clientWidth) <= 1;
+        }""")
+
+    def test_desktop_summary_and_all_draw_points_fit_without_scrolling(self):
+        self.page.set_viewport_size({'width': 1366, 'height': 768})
+        self.open_summary()
+        self.set_long_draw_history()
+        self.wait_for_timeline_layout()
+        summary = self.page.locator('.game-overview')
+        self.assertLessEqual(summary.bounding_box()['height'], 560)
+        chart = self.page.locator('.win-history-scroll')
+        self.assertEqual(chart.evaluate('node => node.scrollWidth'), chart.evaluate('node => node.clientWidth'))
+        expect(chart.locator('.win-history-point')).to_have_count(161)
+        finish = chart.locator('[data-estimate="final"]').bounding_box()
+        viewport = chart.bounding_box()
+        self.assertLessEqual(finish['x'] + finish['width'], viewport['x'] + viewport['width'])
+        expect(summary.get_by_role('button', name='Start Review', exact=True)).to_be_visible()
+        before = chart.locator('[data-turn-index="0"][data-phase="before-draw"]')
+        after = chart.locator('[data-turn-index="1"][data-phase="after-draw"]')
+        before.focus()
+        after.hover()
+        self.assertLessEqual(summary.bounding_box()['height'], 560)
+        chart.locator('[data-turn-index="1"][data-phase="before-draw"]').hover()
+        expect(chart.locator('.win-history-grade:visible')).to_have_count(1)
+        after.hover()
+        self.page.evaluate("""() => {
+          moveQualityResults.points[1].bestMove = {action: 'place', position: '8D', tiles: 'RETAINS'};
+          refreshGameOverview();
+        }""")
+        missed = chart.locator('[data-turn-index="1"][data-phase="before-draw"]')
+        expect(missed).to_have_attribute('data-sweep', 'missed')
+        expect(missed.locator('polygon')).to_be_hidden()
+        expect(missed.locator('line')).to_be_hidden()
+        missed.focus()
+        expect(missed.locator('polygon')).to_be_visible()
+        expect(missed.locator('line')).to_be_visible()
+        before.focus()
+        after.hover()
+        for width in [390, 1280, 1440]:
+            self.page.set_viewport_size({'width': width, 'height': 900})
+            self.wait_for_timeline_layout()
+            expect(before).to_be_focused()
+            expect(self.page.locator('.win-history-inspector')).to_have_attribute('data-inspected-turn', '1')
+            expect(self.page.locator('.win-history-inspector')).to_have_attribute('data-inspected-phase', 'after-draw')
+            self.assertEqual(chart.evaluate('node => node.scrollWidth'), chart.evaluate('node => node.clientWidth'))
+        self.page.keyboard.press('Enter')
+        expect(self.page.get_by_role('combobox', name='Select game turn')).to_have_value('0')
+        expect(before).to_be_focused()
+
+    def test_probability_halves_have_pale_tints_and_player_labels(self):
+        self.open_summary()
+        self.set_points()
+        upper = self.page.locator('.win-history-band-upper')
+        lower = self.page.locator('.win-history-band-lower')
+        expect(upper).to_have_attribute('fill', '#eaf3ff')
+        expect(lower).to_have_attribute('fill', '#fff0ee')
+        self.assertEqual(upper.get_attribute('height'), lower.get_attribute('height'))
+        self.assertAlmostEqual(float(lower.get_attribute('y')),
+                               float(upper.get_attribute('y')) + float(upper.get_attribute('height')))
+        expect(self.page.locator('.win-history-direction')).to_contain_text('Upper half favors You')
+        expect(self.page.locator('.win-history-direction')).to_contain_text('lower half favors Demo Cedar')
+
     def test_summary_enters_first_turn_and_chart_enters_selected_turn(self):
         self.open_summary()
         expect(self.page.locator('.board')).to_have_count(0)
@@ -245,19 +326,19 @@ class GameOverviewTest(unittest.TestCase):
           height: node.getBoundingClientRect().height,
           svgWidth: node.querySelector('svg').getBoundingClientRect().width
         })''')
-        self.assertGreater(geometry['width'], 700)
-        self.assertGreaterEqual(geometry['height'], 320)
+        self.assertGreater(geometry['width'], 300)
+        self.assertLessEqual(geometry['height'], 240)
         self.assertAlmostEqual(geometry['svgWidth'], geometry['width'], delta=1)
         inspector = self.page.locator('.overview-chart .win-history-inspector')
         visual = self.page.locator('.overview-chart .win-history-visual')
-        self.assertGreater(inspector.bounding_box()['x'], visual.bounding_box()['x'] + visual.bounding_box()['width'])
+        self.assertGreaterEqual(inspector.bounding_box()['y'], visual.bounding_box()['y'] + visual.bounding_box()['height'])
         expect(inspector).to_have_attribute('data-inspected-turn', '0')
         expect(chart.locator('svg > polygon')).to_have_count(0)
         expect(chart.locator('.win-history-segment').first).to_have_attribute('stroke', '#256b4a')
         expect(chart.locator('.win-history-grade')).to_have_text(['??', '?'])
         expect(chart.locator('[data-turn-index="3"]')).to_have_attribute('data-quality', 'mistake')
         self.page.set_viewport_size({'width': 320, 'height': 844})
-        self.assertGreaterEqual(chart.bounding_box()['height'], 320)
+        self.assertLessEqual(chart.bounding_box()['height'], 240)
         self.assertGreater(inspector.bounding_box()['y'], visual.bounding_box()['y'] + visual.bounding_box()['height'])
         heading = inspector.locator('.win-history-inspector-head').bounding_box()
         comparison = inspector.locator('.win-history-comparison').bounding_box()
@@ -278,6 +359,13 @@ class GameOverviewTest(unittest.TestCase):
         self.page.evaluate('refreshMoveQualityPanel(); refreshTrendPanel()')
         expect(key).to_be_focused()
         expect(self.page.locator('.win-history-help')).to_have_attribute('open', '')
+        bingo = self.page.locator('.win-history-inspector-event > summary')
+        bingo.focus()
+        self.page.keyboard.press('Enter')
+        self.page.evaluate('refreshMoveQualityPanel(); refreshTrendPanel()')
+        expect(bingo).to_be_focused()
+        expect(self.page.locator('.win-history-inspector-event')).to_have_attribute('open', '')
+        self.page.keyboard.press('Enter')
         point = self.page.locator('.win-history-point[data-turn-index="1"]')
         point.focus()
         self.page.evaluate('refreshMoveQualityPanel(); refreshTrendPanel()')
@@ -359,6 +447,7 @@ class GameOverviewTest(unittest.TestCase):
         for width in [320, 390, 768, 1440]:
             with self.subTest(width=width):
                 self.page.set_viewport_size({'width': width, 'height': 900})
+                self.wait_for_timeline_layout()
                 self.assertTrue(self.page.evaluate('document.documentElement.scrollWidth <= innerWidth'))
                 for cell in self.page.locator('[data-summary-row="average"] td').all():
                     average = cell.locator('.overview-wpa-average').bounding_box()
@@ -376,7 +465,7 @@ class GameOverviewTest(unittest.TestCase):
                 self.assertTrue(geometry['inside'])
                 labels = self.page.locator('.overview-chart svg').evaluate('''svg => {
                   const chart = svg.getBoundingClientRect();
-                  return [...svg.querySelectorAll('text')].map(label => {
+                  return [...svg.querySelectorAll('text')].filter(label => label.getClientRects().length).map(label => {
                     const r = label.getBoundingClientRect(), m = label.getScreenCTM();
                     return {text: label.textContent, size: parseFloat(getComputedStyle(label).fontSize) * Math.hypot(m.c, m.d),
                       inside: r.left >= chart.left && r.right <= chart.right && r.top >= chart.top && r.bottom <= chart.bottom};
@@ -385,7 +474,7 @@ class GameOverviewTest(unittest.TestCase):
                 for label in labels:
                     self.assertTrue(label['inside'], label)
                     self.assertGreaterEqual(label['size'], 11, label)
-                badges = self.page.locator('.overview-chart .win-history-grade').evaluate_all('''nodes => nodes.map(node => {
+                badges = self.page.locator('.overview-chart .win-history-grade:visible').evaluate_all('''nodes => nodes.map(node => {
                   const r = node.getBoundingClientRect(); return {left: r.left, right: r.right};
                 })''')
                 for previous, following in zip(badges, badges[1:]):
