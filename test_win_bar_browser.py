@@ -49,7 +49,7 @@ class WinBarBrowserTest(unittest.TestCase):
                   const rect = selector => root.querySelector(selector).getBoundingClientRect();
                   const board = rect('.turn-panel'), statistics = rect('.review-statistics');
                   const chart = rect('.trend-panel');
-                  return {boardOffset: board.top - root.getBoundingClientRect().top,
+                  return {boardOffset: board.top - rect('.replay-heading').top,
                     boardBottom: board.bottom, statisticsTop: statistics.top,
                     chartBottom: chart.bottom, chartHeight: chart.height,
                     fits: document.documentElement.scrollWidth <= innerWidth};
@@ -62,7 +62,7 @@ class WinBarBrowserTest(unittest.TestCase):
                 expect(self.page.locator('.review-body .turn-controls')).to_be_visible()
                 expect(self.page.locator('.review-body .turn-coach')).to_be_visible()
                 expect(self.page.locator('.review-body .move-comparison')).to_be_visible()
-                expect(self.page.locator('.review-body .win-history')).to_be_visible()
+                expect(self.page.locator('.game-overview .win-history')).to_be_visible()
                 expect(self.page.locator('.review-body .win-bar')).to_be_visible()
 
     def test_disclosure_state_survives_turn_selection_and_background_refresh(self):
@@ -196,7 +196,7 @@ class WinBarBrowserTest(unittest.TestCase):
                 expect(panel.get_by_role('img')).to_have_attribute('aria-label',
                     f'Full estimate. Turn {int(index) + 1} of 6 · Best move preview. '
                     f'You: {best}. Demo Cedar: {opponent}.')
-                expect(panel.locator(f'.win-history-point[data-turn-index="{index}"]')).to_have_attribute(
+                expect(self.page.locator(f'.win-history-point[data-turn-index="{index}"]')).to_have_attribute(
                     'aria-label', f'Turn {int(index) + 1}. {"You" if index == "0" else "Demo Cedar"} moved. You: {recorded}. Full estimate. Select to review.')
                 proportion = panel.evaluate('''node => {
                   const bar = node.querySelector('.win-bar');
@@ -266,12 +266,12 @@ class WinBarBrowserTest(unittest.TestCase):
                 expect(panel.locator('.win-estimate-state')).to_have_text('Full estimate')
                 expect(panel.locator('.win-you strong')).to_have_text('10.0%')
                 expect(panel.locator('.win-opponent strong')).to_have_text('90.0%')
-                expect(panel.locator('.win-history-point[data-turn-index="5"]')).to_have_attribute('aria-pressed', 'true')
-                expect(panel.locator('.win-history-point[data-estimate="final"]')).to_have_attribute('aria-pressed', 'false')
+                expect(self.page.locator('.win-history-point[data-turn-index="5"]')).to_have_attribute('aria-pressed', 'true')
+                expect(self.page.locator('.win-history-point[data-estimate="final"]')).to_have_attribute('aria-pressed', 'false')
                 self.page.get_by_role('button', name='Return to played move', exact=True).click()
                 expect(panel.locator('.win-estimate-state')).to_have_text('Final result')
                 expect(panel.locator('.win-you strong')).to_have_text(final_chance)
-                expect(panel.locator('.win-history-point[data-estimate="final"]')).to_have_attribute('aria-pressed', 'true')
+                expect(self.page.locator('.win-history-point[data-estimate="final"]')).to_have_attribute('aria-pressed', 'true')
 
     def test_mobile_bar_fits_and_preserves_turn_navigation(self):
         self.page.set_viewport_size({'width': 390, 'height': 844})
@@ -287,9 +287,9 @@ class WinBarBrowserTest(unittest.TestCase):
         self.assertGreaterEqual(dimensions['left'], 0)
         self.assertLessEqual(dimensions['right'], dimensions['width'])
         self.assertEqual(dimensions['scroll'], dimensions['client'])
-        expect(panel.locator('.win-history')).to_be_visible()
-        self.assertGreater(panel.locator('.win-history').bounding_box()['y'],
-                           panel.locator('.win-evaluation').bounding_box()['y'])
+        expect(self.page.locator('.game-overview .win-history')).to_be_visible()
+        self.assertLess(self.page.locator('.game-overview').bounding_box()['y'],
+                        panel.locator('.win-evaluation').bounding_box()['y'])
         self.page.get_by_role('button', name='Next →').click()
         expect(panel.locator('.win-you strong')).to_have_text('20.0%')
         expect(self.page.locator('.turn-action')).to_contain_text('Turn 2')
@@ -613,7 +613,7 @@ class WinBarBrowserTest(unittest.TestCase):
         self.set_points([{**self.point(index, 0.1 + index % 9 / 10),
                           'category': 'mistake' if index % 2 else 'blunder', 'loss': 12}
                          for index in range(42)])
-        panel = self.page.locator('.trend-panel')
+        panel = self.page.locator('.game-overview')
         for width in [320, 390, 400, 401, 600, 760, 761, 800, 1024, 1100, 1101, 1280]:
             self.page.set_viewport_size({'width': width, 'height': 844})
             bounds = panel.evaluate('''node => ({
@@ -640,9 +640,9 @@ class WinBarBrowserTest(unittest.TestCase):
                 with self.subTest(width=width, label=label['text']):
                     self.assertGreaterEqual(label['fontSize'], 11)
                     self.assertTrue(label['contained'], 'Chart label is clipped')
-        self.assertGreater(panel.locator('.win-history').bounding_box()['y'],
-                           panel.locator('.win-evaluation').bounding_box()['y'])
-        expect(panel.locator('.win-history-point')).to_have_count(43)
+        self.assertLess(panel.locator('.win-history').bounding_box()['y'],
+                        self.page.locator('.win-evaluation').bounding_box()['y'])
+        expect(self.page.locator('.win-history-point')).to_have_count(43)
         badges = panel.locator('.win-history-grade').evaluate_all('''nodes => nodes.map(node => {
           const r = node.getBoundingClientRect(); return {left: r.left, right: r.right};
         })''')
