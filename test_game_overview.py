@@ -62,14 +62,14 @@ class GameOverviewTest(unittest.TestCase):
     def test_draw_luck_summary_has_signed_player_totals_and_separate_coverage(self):
         self.open_summary()
         self.set_draw_points()
-        expect(self.page.locator('[data-summary-row="draw-luck"] td')).to_have_text(['+12.0 pp', '−7.0 pp'])
+        expect(self.page.locator('[data-summary-row="draw-luck"] td')).to_have_text(['+12.0 (+12.0)', '−7.0 (−7.0)'])
         expect(self.page.locator('[data-summary-row="draw-coverage"] td')).to_have_text(['1 / 1', '1 / 1'])
         expect(self.page.locator('.overview-status')).to_contain_text('1 early draw estimate')
         self.page.evaluate("""() => {
           delete moveQualityResults.points[1].draw;
           refreshMoveQualityPanel();
         }""")
-        expect(self.page.locator('[data-summary-row="draw-luck"] td')).to_have_text(['+12.0 pp', '—'])
+        expect(self.page.locator('[data-summary-row="draw-luck"] td')).to_have_text(['+12.0 (+12.0)', '—'])
         expect(self.page.locator('[data-summary-row="draw-coverage"] td')).to_have_text(['1 / 1', '0 / 1'])
         expect(self.page.locator('.overview-status')).to_contain_text('1 draw waiting')
         self.page.evaluate("""() => {
@@ -77,6 +77,56 @@ class GameOverviewTest(unittest.TestCase):
           refreshMoveQualityPanel();
         }""")
         expect(self.page.locator('.overview-status')).to_contain_text('1 draw record unavailable')
+
+    def test_wpa_averages_and_totals_use_only_measured_events(self):
+        self.open_summary()
+        self.set_draw_points()
+        self.page.evaluate("""() => {
+          currentReview.turns[2] = {...currentReview.turns[0]};
+          moveQualityResults.points.push({turnIndex: 2, category: 'blunder', loss: 13.4,
+            draw: {...moveQualityResults.points[0].draw, beforeWin: .5, afterWin: .44}});
+          refreshMoveQualityPanel();
+        }""")
+        expect(self.page.locator('[data-summary-row="average"] td')).to_have_text(['−9.7 (−19.4)', '0.0 (0.0)'])
+        expect(self.page.locator('[data-summary-row="draw-luck"] td')).to_have_text(['+3.0 (+6.0)', '−7.0 (−7.0)'])
+        expect(self.page.locator('[data-summary-row="draw-coverage"] td')).to_have_text(['2 / 2', '1 / 1'])
+        self.page.evaluate("""() => {
+          moveQualityResults.points[0].loss = 0;
+          moveQualityResults.points[2].loss = 0;
+          refreshMoveQualityPanel();
+        }""")
+        expect(self.page.locator('[data-summary-row="average"] td')).to_have_text(['0.0 (0.0)', '0.0 (0.0)'])
+
+    def test_draw_letters_show_repeats_blanks_and_unavailable_records(self):
+        self.open_summary()
+        self.set_draw_points()
+        self.page.evaluate("""() => {
+          currentReview.turns[0].rack = 'CATERSA';
+          currentReview.turns[0].rack_after = 'ERSA??N';
+          selectTurn(0);
+        }""")
+        tiles = self.page.locator('.turn-meta .rack-draw-tiles')
+        expect(tiles.locator('.draw-new .rack-tile')).to_have_text(['?', '?', 'N'])
+        expect(tiles.locator('.draw-new [aria-label="Blank"]')).to_have_count(2)
+        expect(tiles.locator('.draw-kept .rack-tile')).to_have_text(list('ERSA'))
+        self.page.evaluate("""() => {
+          currentReview.turns[0].rack_after = 'ERSAEEN';
+          renderReview();
+        }""")
+        expect(tiles.locator('.draw-new .rack-tile')).to_have_text(['E', 'E', 'N'])
+        self.page.evaluate("""() => {
+          currentReview.turns[0].rack_after = null;
+          renderReview();
+        }""")
+        expect(tiles).to_contain_text('New tiles unavailable')
+        expect(tiles.locator('.rack-tile')).to_have_count(0)
+        self.page.evaluate('selectTurn(2)')
+        expect(tiles).to_have_text('No tiles drawn.')
+        self.page.evaluate("""() => {
+          currentReview.turns[1].swapped_tiles = null;
+          selectTurn(1);
+        }""")
+        expect(tiles).to_contain_text('New tiles unavailable')
 
     def test_chart_draw_points_keep_move_annotations_and_draw_details_separate(self):
         self.open_summary()
@@ -95,11 +145,17 @@ class GameOverviewTest(unittest.TestCase):
         inspector = chart.locator('.win-history-inspector')
         expect(inspector).to_have_attribute('data-inspected-phase', 'after-draw')
         expect(inspector).to_contain_text('+12.0')
+        expect(inspector.locator('.draw-new .rack-tile')).to_have_text(['I', 'N', 'G'])
+        expect(inspector.locator('.draw-kept .rack-tile')).to_have_text(['E', 'R', 'S', '?'])
+        expect(inspector.locator('.draw-kept [aria-label="Blank"]')).to_have_count(1)
+        expect(inspector.locator('h4')).to_have_text('New tiles drawn')
         expect(inspector.locator('[data-move="before-draw"] strong')).to_have_text('50.0%')
         expect(inspector.locator('[data-move="after-draw"] strong')).to_have_text('62.0%')
         opponent = chart.locator('.win-history-point[data-turn-index="1"][data-phase="after-draw"]')
         opponent.focus()
         expect(inspector).to_contain_text('−7.0')
+        expect(inspector.locator('.draw-new .rack-tile')).to_have_text(['Z'])
+        expect(inspector.locator('.draw-kept .rack-tile')).to_have_text(list('AEIRST'))
         expect(inspector.locator('[data-move="before-draw"] strong')).to_have_text('60.0%')
         expect(inspector.locator('[data-move="after-draw"] strong')).to_have_text('53.0%')
         expect(opponent).to_have_attribute('aria-label', re.compile('You: 47.0%'))
@@ -137,6 +193,10 @@ class GameOverviewTest(unittest.TestCase):
         self.page.get_by_role('button', name='Start Review', exact=True).click()
         expect(self.page.get_by_role('combobox', name='Select game turn')).to_have_value('0')
         expect(self.page.locator('.board')).to_be_visible()
+        expect(self.page.locator('.game-overview')).to_be_visible()
+        expect(self.page.locator('.win-history')).to_have_count(1)
+        self.assertLess(self.page.locator('.game-overview').bounding_box()['y'],
+                        self.page.locator('.turn-controls').bounding_box()['y'])
         self.page.get_by_role('button', name='Game summary', exact=True).click()
         expect(self.page.locator('.game-overview')).to_be_visible()
         expect(self.page.get_by_role('button', name='Start Review', exact=True)).to_be_focused()
@@ -153,8 +213,15 @@ class GameOverviewTest(unittest.TestCase):
         expect(self.page.locator('[data-summary-row="average"] td')).to_have_text(['—', '—'])
         expect(self.page.locator('[data-summary-row="pending"] td')).to_have_text(['3', '3'])
         self.set_points()
-        expect(self.page.locator('[data-summary-row="average"] td')).to_have_text(['0.5 pp', '9.5 pp'])
+        expect(self.page.locator('[data-summary-row="average"] td')).to_have_text(['−0.5 (−0.5)', '−9.5 (−19.0)'])
         expect(self.page.locator('[data-summary-row="coverage"] td')).to_have_text(['1 / 3', '2 / 3'])
+        expect(self.page.locator('[data-summary-row="average"] th')).to_contain_text('Gameplay')
+        expect(self.page.locator('[data-summary-row="best"] .overview-grade-mark')).to_have_text('!')
+        sizes = self.page.locator('[data-summary-row="average"] td').first.evaluate('''node => ({
+          average: parseFloat(getComputedStyle(node.querySelector('.overview-wpa-average')).fontSize),
+          total: parseFloat(getComputedStyle(node.querySelector('.overview-wpa-total')).fontSize)
+        })''')
+        self.assertLess(sizes['total'], sizes['average'])
         for category, values in [('best', ['1', '0']), ('blunder', ['0', '1']),
                                  ('mistake', ['0', '1']), ('unrated', ['1', '0']),
                                  ('pending', ['1', '1'])]:
@@ -218,7 +285,8 @@ class GameOverviewTest(unittest.TestCase):
         self.page.keyboard.press('Enter')
         expect(self.page.get_by_role('combobox', name='Select game turn')).to_have_value('1')
         self.page.evaluate('refreshMoveQualityPanel(); refreshTrendPanel()')
-        expect(self.page.locator('.game-overview')).to_have_count(0)
+        expect(self.page.locator('.game-overview')).to_be_visible()
+        expect(self.page.locator('.win-history')).to_have_count(1)
         expect(self.page.locator('.board')).to_be_visible()
 
     def test_failed_early_estimates_stay_pending_and_paused_status_is_visible(self):
@@ -292,6 +360,11 @@ class GameOverviewTest(unittest.TestCase):
             with self.subTest(width=width):
                 self.page.set_viewport_size({'width': width, 'height': 900})
                 self.assertTrue(self.page.evaluate('document.documentElement.scrollWidth <= innerWidth'))
+                for cell in self.page.locator('[data-summary-row="average"] td').all():
+                    average = cell.locator('.overview-wpa-average').bounding_box()
+                    total = cell.locator('.overview-wpa-total').bounding_box()
+                    self.assertGreaterEqual(total['x'], average['x'] + average['width'])
+                    self.assertLess(total['y'], average['y'] + average['height'])
                 start = self.page.get_by_role('button', name='Start Review', exact=True)
                 expect(start).to_be_visible()
                 geometry = self.page.locator('.game-overview').evaluate('''node => {

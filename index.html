@@ -77,7 +77,7 @@
   .review { min-width: 0; padding: 0; border: 0; background: transparent; }
   .review-placeholder { min-height: 300px; display: grid; place-items: center; padding: 30px; border: 1px dashed #bacabb; border-radius: 14px; text-align: center; color: var(--muted); }
   .game-open .page-intro { display: none; }
-  .game-overview { max-width: 1120px; margin: 0 auto; padding: 28px 32px 24px; border-radius: 18px; background: #262522; color: #f7f6f2; color-scheme: dark; }
+  .game-overview { container-type: inline-size; max-width: 1120px; margin: 0 auto 20px; padding: 28px 32px 24px; border-radius: 18px; background: #262522; color: #f7f6f2; color-scheme: dark; }
   .overview-heading { text-align: center; margin-bottom: 20px; }
   .overview-heading h2 { font-size: 30px; letter-spacing: -.7px; }
   .overview-heading p { margin-top: 6px; color: #c4c2b9; font-size: 12px; }
@@ -99,7 +99,10 @@
   .overview-player-name { display: block; overflow-wrap: anywhere; font-size: 12px; line-height: 1.3; }
   .overview-player-score { display: block; margin-top: 4px; color: #bbb9b0; font-size: 11px; font-weight: 400; }
   .overview-table [data-summary-row="average"] { border-top: 1px solid #49473f; }
-  .overview-table [data-summary-row="average"] td { font-size: 24px; color: #faf8f0; }
+  .overview-table [data-summary-row="average"] td { font-size: clamp(14px, 4cqw, 24px); color: #faf8f0; }
+  .overview-wpa-value { white-space: nowrap; }
+  @container (max-width: 500px) { .overview-table thead th:first-child { width: 30%; } }
+  .overview-table .overview-wpa-total { display: inline; font-size: clamp(9px, 2.5cqw, 11px); color: #c4c2b9; font-weight: 400; white-space: nowrap; }
   .overview-table th small { display: block; color: #bbb9b0; font-weight: 400; font-size: 11px; margin-top: 3px; }
   .overview-table [data-summary-row="draw-luck"] td { font-size: clamp(14px, 4vw, 20px); }
   .overview-table [data-summary-row="draw-coverage"] th, .overview-table [data-summary-row="draw-coverage"] td { font-size: 11px; color: #c4c2b9; font-weight: 400; }
@@ -111,6 +114,7 @@
   .overview-table [data-summary-row="blunder"] { color: #ff8178; }
   .overview-table [data-summary-row="unrated"], .overview-table [data-summary-row="pending"] { color: #bfbdb4; }
   .overview-grade-mark { display: inline-block; width: 23px; margin-right: 6px; font-size: 18px; text-align: center; }
+  .overview-wpa-note { margin: 0 0 12px; color: #c4c2b9; font-size: 11px; }
   .overview-status { color: #c4c2b9; font-size: 12px; margin: 14px 0; min-height: 18px; }
   .game-overview .start-review { width: 100%; min-height: 56px; border: 0; border-bottom: 4px solid #597d2f; border-radius: 11px; background: #95c95b; color: #162509; font-size: 22px; font-weight: 750; }
   .game-overview .start-review:hover { background: #a7d977; }
@@ -290,6 +294,15 @@
   .turn-action { font-size: 12px; font-weight: 700; }
   .turn-subtitle { margin-top: 5px; color: var(--muted); font-size: 10px; overflow-wrap: anywhere; }
   .turn-quality { margin-top: 7px; }
+  .rack-draw-tiles { margin-top: 12px; }
+  .draw-new { padding: 10px; border: 2px solid #237653; border-radius: 8px; background: #edf6ec; }
+  .draw-letters-label { margin: 0 0 7px; color: #245d42; font-size: 12px; font-weight: 700; }
+  .draw-letters { display: flex; flex-wrap: wrap; gap: 4px; }
+  .draw-new .rack-tile { width: 29px; height: 34px; font-size: 18px; border-color: #237653; background: #fff; color: #173d2b; }
+  .draw-kept { margin-top: 9px; }
+  .draw-kept .draw-letters-label, .draw-letters-note { color: var(--muted); font-size: 11px; }
+  .draw-letters-note { margin-top: 8px; }
+  .win-history-inspector[data-inspected-phase="after-draw"] { display: block; }
   .turn-rack { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; margin-top: 9px; }
   .rack-label { margin-right: 5px; color: var(--muted); font-size: 10px; }
   .rack-tile { display: grid; place-items: center; width: 25px; height: 29px; border: 1px solid #d5c59e; border-bottom-width: 3px; border-radius: 4px; background: #eee0bb; color: #493c25; font-size: 14px; font-weight: 700; }
@@ -380,7 +393,7 @@
     .overview-heading h2 { font-size: 27px; }
     .overview-table th { font-size: 12px; }
     .overview-table td { font-size: 24px; }
-    .overview-table [data-summary-row="average"] td { font-size: 19px; }
+    .overview-table [data-summary-row="average"] td { font-size: clamp(14px, 4cqw, 19px); }
     .overview-grade-mark { width: 16px; margin-right: 3px; font-size: 15px; }
     .overview-chart { padding: 10px 2px 6px; }
     .luck-stats { grid-template-columns: 1fr; gap: 8px; }
@@ -1213,7 +1226,8 @@ function makeGameOverview(review) {
       ' · ' + review.my_score + '–' + review.opponent_score;
   panel.append(heading, makeElement('p', 'overview-result', resultText));
   const chart = makeElement('div', 'overview-chart');
-  chart.append(drawWinHistory(trendResults?.points || [], review, false, true));
+  chart.append(drawWinHistory(trendResults?.points || [], review,
+    Boolean(currentMovePreview(review.turns[currentTurnIndex], qualityPointForTurn(currentTurnIndex))), reviewView === 'summary'));
   panel.append(chart);
 
   const points = new Map((moveQualityResults?.points || []).map(point => [point.turnIndex, point]));
@@ -1246,16 +1260,16 @@ function makeGameOverview(review) {
       }
     }
     const drawSum = draws.reduce((sum, draw) => sum + (draw.afterWin - draw.beforeWin) * 100, 0);
-    const signedDraw = Math.abs(drawSum) < .05 ? '0.0' : (drawSum > 0 ? '+' : '−') + Math.abs(drawSum).toFixed(1);
+    const gameplaySum = -rated.reduce((sum, point) => sum + point.loss, 0);
     return { mine, total: turns.length, checked, rated, draws, drawTotal, drawPending, drawUnavailable,
       drawEarly: draws.filter(draw => draw.provisional).length,
-      drawLuck: draws.length || !drawTotal ? signedDraw + ' pp' : '—',
+      drawWpa: draws.length ? {average: drawSum / draws.length, total: drawSum} : null,
+      gameplayWpa: rated.length ? {average: gameplaySum / rated.length, total: gameplaySum} : null,
       name: mine ? review.my_name || 'You' : review.opponent || 'Opponent',
       score: mine ? review.my_score : review.opponent_score,
       pending: turns.length - checked.length,
       unrated: checked.length - rated.length,
-      early: rated.filter(point => point.provisional).length,
-      average: rated.length ? (rated.reduce((sum, point) => sum + point.loss, 0) / rated.length).toFixed(1) + ' pp' : '—'
+      early: rated.filter(point => point.provisional).length
     };
   });
   const table = makeElement('table', 'overview-table');
@@ -1289,23 +1303,35 @@ function makeGameOverview(review) {
       th.append(mark);
     }
     th.append(document.createTextNode(title));
-    tr.append(th, ...values.map(value => makeElement('td', '', value)));
+    tr.append(th, ...values.map(value => {
+      const cell = makeElement('td');
+      cell.append(value instanceof Node ? value : document.createTextNode(String(value)));
+      return cell;
+    }));
     body.append(tr);
     return th;
   };
-  row('average', 'Avg. win chance lost', players.map(player => player.average))
-    .append(makeElement('small', '', 'Percentage points · lower is better'));
-  row('draw-luck', 'Rack draw luck', players.map(player => player.drawLuck))
-    .append(makeElement('small', '', 'Net percentage points gained or lost'));
+  const wpaValue = value => {
+    if (!value) return '—';
+    const signed = number => (Math.abs(number) < .05 ? '0.0' : (number > 0 ? '+' : '−') + Math.abs(number).toFixed(1));
+    const span = makeElement('span', 'overview-wpa-value');
+    span.append(makeElement('span', 'overview-wpa-average', signed(value.average)),
+      document.createTextNode(' '), makeElement('small', 'overview-wpa-total', '(' + signed(value.total) + ')'));
+    return span;
+  };
+  row('average', 'Gameplay', players.map(player => wpaValue(player.gameplayWpa)))
+    .append(makeElement('small', '', 'WPA per move (total)'));
+  row('draw-luck', 'Rack Draws', players.map(player => wpaValue(player.drawWpa)))
+    .append(makeElement('small', '', 'WPA per draw (total)'));
   row('draw-coverage', 'Draws measured', players.map(player => player.draws.length + ' / ' + player.drawTotal));
   row('coverage', 'Moves rated', players.map(player => player.rated.length + ' / ' + player.total));
-  const symbols = {best: '★', inaccuracy: '●', mistake: '?', blunder: '??'};
+  const symbols = {best: '!', inaccuracy: '●', mistake: '?', blunder: '??'};
   for (const category of categories) row(category, qualityLabel(category), players.map(player =>
     player.rated.length ? player.rated.filter(point => point.category === category).length : '—'), symbols[category]);
   if (players.some(player => player.unrated)) row('unrated', 'Unrated', players.map(player => player.unrated), '—');
   if (players.some(player => player.pending)) row('pending', 'Pending', players.map(player => player.pending), '·');
   table.append(head, body);
-  panel.append(table);
+  panel.append(makeElement('p', 'overview-wpa-note', 'WPA = win probability added, in percentage points. Higher is better. Average (total) for measured moves and draws.'), table);
   const pending = players.reduce((sum, player) => sum + player.pending, 0);
   const early = players.reduce((sum, player) => sum + player.early, 0);
   const unrated = players.reduce((sum, player) => sum + player.unrated, 0);
@@ -1327,7 +1353,7 @@ function makeGameOverview(review) {
   start.addEventListener('click', () => { boardView = 'after'; selectTurn(0, '.turn-controls'); });
   panel.append(start);
   const method = makeReviewDetails('overview-method', 'overview-method', 'About these estimates');
-  method.append(makeElement('p', '', 'Win chance lost compares each recorded move with the best sampled alternative from the same position. Best: under 2 percentage points; Inaccuracy: 2–under 5; Mistake: 5–under 10; Blunder: 10 or more. Rack draw luck compares the same recorded move before and after its actual refill. It sums signed changes for each player; passes and empty-bag turns have no draw. Partial totals include only measured refills. Missing estimates stay blank in the chart. These are engine estimates, not a measure of human accuracy.'));
+  method.append(makeElement('p', '', 'Gameplay WPA is the recorded move’s win estimate minus the best sampled alternative from the same position. Best: under 2 percentage points; Inaccuracy: 2–under 5; Mistake: 5–under 10; Blunder: 10 or more. Rack Draws WPA compares the same recorded move before and after its actual refill. Each row shows the average signed change with the total in parentheses; passes and empty-bag turns have no draw. Partial totals include only measured refills. Missing estimates stay blank in the chart. These are engine estimates, not a measure of human accuracy.'));
   panel.append(method);
   return panel;
 }
@@ -1363,8 +1389,8 @@ function renderReview() {
   const root = byId('reviewPanel');
   root.replaceChildren();
   document.body.classList.add('game-open');
+  root.append(makeGameOverview(review));
   if (reviewView === 'summary') {
-    root.append(makeGameOverview(review));
     restoreReviewChartScroll();
     return;
   }
@@ -1510,6 +1536,7 @@ function renderReview() {
     }
     meta.append(rack);
   }
+  meta.append(makeRackDrawTiles(turn));
   const qualityPoint = qualityPointForTurn(currentTurnIndex);
   if (qualityPoint) meta.append(makeQualityBadge(qualityPoint, true));
   turnPanel.append(meta);
@@ -1562,7 +1589,7 @@ function selectTurn(index, focusSelector) {
   stopContinuation();
   renderReview();
   if (entering) {
-    byId('reviewPanel').scrollIntoView({block: 'start', behavior: 'instant'});
+    byId('reviewPanel').querySelector('.replay-heading')?.scrollIntoView({block: 'start', behavior: 'instant'});
     byId('reviewPanel').querySelector('.turn-controls')?.focus({preventScroll: true});
   }
   const list = byId('reviewPanel').querySelector('.turn-list-panel');
@@ -2194,7 +2221,7 @@ function makeTrendPanel(review) {
   }
   const chart = makeElement('div', 'trend-chart win-overview');
   chart.id = 'trendChart';
-  chart.append(drawTrendChart(point, review), drawWinHistory(trendResults?.points || [], review, Boolean(preview)));
+  chart.append(drawTrendChart(point, review));
   panel.append(chart);
   const controls = makeElement('div', 'trend-controls');
   const button = makeElement('button', 'analysis-button', trendResults?.state === 'running' ? 'Pause analysis' :
@@ -2225,6 +2252,36 @@ function makeTrendPanel(review) {
   return panel;
 }
 
+function makeRackDrawTiles(turn) {
+  const section = makeElement('section', 'rack-draw-tiles');
+  section.setAttribute('aria-label', 'Rack draw letters');
+  let draw;
+  try { draw = CrossplayReview.rackDraw(turn); } catch (_) {
+    section.append(makeElement('p', 'muted', 'New tiles unavailable: the draw record is incomplete.'));
+    return section;
+  }
+  if (!draw.drawCount) {
+    section.append(makeElement('p', 'muted', 'No tiles drawn.'));
+    return section;
+  }
+  for (const [kind, label, tiles] of [['new', 'New tiles drawn', draw.drawn], ['kept', 'Kept tiles', draw.retained]]) {
+    const group = makeElement('div', 'draw-' + kind);
+    group.setAttribute('aria-label', label + ': ' + (tiles || 'none'));
+    group.append(makeElement(kind === 'new' ? 'h4' : 'p', 'draw-letters-label', label));
+    const rack = makeElement('div', 'draw-letters');
+    for (const tile of tiles) {
+      const letter = makeElement('span', 'rack-tile', tile);
+      if (tile === '?') letter.setAttribute('aria-label', 'Blank');
+      rack.append(letter);
+    }
+    if (!tiles) rack.append(makeElement('span', 'muted', 'None'));
+    group.append(rack);
+    section.append(group);
+  }
+  section.append(makeElement('p', 'draw-letters-note', '? = blank tile. New tiles + kept tiles = rack after draw.'));
+  return section;
+}
+
 function makeWinHistoryInspector(point, review, sweep) {
   const inspector = makeElement('aside', 'win-history-inspector win-history-detail');
   inspector.setAttribute('aria-label', 'Move details');
@@ -2251,13 +2308,13 @@ function makeWinHistoryInspector(point, review, sweep) {
     const signed = known ? Math.abs(delta) < .05 ? '0.0' : (delta > 0 ? '+' : '−') + Math.abs(delta).toFixed(1) : '—';
     const heading = makeElement('div', 'win-history-inspector-head');
     heading.append(makeElement('p', 'eyebrow', 'Turn ' + (point.x + 1) + ' · After rack draw'),
-      makeElement('h4', '', draw?.rackAfter || 'Rack unavailable'),
       makeElement('p', 'win-history-inspector-player', player + ' drew' + (draw?.drawCount ? ' ' + draw.drawCount + (draw.drawCount === 1 ? ' tile' : ' tiles') : '')));
+    heading.append(makeRackDrawTiles(turn));
     if (draw?.provisional || point.provisional) heading.append(makeElement('span', 'win-history-inspector-early', 'Early estimate'));
     const lossBlock = makeElement('div', 'win-history-inspector-loss-block');
     const luck = makeElement('p', 'win-history-inspector-loss', signed);
     if (known) luck.append(makeElement('small', '', ' pp'));
-    lossBlock.append(luck, makeElement('p', 'win-history-inspector-label', 'Rack draw luck for ' + player));
+    lossBlock.append(luck, makeElement('p', 'win-history-inspector-label', 'Rack Draws WPA for ' + player));
     const comparison = makeElement('div', 'win-history-comparison');
     comparison.append(makeElement('p', 'eyebrow', 'Win chance for ' + player));
     for (const [kind, label, value] of [['before-draw', 'Before draw', draw?.beforeWin], ['after-draw', 'After draw', draw?.afterWin]]) {
