@@ -56,8 +56,11 @@
 
     // compute receives a callback to report that the engine has started the
     // work; a cancelled request that already started is still shared.
-    async request(turn, kind, compute, signal, { priority = 0, onPromote } = {}) {
-      const key = this.key(turn, kind);
+    request(turn, kind, compute, signal, options = {}) {
+      return this.requestKey(this.key(turn, kind), compute, signal, options);
+    }
+
+    async requestKey(key, compute, signal, { priority = 0, onPromote } = {}) {
       if (this.results[key]) return this.results[key];
       const existing = this.pending.get(key);
       if (existing && (!existing.signal?.aborted || existing.started)) {

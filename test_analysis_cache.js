@@ -177,3 +177,19 @@ test('endgame policy invalidates only sampled low-bag caches and keeps paired se
     assert.equal(cache.seed(played), expectedSeed >>> 0);
   }
 });
+
+test('non-move opening identities share work and restore without a turn key', async () => {
+  const cache = new AnalysisCache();
+  const key = JSON.stringify(['quackle-opening-draw-v1', 'ACERSTU', 'AEINORS', 277]);
+  let calls = 0;
+  const compute = async () => { calls++; return {afterWin: .57}; };
+  const [one, two] = await Promise.all([
+    cache.requestKey(key, compute), cache.requestKey(key, compute)
+  ]);
+  assert.equal(calls, 1);
+  assert.equal(one, two);
+  const restored = new AnalysisCache(cache.results);
+  assert.equal(await restored.requestKey(key, compute), one);
+  assert.equal(calls, 1);
+  assert.equal(cache.get(turn, 'review'), null);
+});

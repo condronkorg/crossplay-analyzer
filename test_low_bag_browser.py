@@ -52,6 +52,40 @@ class LowBagBrowserTest(unittest.TestCase):
         self.assertEqual([point['turnIndex'] for point in result['guest']['points']], [0])
         self.assertTrue(result['guest']['shared'])
 
+    def test_endgame_refresh_keeps_valid_cached_opening(self):
+        self.open_game()
+        result = self.page.evaluate("""() => {
+          const grid = Array(15).fill('.'.repeat(15));
+          const pass = (mine,rack,index,bag_count) => ({mine,rack,index,bag_count,
+            rack_after:rack,action:'PASS',score:0,grid:[...grid],grid_after:[...grid],
+            mover_score:0,other_score:0,final_turns_remaining:0});
+          const turns = [pass(true,'CATERS?',0,86),pass(false,'ADEINOR',1,86),
+            pass(true,'CATERS?',2,2)];
+          const review = {...currentReview,turns};
+          const input = CrossplayOpening.describe(review);
+          const raw = {simulated:true,samplingVersion:'initial-deal-v1',policy:'static-best-v1',
+            firstRack:input.firstRack,secondRack:input.secondRack,seed:CrossplayOpening.seed(input),
+            baselineWin:.55,firstOnlyWin:.65,secondOnlyWin:.45,afterWin:.6,
+            firstWpa:12.5,secondWpa:7.5,iterationsRequested:277,iterationsCompleted:277,
+            plies:2,playToEnd:false,simulationMode:'2-ply',winModel:'bogowin'};
+          const point = index => ({turnIndex:index,turn:index+1,mine:turns[index].mine,
+            action:'PASS',evaluation:MOVE_QUALITY_EVALUATION,playedWin:1,bestWin:1,
+            loss:0,category:'best',samples:277,provisional:false});
+          review.stored_analysis = {version:ANALYSIS_VERSION,
+            turn_analyses:{[CrossplayOpening.key(input,277)]:raw},
+            move_quality:{evaluation:MOVE_QUALITY_EVALUATION,state:'done',current:3,
+              points:[point(0),point(1),point(2)],opening:{afterWin:.99}}};
+          const context=makeReviewContext(review,analysisOwner());
+          return {opening:context.quality.opening,openingState:context.openingState,
+            points:context.quality.points.map(point=>point.turnIndex),state:context.quality.state};
+        }""")
+        self.assertEqual(result['points'], [0, 1])
+        self.assertEqual(result['state'], 'running')
+        self.assertEqual(result['openingState'], 'done')
+        self.assertEqual(result['opening']['afterWin'], .6)
+        self.assertEqual(result['opening']['samples'], 277)
+        self.assertEqual(result['opening']['firstWpa'], 12.5)
+
     def test_current_policy_summary_is_restored_only_with_matching_raw_result(self):
         self.open_game()
         result = self.page.evaluate("""() => {
@@ -143,7 +177,8 @@ class LowBagBrowserTest(unittest.TestCase):
             swapped_tiles:swapped, rack_after:retained+unseen.slice(0,4).join(''),
             grid:board, grid_after:board, bag_count:6, final_turns_remaining:0};
           currentReview.turns=[turn];
-          const context=contextFor(currentReview);
+          const context=makeReviewContext(currentReview,analysisOwner());
+          reviewQueue.contexts.set(currentReview.id,context);
           context.states=['pending-preview']; context.quality=null; context.trend=null;
           await analyzeReviewTurn(context,0,'preview');
           const early=structuredClone(context.quality.points[0]);

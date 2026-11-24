@@ -498,3 +498,40 @@ test('background save retry does not resume other deliberately paused games', as
   assert.equal(queue.contexts.get('paused').paused, true);
   queue.close();
 });
+
+test('missing opening estimates complete without recomputing saved moves', async () => {
+  const events = [];
+  const context = {review: {id: 'one', turns: [{}, {}]}, states: ['done', 'done'], openingState: 'pending-preview'};
+  const queue = new ReviewQueue({preview: true, concurrency: 1, load: async () => context,
+    run: async () => events.push('move'), runOpening: async (_, phase) => events.push('opening:' + phase),
+    complete: () => events.push('complete')});
+  queue.add([{id:'one',status:'completed'}]); await tick(); await tick();
+  assert.deepEqual(events, ['opening:preview','opening:review','complete']);
+  assert.deepEqual(context.states, ['done','done']);
+  assert.equal(context.openingState, 'done');
+  queue.close();
+});
+
+test('opening retry leaves completed moves intact and does not loop on failure', async () => {
+  const context = {review: {id:'one',turns:[{}]},states:['done'],openingState:'pending-preview'};
+  let attempts = 0, moves = 0;
+  const queue = new ReviewQueue({preview:true,concurrency:1,load:async()=>context,
+    run:async()=>moves++,runOpening:async()=>{attempts++;if(attempts===1)throw new Error('opening failed');return {complete:true};}});
+  queue.add([{id:'one',status:'completed'}]); await tick(); await tick();
+  assert.equal(attempts,1); assert.equal(context.openingState,'error');
+  queue.retry(); await tick(); await tick();
+  assert.equal(attempts,2); assert.equal(context.openingState,'done');
+  assert.equal(moves,0); assert.deepEqual(context.states,['done']);
+  queue.close();
+});
+
+test('opening work respects pause and cancelled work cannot complete a review', async () => {
+  let release, completes=0, calls=0;
+  const context={review:{id:'one',turns:[{}]},states:['done'],openingState:'pending-preview',paused:true};
+  const queue=new ReviewQueue({preview:true,concurrency:1,load:async()=>context,run:async()=>{},
+    runOpening:async()=>{calls++;await new Promise(resolve=>release=resolve);},complete:()=>completes++});
+  queue.contexts.set('one',context);queue.add([{id:'one',status:'completed'}]);await tick();
+  assert.equal(calls,0);
+  queue.retry('one');await tick();assert.equal(calls,1);
+  queue.close();release();await tick();assert.equal(completes,0);
+});

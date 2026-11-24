@@ -16,8 +16,8 @@ repository (SHA-256
 Artifact SHA-256 values:
 
 ```text
-quackle.js    1b9f62da89666b75b551506c4743bca5411ad56db3c9860a7163acf93024746e
-quackle.wasm  6873e3b84f418e5ed17c61c9774bcc47a849eb4b6f2994cb0b579556fc140757
+quackle.js    d3bd3b6997cd2ace135a05f3f21c2c764eaef5c988dd015945356b85689f54fe
+quackle.wasm  dc47ca672a7cefdc0434e25207f54e23e2d24e5c09a1f7aa2b50a724b19e92cc
 quackle.data  0f7b4e8cdcf4cb743c5423d6befe23ea77691c588f7c7dfb603bf475c1fbf8f3
 ```
 
@@ -71,8 +71,8 @@ current bag. Scrabble parameters retain their seven-tile minimum.
 
 The patch includes these changes in `gameparameters.cpp`, `game.cpp`, and
 `generator.cpp`. Recorded swap failures now distinguish unavailable rack tiles
-from insufficient bag tiles instead of reporting a dictionary error. The data
-and JavaScript loader files remain byte-identical to the prior build.
+from insufficient bag tiles instead of reporting a dictionary error. The data file remains byte-identical to the prior build. The loader and WASM
+also include the opening-deal API below.
 
 ## Endgame policy
 
@@ -109,3 +109,40 @@ separate from exact final-phase choices.
 
 Run `python3 -m unittest -v test_endgame_simulation` for the synthetic winning-block,
 root shortlist, blank identity, and paired-sample cache regressions.
+
+## Opening deal
+
+`simulateInitialDeal(firstRack, secondRack, iterations, seed)` estimates the
+opening deal before any recorded move. Both inputs must contain seven physical
+uppercase letters or `?` blanks and fit the 100-tile Crossplay distribution.
+The native API accepts 1 to 277 samples and an explicit unsigned 32-bit seed.
+The worker request `simulateOpening` accepts the 64- and 277-sample profiles.
+
+The method computes four means from the first mover's view: both racks random
+(B), first rack fixed (A), second rack fixed (C), and both racks fixed (J).
+Each trial starts with a full bag, removes all fixed rack tiles, and then draws
+unknown racks. The result must contain seven tiles on each rack and 86 in the
+bag. The opener uses the best static move with the opponent rack hidden. Each
+trial then plays two future static moves and uses the same residual and Bogowin
+calculation as `simulate(2)`. It never uses the recorded first move or selects
+among noisy simulated candidates.
+
+All four scenarios use the same trial seed sequence. The trial seed depends on
+the input seed and trial index, so the first 64 trials of a 277-sample run match
+the preview. The page uses seed 806877465 for every rack pair and both profiles.
+B thus retains the model's first-move advantage. The method does not assume a
+50 percent baseline. First-player WPA is `100*((A-B)+(J-C))/2`; second-player
+WPA in that player's view is `-100*((C-B)+(J-A))/2`.
+
+Results include canonical sorted racks, `samplingVersion: "initial-deal-v1"`,
+`policy: "static-best-v1"`, the four means, both signed WPA values, the seed,
+sample counts, and `plies: 2`, `playToEnd: false`, `simulationMode: "2-ply"`,
+`winModel: "bogowin"`. These are short-horizon play-model estimates and can
+contain sampling noise. They are not calibrated human win probabilities.
+
+Run `python3 -m unittest -v test_initial_deal_simulation` for real browser/WASM
+checks of determinism, rack order, conditional independence, physical limits,
+WPA identities, the full 277-sample result, exact preview-prefix identity, and
+worker dispatch. Run `node --test test_initial_deal_worker.js` for request and
+raw-result rejection checks. The source patch preserves the earlier review,
+draw, exception, low-bag exchange, and 1000-ply finish-bound changes.

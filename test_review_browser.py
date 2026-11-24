@@ -658,6 +658,15 @@ class ReviewBrowserTest(unittest.TestCase):
         worker = r"""
           self.onmessage = ({data: {id, type, payload: p}}) => {
             if (type === 'init') return self.postMessage({id, result: {}});
+            if (type === 'simulateOpening') {
+              const result = {simulated: true, samplingVersion: 'initial-deal-v1', policy: 'static-best-v1',
+                firstRack: p.firstRack, secondRack: p.secondRack, seed: p.seed,
+                baselineWin: .55, firstOnlyWin: .65, secondOnlyWin: .45, afterWin: .6,
+                firstWpa: 12.5, secondWpa: 7.5, iterationsRequested: p.iterations,
+                iterationsCompleted: p.iterations, plies: 2, playToEnd: false,
+                simulationMode: '2-ply', winModel: 'bogowin'};
+              return setTimeout(() => self.postMessage({id, result}), DELAY);
+            }
             const win = p.rack === 'ACERSTU' ? .3 : p.rack === '?EINRSU' ? .43 : .5;
             if (type === 'simulateDraw') {
               const move = p.played, grid = JSON.parse(p.gridJson);
@@ -770,13 +779,14 @@ class ReviewBrowserTest(unittest.TestCase):
         self.use_saved_analysis(stored)
         self.page.evaluate("""window.resumeCalls = []; const request = workerRequest;
           workerRequest = (type, payload, options) => {
-            if (options.taskKey.includes(':mockgame01:')) resumeCalls.push(payload.iterations);
+            if (options.taskKey.includes(':mockgame01:')) resumeCalls.push({type, iterations: payload.iterations});
             return request(type, payload, options);
           }; startBackgroundAnalysis = window.automaticAnalysis; undefined""")
         self.page.get_by_role('button', name='Review game against Demo Cedar').click()
         self.start_review()
         expect(self.page.locator('.quality-panel .trend-status')).to_contain_text('Your review is ready')
-        self.assertEqual(self.page.evaluate('resumeCalls'), [277] * 10)
+        self.assertEqual(self.page.evaluate("resumeCalls.filter(call => call.type !== 'simulateOpening').map(call => call.iterations)"), [277] * 10)
+        self.assertEqual(self.page.evaluate("resumeCalls.filter(call => call.type === 'simulateOpening').map(call => call.iterations)"), [64, 277])
         self.assertTrue(self.page.evaluate('moveQualityResults.points.every(point => !point.provisional && point.samples === 277)'))
 
     def test_late_visible_preview_preserves_completed_review_and_final_result(self):
@@ -784,6 +794,7 @@ class ReviewBrowserTest(unittest.TestCase):
         self.open_game()
         result = self.page.evaluate("""async () => {
           const context = contextFor(currentReview), request = workerRequest;
+          await analyzeOpeningDraw(context, 'review');
           let release;
           workerRequest = (type, payload, options) => type === 'simulateReview' && payload.iterations === 64
             ? new Promise(resolve => { release = () => resolve(request(type, payload, options)); })
@@ -813,6 +824,7 @@ class ReviewBrowserTest(unittest.TestCase):
         self.open_game()
         result = self.page.evaluate("""async () => {
           const context = contextFor(currentReview), request = workerRequest;
+          await analyzeOpeningDraw(context, 'review');
           let release;
           workerRequest = (type, payload, options) => type === 'simulateReview' && payload.iterations === 64
             ? new Promise(resolve => { release = () => resolve(request(type, payload, options)); })
@@ -1264,7 +1276,7 @@ class ReviewBrowserTest(unittest.TestCase):
         expect(self.page.locator('#backgroundStatus')).to_contain_text('2/2 games', timeout=15_000)
         states = self.page.evaluate('Array.from(reviewQueue.contexts.values(), c => ({id:c.review.id, keys:Object.keys(c.cache.results).length, points:c.quality.points.length}))')
         self.assertEqual({state['id'] for state in states}, {'mockgame01', 'mockgame02'})
-        self.assertTrue(all(state['keys'] == 20 and state['points'] == 6 for state in states), states)
+        self.assertTrue(all(state['keys'] == 22 and state['points'] == 6 for state in states), states)
         self.page.evaluate('Promise.all(Array.from(reviewQueue.contexts.values(), c => flushAnalysisSave(c.review, c.cache)))')
         self.page.get_by_role('button', name='Review game against Demo Cedar').click()
         self.start_review()
@@ -1354,14 +1366,15 @@ class ReviewBrowserTest(unittest.TestCase):
         self.page.evaluate('flushAnalysisSave()')
         self.page.wait_for_function('reviewQueue.running === 0')
         stored = self.page.evaluate("({version: ANALYSIS_VERSION, turn_analyses: positionCache.results, move_quality: moveQualityResults})")
-        stored['turn_analyses'].pop(next(key for key in stored['turn_analyses'] if json.loads(key)[1] == 'review'))
+        stored['turn_analyses'].pop(next(key for key in stored['turn_analyses']
+                                         if json.loads(key)[:2] == ['quackle-review-v1', 'review']))
         self.use_saved_analysis(stored)
         self.page.evaluate("window.resumeCalls=[]; const request=workerRequest; workerRequest=(type,payload,options)=>{resumeCalls.push({type,key:options.taskKey}); return request(type,payload,options);}; startBackgroundAnalysis=window.automaticAnalysis; undefined")
         self.page.get_by_role('button', name='Review game against Demo Cedar').click()
         self.start_review()
         expect(self.page.locator('.quality-panel .trend-status')).to_contain_text('Your review is ready')
         self.assertEqual(self.page.evaluate("resumeCalls.filter(call => call.key.includes(':mockgame01:')).map(call => call.type)"), ['simulateReview'])
-        self.assertEqual(self.page.evaluate('Object.keys(positionCache.results).length'), 20)
+        self.assertEqual(self.page.evaluate('Object.keys(positionCache.results).length'), 22)
 
     def test_auth_failure_keeps_unsaved_results_and_account_reset_discards_old_work(self):
         self.install_review_worker(delay=100)
@@ -1433,9 +1446,14 @@ class ReviewBrowserTest(unittest.TestCase):
         expect(self.page.locator('#engineStatus')).to_contain_text('277 simulations per move', timeout=120_000)
         expect(self.page.locator('.moves-table tbody tr').first).to_be_visible()
         expect(self.page.get_by_role('button', name='Retry this turn', exact=True)).to_be_hidden()
-        kinds = self.page.evaluate('Object.keys(positionCache.results).map(key => JSON.parse(key)[1])')
-        self.assertEqual({kind: kinds.count(kind) for kind in set(kinds)},
-                         {'preview': 6, 'review': 6, 'draw-preview': 4, 'draw': 4})
+        identities = self.page.evaluate('Object.keys(positionCache.results).map(key => JSON.parse(key))')
+        profiles = [(identity[0], identity[3] if identity[0] == 'quackle-opening-draw-v1' else identity[1])
+                    for identity in identities]
+        self.assertEqual({profile: profiles.count(profile) for profile in set(profiles)}, {
+            ('quackle-review-v1', 'preview'): 6, ('quackle-review-v1', 'review'): 6,
+            ('quackle-rack-draw-v1', 'draw-preview'): 4, ('quackle-rack-draw-v1', 'draw'): 4,
+            ('quackle-opening-draw-v1', 64): 1, ('quackle-opening-draw-v1', 277): 1,
+        })
         self.page.evaluate('flushAnalysisSave()')
         results = self.page.evaluate('positionCache.results')
         saved_keys = [key for snapshot in saved for key in snapshot['turn_analyses']]

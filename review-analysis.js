@@ -204,8 +204,8 @@
   }
 
   class ReviewQueue {
-    constructor({ load, run, complete = () => {}, change = () => {}, concurrency = 2, preview = false }) {
-      Object.assign(this, { load, run, complete, change, concurrency, preview });
+    constructor({ load, run, runOpening = null, complete = () => {}, change = () => {}, concurrency = 2, preview = false }) {
+      Object.assign(this, { load, run, runOpening, complete, change, concurrency, preview });
       this.contexts = new Map();
       this.loading = new Map();
       this.errors = new Map();
@@ -239,6 +239,31 @@
       return promise;
     }
     orderedIds() { return [...new Set([this.activeId, ...this.ids, ...this.contexts.keys()].filter(Boolean))]; }
+    openingPending(context) {
+      return Boolean(this.runOpening && ['pending-preview', 'running-preview', 'pending', 'running'].includes(context.openingState));
+    }
+    async notifyComplete(context) {
+      if (!context.states.every(state => state === 'done') || this.openingPending(context)) return;
+      if (!context.states.length) {
+        if (context.completedEmpty) return;
+        context.completedEmpty = true;
+      }
+      await this.complete(context);
+    }
+    openingJob(context, phase) {
+      context.openingState = phase === 'preview' ? 'running-preview' : 'running';
+      context.openingError = null;
+      return async () => {
+        let succeeded = false, result;
+        try { result = await this.runOpening(context, phase); succeeded = true; }
+        catch (error) {
+          if (!this.closed && !this.controller.signal.aborted) context.openingError = error.message;
+        } finally {
+          context.openingState = succeeded ? (phase === 'preview' && result?.complete !== true ? 'pending' : 'done') : 'error';
+          if (!this.closed) await this.notifyComplete(context);
+        }
+      };
+    }
     next() {
       for (const id of this.orderedIds()) {
         if (this.errors.has(id)) continue;
@@ -248,7 +273,9 @@
           continue;
         }
         if (context.paused) continue;
+        if (this.runOpening && context.openingState === 'pending-preview') return this.openingJob(context, 'preview');
         const phase = this.preview && context.states.includes('pending-preview') ? 'preview' : 'review';
+        if (this.runOpening && phase === 'review' && context.openingState === 'pending') return this.openingJob(context, 'review');
         const index = context.states.indexOf(phase === 'preview' ? 'pending-preview' : 'pending');
         if (index >= 0) {
           context.states[index] = phase === 'preview' ? 'running-preview' : 'running';
@@ -260,11 +287,11 @@
               if (!this.closed && !this.controller.signal.aborted) context.error = error.message;
             } finally {
               context.states[index] = succeeded ? (phase === 'preview' && result?.complete !== true ? 'pending' : 'done') : 'error';
-              if (!this.closed && context.states.every(state => state === 'done')) await this.complete(context);
+              if (!this.closed) await this.notifyComplete(context);
             }
           };
         }
-        if (!context.states.length && !context.completedEmpty) {
+        if (!context.states.length && !context.completedEmpty && !this.openingPending(context)) {
           context.completedEmpty = true;
           return () => this.complete(context);
         }
@@ -290,7 +317,13 @@
         if (context) {
           const retryable = new Set((context.quality?.points || [])
             .filter(point => point.retryable || point.draw?.retryable).map(point => point.turnIndex));
-          if (!id && !context.states.some((state, index) => state === 'error' || retryable.has(index))) continue;
+          const retryOpening = Boolean(this.runOpening && context.openingState && context.openingState !== 'unavailable' &&
+            (id || context.openingState === 'error' || context.quality?.opening?.retryable));
+          if (!id && !retryOpening && !context.states.some((state, index) => state === 'error' || retryable.has(index))) continue;
+          if (retryOpening && !['running', 'running-preview'].includes(context.openingState)) {
+            context.openingState = this.preview ? 'pending-preview' : 'pending';
+            context.openingError = null;
+          }
           context.paused = false;
           context.error = null;
           context.states = context.states.map((state, index) => {

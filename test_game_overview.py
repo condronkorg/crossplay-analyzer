@@ -63,15 +63,16 @@ class GameOverviewTest(unittest.TestCase):
         self.open_summary()
         self.set_draw_points()
         expect(self.page.locator('[data-summary-row="draw-luck"] td')).to_have_text(['+12.0 (+12.0)', '−7.0 (−7.0)'])
-        expect(self.page.locator('[data-summary-row="draw-coverage"] td')).to_have_text(['1 / 1', '1 / 1'])
+        # Each player also has one initial draw waiting for an estimate.
+        expect(self.page.locator('[data-summary-row="draw-coverage"] td')).to_have_text(['1 / 2', '1 / 2'])
         expect(self.page.locator('.overview-status')).to_contain_text('1 early draw estimate')
         self.page.evaluate("""() => {
           delete moveQualityResults.points[1].draw;
           refreshMoveQualityPanel();
         }""")
         expect(self.page.locator('[data-summary-row="draw-luck"] td')).to_have_text(['+12.0 (+12.0)', '—'])
-        expect(self.page.locator('[data-summary-row="draw-coverage"] td')).to_have_text(['1 / 1', '0 / 1'])
-        expect(self.page.locator('.overview-status')).to_contain_text('1 draw waiting')
+        expect(self.page.locator('[data-summary-row="draw-coverage"] td')).to_have_text(['1 / 2', '0 / 2'])
+        expect(self.page.locator('.overview-status')).to_contain_text('3 draws waiting')
         self.page.evaluate("""() => {
           currentReview.turns[1].rack_after = null;
           refreshMoveQualityPanel();
@@ -89,7 +90,7 @@ class GameOverviewTest(unittest.TestCase):
         }""")
         expect(self.page.locator('[data-summary-row="average"] td')).to_have_text(['−9.7 (−19.4)', '0.0 (0.0)'])
         expect(self.page.locator('[data-summary-row="draw-luck"] td')).to_have_text(['+3.0 (+6.0)', '−7.0 (−7.0)'])
-        expect(self.page.locator('[data-summary-row="draw-coverage"] td')).to_have_text(['2 / 2', '1 / 1'])
+        expect(self.page.locator('[data-summary-row="draw-coverage"] td')).to_have_text(['2 / 3', '1 / 2'])
         self.page.evaluate("""() => {
           moveQualityResults.points[0].loss = 0;
           moveQualityResults.points[2].loss = 0;
