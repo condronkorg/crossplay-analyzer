@@ -574,6 +574,7 @@
 <script src="luck-analysis.js"></script>
 <script src="move-continuation.js"></script>
 <script src="analysis-cache.js"></script>
+<script src="bag-emptying-analysis.js"></script>
 <script src="quackle-pool.js"></script>
 <script src="review-analysis.js?v=played-candidate-index"></script>
 <script src="opening-draw.js"></script>
@@ -2207,7 +2208,7 @@ function makeTurnCoach(turn, point) {
     const comparison = makeElement('div', 'move-comparison');
     for (const [label, move, word, score] of [
       ['Played move', point.playedMove, actionWord(turn.action) || turn.action, turn.score],
-      ['Quackle’s best', point.bestMove, point.bestMove.word, point.bestMove.score]
+      ['Best among analyzed moves', point.bestMove, point.bestMove.word, point.bestMove.score]
     ]) {
       const card = makeElement('div', 'comparison-move');
       card.append(makeElement('span', '', label), makeElement('strong', '', word + (move?.position ? ' · ' + move.position : '')),
@@ -3493,7 +3494,7 @@ async function analyzeReviewTurn(context, index, phase = 'review', options = {})
       if (!point.provisional) {
         const frequencies = await loadWordFrequency().catch(() => null);
         if (frequencies && result.selected.action === 'place') {
-          point.opportunity = CrossplayLuck.opportunityContext(turn, result.staticMoves, frequencies, candidateWord);
+          point.opportunity = CrossplayLuck.opportunityContext(turn, CrossplayBagEmptying.equityCandidates(result), frequencies, candidateWord);
         } else if (!frequencies) context.quality.frequencyWarning = 'Word commonness could not load. Move quality is still available; re-analyze moves to retry adjusted performance.';
       }
     } catch (error) {
@@ -3592,7 +3593,7 @@ async function finishReviewAnalysis(context) {
     if (frequencies) for (const point of missingOpportunity) {
       const turn = context.review.turns[point.turnIndex];
       point.opportunity = CrossplayLuck.opportunityContext(turn,
-        context.cache.get(turn, 'review').staticMoves, frequencies, candidateWord);
+        CrossplayBagEmptying.equityCandidates(context.cache.get(turn, 'review')), frequencies, candidateWord);
     }
   }
   context.quality.state = 'done';
@@ -3618,7 +3619,7 @@ function qualityPointFromResult(index, turn, result) {
     equityLoss: result.selected.action === 'place' ? staticLoss : null,
     playedEquity: result.selected.staticEquity, bestEquity: result.bestStaticEquity,
     playedMove: reviewMove(turn, result.selected), bestMove: reviewMove(turn, result.best),
-    candidateCount: result.moves.length,
+    candidateCount: result.searchedCandidateCount || result.moves.length,
     ...(result.endgamePolicy ? {endgamePolicy: result.endgamePolicy} : {})
   };
 }

@@ -1631,11 +1631,11 @@ class ReviewBrowserTest(unittest.TestCase):
         }""")
         self.assertEqual(result['best']['win'], max(move['win'] for move in result['moves']))
         rows = self.page.locator('.custom-move-result tbody tr')
-        expect(rows.nth(1)).to_contain_text('Best WP move:')
+        expect(rows.nth(1)).to_contain_text('Best among analyzed moves:')
         expect(rows.nth(1).locator('td').last).to_have_text(f"{100 * result['best']['win']:.1f}%")
         loss = max(0, result['best']['win'] - result['selected']['win']) * 100
         expect(self.page.locator('.custom-move-result')).to_contain_text(
-            f'WP loss: {loss:.1f} pp versus the best WP move.')
+            f'WP loss: {loss:.1f} pp versus the best among analyzed moves.')
 
     def test_custom_swap_with_six_bag_tiles_has_static_and_simulated_results(self):
         self.open_game()

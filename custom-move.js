@@ -158,7 +158,7 @@ window.CustomMove = class CustomMove {
     if (result.simulated) labels.push('Win%');
     for (const label of labels) append(head, 'th', label);
     const body = table.createTBody();
-    for (const [label, move] of [['Your move', result.selected], [result.simulated ? 'Best WP move' : 'Best static move', result.best]]) {
+    for (const [label, move] of [['Your move', result.selected], [result.simulated ? 'Best among analyzed moves' : 'Best static move', result.best]]) {
       const row = body.insertRow();
       append(row, 'td', label + ': ' + (move.action === 'exchange' ? 'Swap ' + move.tiles
         : move.action === 'pass' ? 'Pass' : (move.position ? move.position + ' ' : '') + move.tiles));
@@ -173,8 +173,8 @@ window.CustomMove = class CustomMove {
     append(this.output, 'p', 'Static rank #' + result.staticRank + ' of ' + result.legalMoveCount + ' legal moves.', 'custom-move-help');
     if (result.simulated) {
       const wpLoss = Math.max(0, result.best.win - result.selected.win) * 100;
-      append(this.output, 'p', 'WP loss: ' + wpLoss.toFixed(1) + ' pp versus the best WP move.', 'custom-move-comparison');
-      append(this.output, 'p', 'Compared ' + result.candidateCount + ' moves with ' + result.iterationsCompleted +
+      append(this.output, 'p', 'WP loss: ' + wpLoss.toFixed(1) + ' pp versus the best among analyzed moves.', 'custom-move-comparison');
+      append(this.output, 'p', 'Compared ' + (result.searchedCandidateCount ?? result.candidateCount) + ' moves with ' + result.iterationsCompleted +
         ' samples each. ' + (result.playToEnd ? 'Samples follow Crossplay’s final-turn rules to the finish.' :
           'Win chances use Quackle’s two-ply estimate.'), 'custom-move-help');
     } else {

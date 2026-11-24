@@ -161,6 +161,7 @@ test('endgame policy invalidates only sampled low-bag caches and keeps paired se
       action: 'CAT 8G 10', rack_after: 'ERSTUAE'};
     for (const kind of ['review', 'preview', 'draw', 'draw-preview', 'simulation', 'trend']) {
       const identity = JSON.parse(cache.key(played, kind));
+      if (identity.at(-1)==='bag-emptying-v1') identity.pop();
       assert.equal(identity.at(-1) === 'crossplay-endgame-v1', bag_count <= 21, kind + ':' + bag_count);
       if (bag_count <= 21) {
         const legacyKey = JSON.stringify(identity.slice(0, -1));
@@ -171,6 +172,7 @@ test('endgame policy invalidates only sampled low-bag caches and keeps paired se
     }
     assert.equal(JSON.parse(cache.key(played, 'candidates')).includes('crossplay-endgame-v1'), false);
     const legacyReview = JSON.parse(cache.key(played, 'review'));
+    if (legacyReview.at(-1) === 'bag-emptying-v1') legacyReview.pop();
     if (legacyReview.at(-1) === 'crossplay-endgame-v1') legacyReview.pop();
     let expectedSeed = 2166136261;
     for (const character of JSON.stringify(legacyReview)) expectedSeed = Math.imul(expectedSeed ^ character.charCodeAt(0), 16777619);

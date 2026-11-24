@@ -452,7 +452,8 @@ test('low-bag move and draw validation requires the current endgame policy', () 
   const common = {simulated:true, seed:123, iterationsRequested:277, iterationsCompleted:277,
     bagCount:6, finalTurnsRemaining:0, playToEnd:true, plies:-1, simulationMode:'play-to-end', winModel:'terminal'};
   const review = {...common, samplingVersion:'paired-review-v1', moves:[move], selected:move, best:move,
-    staticMoves:[move], bestStaticEquity:0, candidateCount:1, totalPlayaheads:277};
+    staticMoves:[move], bestStaticEquity:0, candidateCount:1, totalPlayaheads:277,
+    equityMoves:[move],candidatePolicy:'bag-emptying-v1',searchedCandidateCount:1,requiredBagEmptyingCount:0,evaluatedBagEmptyingCount:0};
   const draw = {...common, samplingVersion:'rack-draw-v1', rackAfter:rack, drawCount:0,
     beforeWin:.4, afterWin:.4, selected:move};
   for (const [result, validate] of [[review, validResult], [draw, validDrawResult]]) {

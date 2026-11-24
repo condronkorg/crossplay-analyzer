@@ -34,6 +34,8 @@
         sampled ? p.plies : 0, sampled ? p.terminalBagLimit : 0];
       if (review) values.push(String(turn.action || ''), String(turn.swapped_tiles || ''), 'paired-review-v1');
       if (sampled && Number(turn.bag_count) <= 21) values.push(ENDGAME_POLICY);
+      if (['review', 'simulation'].includes(kind) && Number(turn.bag_count) >= 1 &&
+          Number(turn.bag_count) <= 7) values.push('bag-emptying-v1');
       return JSON.stringify(values);
     }
 
@@ -41,6 +43,7 @@
     seed(turn) {
       // Keep the same sampled worlds when the endgame policy changes.
       const identity = JSON.parse(this.key(turn, 'review'));
+      if (identity.at(-1) === 'bag-emptying-v1') identity.pop();
       if (identity.at(-1) === ENDGAME_POLICY) identity.pop();
       let hash = 2166136261;
       for (const character of JSON.stringify(identity)) {

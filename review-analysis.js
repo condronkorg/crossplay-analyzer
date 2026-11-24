@@ -1,6 +1,7 @@
 /* Background review work is account-scoped. Navigation changes priority, not ownership. */
 (function(root) {
   'use strict';
+  const Bag = typeof module !== 'undefined' && module.exports ? require('./bag-emptying-analysis.js') : root.CrossplayBagEmptying;
   const ENDGAME_POLICY = 'crossplay-endgame-v1';
   function playedMove(turn) {
     const action = String(turn.action || '').trim();
@@ -173,16 +174,18 @@
   function validResult(result, turn, seed, iterations = 277, moveCount = 15) {
     if (!Array.isArray(turn.grid) || turn.grid.length !== 15 || !turn.grid.every(row => typeof row === 'string' && /^[A-Za-z.]{15}$/.test(row))) return false;
     const bag = Number(turn.bag_count), end = bag <= 21;
+    const expanded = bag >= 1 && bag <= 7 && iterations === 277;
     let played;
     try { played = playedMove(turn); } catch (_) { return false; }
-    if (!result || result.error || !Array.isArray(result.moves) || !result.moves.length || result.moves.length > moveCount + 1 ||
+    if (!result || result.error || !Array.isArray(result.moves) || !result.moves.length || result.moves.length > (expanded ? 17 : moveCount + 1) ||
         (end && result.endgamePolicy !== ENDGAME_POLICY) ||
         result.simulated !== true || result.plies !== (end ? -1 : 2) || result.playToEnd !== end ||
         result.simulationMode !== (end ? 'play-to-end' : '2-ply') || result.winModel !== (end ? 'terminal' : 'bogowin') ||
         result.bagCount !== bag || result.finalTurnsRemaining !== (bag === 0 ? Number(turn.final_turns_remaining) : 0) ||
         result.samplingVersion !== 'paired-review-v1' || result.seed !== seed ||
         result.iterationsRequested !== iterations || result.iterationsCompleted !== iterations ||
-        result.candidateCount !== result.moves.length || result.totalPlayaheads !== iterations * result.moves.length ||
+        result.candidateCount !== result.moves.length ||
+        !(expanded ? Bag.validCoverage(result, bag, iterations) : result.totalPlayaheads === iterations * result.moves.length) ||
         !Number.isFinite(result.bestStaticEquity) || !Array.isArray(result.staticMoves) || result.staticMoves.length !== result.moves.length ||
         !result.staticMoves.every(move => move && Number.isFinite(move.equity)) ||
         result.bestStaticEquity !== Math.max(...result.staticMoves.map(move => move.equity))) return false;
