@@ -35,6 +35,22 @@ function customMoveKey(payload) {
     throw new Error('The board, rack, and bag count must leave 0 to 7 tiles for the opponent.');
   }
   const move = payload.customMove || {};
+  if (move.action === 'exchange') {
+    if (bagCount < 7) throw new Error('Swapping requires at least seven tiles in the bag.');
+    const enteredTiles = String(move.tiles || '').trim();
+    if (!/^[A-Za-z?]{1,7}$/.test(enteredTiles)) throw new Error('Enter 1 to 7 letters to swap; use ? for a blank.');
+    const tiles = enteredTiles.toUpperCase();
+    const remaining = [...rack];
+    for (const tile of tiles) {
+      const index = remaining.indexOf(tile);
+      if (index < 0) throw new Error('The rack does not contain the tiles to swap.');
+      remaining.splice(index, 1);
+    }
+    const canonical = [...tiles].sort().join('');
+    return { grid, key: 'exchange:' + canonical,
+      move: { action: 'exchange', position: '', tiles: canonical } };
+  }
+  if (move.action && move.action !== 'place') throw new Error('Choose Play a word or Swap tiles.');
   const word = String(move.word || '').trim();
   const square = String(move.square || '').trim().toUpperCase().match(/^([A-O])(1[0-5]|[1-9])$/);
   if (!/^[A-Za-z.]{1,15}$/.test(word)) throw new Error('Enter a word using letters, or . for existing tiles.');
@@ -69,6 +85,7 @@ function customMoveKey(payload) {
 // Match the physical placements, including assigned blanks. This also recognizes
 // one-tile plays when Quackle writes them in the perpendicular direction.
 function candidateKey(move, grid) {
+  if (move.action === 'exchange') return 'exchange:' + [...move.tiles].sort().join('');
   if (move.action !== 'place') return '';
   const across = String(move.position).match(/^(\d{1,2})([A-O])$/);
   const down = String(move.position).match(/^([A-O])(\d{1,2})$/);
@@ -93,8 +110,8 @@ function simulate(module, payload, numMoves = payload.numMoves, iterations = pay
 }
 
 function evaluateCustomMove(module, payload, simulateWin) {
-  const { grid, key } = customMoveKey(payload);
-  // Validate and rank a custom placement against the complete legal list.
+  const { grid, key, move: proposed } = customMoveKey(payload);
+  // Validate and rank a custom move against the complete legal list.
   // Recorded game moves use the bounded simulateReview path below.
   const limit = 1000000;
   const generated = module.kibitz(payload.gridJson, payload.rack,
@@ -114,6 +131,13 @@ function evaluateCustomMove(module, payload, simulateWin) {
   if (!simulateWin) return evaluation;
   if (!Number.isInteger(payload.iterations) || payload.iterations < 1 || payload.iterations > 277) {
     throw new Error('Simulation iterations must be between 1 and 277.');
+  }
+  if (proposed?.action === 'exchange') {
+    // Force the chosen swap into a bounded comparison. A low static rank must
+    // not require simulating every higher-ranked placement.
+    const result = simulateRecordedMove(module, { ...payload, numMoves: 15,
+      played: proposed, seed: 123456789 });
+    return { ...evaluation, ...result };
   }
   let count = Math.max(15, index + 1);
   // Endgame ranking can differ from the static list. Check candidate inclusion
@@ -145,7 +169,7 @@ function evaluateCustomMove(module, payload, simulateWin) {
   const simulatedMove = result.moves.find(move => candidateKey(move, grid) === key);
   if (!simulatedMove) throw new Error('Quackle did not return a simulation for this move.');
   return { ...evaluation, ...result, selected: simulatedMove,
-    best: result.moves.reduce((top, move) => move.equity > top.equity ? move : top, simulatedMove) };
+    best: result.moves.reduce((top, move) => move.win > top.win ? move : top, simulatedMove) };
 }
 
 function simulateRecordedMove(module, payload) {

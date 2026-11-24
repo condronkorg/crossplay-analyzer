@@ -139,8 +139,10 @@ class GameOverviewTest(unittest.TestCase):
         expect(before.locator('.win-history-grade')).to_have_text('?')
         expect(after.locator('.win-history-grade, .win-history-sweep')).to_have_count(0)
         expect(after).to_have_attribute('aria-label', re.compile('After rack draw'))
-        self.assertGreater(float(after.locator('.win-history-hit').get_attribute('x')),
-                           float(before.locator('.win-history-hit').get_attribute('x')))
+        self.assertGreater(float(chart.locator('.win-history-hit[data-hit-turn="0"][data-hit-phase="after-draw"]').get_attribute('x')),
+                           float(chart.locator('.win-history-hit[data-hit-turn="0"][data-hit-phase="before-draw"]').get_attribute('x')))
+        self.assertGreater(float(chart.locator('.win-history-hit[data-hit-turn="' + after.get_attribute('data-turn-index') + '"][data-hit-phase="after-draw"]').get_attribute('y')),
+                           float(chart.locator('.win-history-hit[data-hit-turn="0"][data-hit-phase="before-draw"]').get_attribute('y')))
         after.focus()
         inspector = chart.locator('.win-history-inspector')
         expect(inspector).to_have_attribute('data-inspected-phase', 'after-draw')
@@ -166,10 +168,11 @@ class GameOverviewTest(unittest.TestCase):
     def test_background_refresh_preserves_draw_inspection_and_keyboard_stage(self):
         self.open_summary()
         self.set_draw_points()
+        chart = self.page.locator('.win-history')
         before = self.page.locator('.win-history-point[data-turn-index="0"][data-phase="before-draw"]')
         after = self.page.locator('.win-history-point[data-turn-index="1"][data-phase="after-draw"]')
         before.focus()
-        after.hover()
+        chart.locator('.win-history-hit[data-hit-turn="' + after.get_attribute('data-turn-index') + '"][data-hit-phase="after-draw"]').hover()
         for refresh in ['refreshMoveQualityPanel()', 'refreshTrendPanel()']:
             state = self.page.evaluate("""refresh => {
               eval(refresh);
@@ -215,7 +218,7 @@ class GameOverviewTest(unittest.TestCase):
         self.set_long_draw_history()
         self.wait_for_timeline_layout()
         summary = self.page.locator('.game-overview')
-        self.assertLessEqual(summary.bounding_box()['height'], 560)
+        self.assertLessEqual(summary.bounding_box()['height'], 640)
         chart = self.page.locator('.win-history-scroll')
         self.assertEqual(chart.evaluate('node => node.scrollWidth'), chart.evaluate('node => node.clientWidth'))
         expect(chart.locator('.win-history-point')).to_have_count(161)
@@ -226,12 +229,12 @@ class GameOverviewTest(unittest.TestCase):
         before = chart.locator('[data-turn-index="0"][data-phase="before-draw"]')
         after = chart.locator('[data-turn-index="1"][data-phase="after-draw"]')
         before.focus()
-        after.hover()
-        self.assertLessEqual(summary.bounding_box()['height'], 560)
-        chart.locator('[data-turn-index="1"][data-phase="before-draw"]').hover()
+        chart.locator('.win-history-hit[data-hit-turn="' + after.get_attribute('data-turn-index') + '"][data-hit-phase="after-draw"]').hover()
+        self.assertLessEqual(summary.bounding_box()['height'], 640)
+        chart.locator('.win-history-hit[data-hit-turn="1"][data-hit-phase="before-draw"]').hover()
         self.assertGreater(chart.locator('.win-history-grade:visible').count(), 1)
         expect(chart.locator('[data-turn-index="1"][data-phase="before-draw"] .win-history-grade')).to_be_visible()
-        after.hover()
+        chart.locator('.win-history-hit[data-hit-turn="' + after.get_attribute('data-turn-index') + '"][data-hit-phase="after-draw"]').hover()
         self.page.evaluate("""() => {
           moveQualityResults.points[1].bestMove = {action: 'place', position: '8D', tiles: 'RETAINS'};
           refreshGameOverview();
@@ -244,7 +247,7 @@ class GameOverviewTest(unittest.TestCase):
         expect(missed.locator('polygon')).to_be_visible()
         expect(missed.locator('line')).to_be_visible()
         before.focus()
-        after.hover()
+        chart.locator('.win-history-hit[data-hit-turn="' + after.get_attribute('data-turn-index') + '"][data-hit-phase="after-draw"]').hover()
         for width in [390, 1280, 1440]:
             self.page.set_viewport_size({'width': width, 'height': 900})
             self.wait_for_timeline_layout()
@@ -261,12 +264,12 @@ class GameOverviewTest(unittest.TestCase):
         self.page.evaluate("""() => {
           currentReview.turns = currentReview.turns.map((turn, i) => ({...turn,
             grid: Array(15).fill('.'.repeat(15)),
-            action: i % 8 === 2 ? 'RETAINS 8D 64' : 'CAT 8G 10'}));
+            action: i % 8 === 2 + (Math.floor(i / 8) % 2) ? 'RETAINS 8D 64' : 'CAT 8G 10'}));
           moveQualityResults.points.forEach((point, i) => {
             point.category = i % 5 ? 'mistake' : 'blunder';
             point.loss = i % 5 ? 7 : 12;
             point.provisional = i % 3 === 0;
-            point.bestMove = i % 8 === 6 ? {action: 'place', position: '8D', tiles: 'RETAINS'} : null;
+            point.bestMove = i % 8 === 6 + (Math.floor(i / 8) % 2) ? {action: 'place', position: '8D', tiles: 'RETAINS'} : null;
           });
           renderReview();
         }""")
@@ -275,24 +278,23 @@ class GameOverviewTest(unittest.TestCase):
     def assert_timeline_icons_fit(self):
         icons = self.page.locator('.win-history-annotation:visible').evaluate_all("""nodes => nodes.map(node => {
           const r = node.getBoundingClientRect(), svg = node.ownerSVGElement.getBoundingClientRect();
-          return {lane: node.dataset.lane, left: r.left, right: r.right, top: r.top, bottom: r.bottom,
+          const plot = node.ownerSVGElement.querySelector('.win-history-band-upper').getBoundingClientRect();
+          const lower = node.ownerSVGElement.querySelector('.win-history-band-lower').getBoundingClientRect();
+          return {lane: node.dataset.lane, player: node.closest('.win-history-point').dataset.player,
+            left: r.left, right: r.right, top: r.top, bottom: r.bottom,
+            above: r.bottom < plot.top, below: r.top > lower.bottom,
             inside: r.left >= svg.left && r.right <= svg.right && r.top >= svg.top && r.bottom <= svg.bottom};
         })""")
         self.assertGreater(len(icons), 0)
         for icon in icons:
             self.assertTrue(icon['inside'], icon)
-        for lane in ['grade', 'sweep']:
-            row = [icon for icon in icons if icon['lane'] == lane]
-            for previous, following in zip(row, row[1:]):
-                self.assertGreaterEqual(following['left'] - previous['right'], 3, row)
-        grades = [icon for icon in icons if icon['lane'] == 'grade']
-        sweeps = [icon for icon in icons if icon['lane'] == 'sweep']
-        if grades and sweeps:
-            self.assertGreater(min(icon['top'] for icon in sweeps), max(icon['bottom'] for icon in grades))
-        tick_top = self.page.locator('.win-history svg > text').last.bounding_box()['y']
-        self.assertLess(max(icon['bottom'] for icon in icons), tick_top)
+            self.assertTrue(icon['above'] if icon['player'] == 'mine' else icon['below'], icon)
+        for i, first in enumerate(icons):
+            for second in icons[i + 1:]:
+                overlap = min(first['right'], second['right']) - max(first['left'], second['left']) > .5 and min(first['bottom'], second['bottom']) - max(first['top'], second['top']) > .5
+                self.assertFalse(overlap, (first, second))
 
-    def test_timeline_events_stay_visible_without_overlap_and_inspect_crowded_turns(self):
+    def test_timeline_events_all_stay_visible_in_player_rows(self):
         self.open_summary()
         self.set_timeline_events()
         for width in [1366, 390, 320]:
@@ -300,39 +302,93 @@ class GameOverviewTest(unittest.TestCase):
                 self.page.set_viewport_size({'width': width, 'height': 768})
                 self.wait_for_timeline_layout()
                 chart = self.page.locator('.win-history')
-                for selector in ['[data-quality="blunder"] .win-history-grade:visible',
-                                 '[data-quality="mistake"] .win-history-grade:visible',
-                                 '[data-sweep="played"] .win-history-sweep:visible',
-                                 '[data-sweep="missed"] .win-history-sweep:visible']:
-                    self.assertGreater(chart.locator(selector).count(), 0, selector)
+                expect(chart.locator('.win-history-grade:visible')).to_have_count(80)
+                expect(chart.locator('[data-sweep="played"] [data-lane="sweep"]:visible')).to_have_count(10)
+                expect(chart.locator('[data-sweep="missed"] [data-lane="sweep"]:visible')).to_have_count(10)
+                for player in ['mine', 'opponent']:
+                    for kind in ['played', 'missed']:
+                        expect(chart.locator(f'[data-player="{player}"][data-sweep="{kind}"] [data-lane="sweep"]:visible')).to_have_count(5)
                 self.assert_timeline_icons_fit()
-                # A hidden badge becomes readable on focus; adjacent badges yield room.
-                hidden = chart.locator('.win-history-point:has(.win-history-grade[data-collapsed="true"])').first
-                turn_index = hidden.get_attribute('data-turn-index')
-                hidden = chart.locator(f'[data-turn-index="{turn_index}"][data-phase="before-draw"]')
-                hidden.focus()
-                expect(hidden.locator('.win-history-grade')).to_be_visible()
-                self.assert_timeline_icons_fit()
+                expect(chart.locator('svg > text')).to_have_text(['0%', '50%', '100%'])
+                selected = chart.locator('[data-turn-index="37"][data-phase="before-draw"]')
+                selected.focus()
                 self.page.evaluate('refreshTrendPanel(); refreshMoveQualityPanel()')
-                expect(hidden).to_be_focused()
-                expect(hidden.locator('.win-history-grade')).to_be_visible()
-                self.assert_timeline_icons_fit()
-                # Both independent facts fit on the same turn, even at100% or with no estimate.
-                mixed = chart.locator('[data-sweep="played"]').first
-                mixed.focus()
-                expect(mixed.locator('.win-history-grade')).to_be_visible()
-                expect(mixed.locator('.win-history-sweep')).to_be_visible()
-                self.assert_timeline_icons_fit()
+                expect(selected).to_be_focused()
+                expect(chart.locator('.win-history-grade:visible')).to_have_count(80)
                 expect(chart.locator('[data-phase="after-draw"] .win-history-annotation')).to_have_count(0)
                 expect(chart.locator('[data-phase="final"] .win-history-annotation')).to_have_count(0)
                 self.assertEqual(chart.locator('.win-history-scroll').evaluate('node => node.scrollWidth - node.clientWidth'), 0)
-                if width == 1366:
-                    self.assertLessEqual(self.page.locator('.game-overview').bounding_box()['height'], 560)
-                hidden.focus()
                 self.page.keyboard.press('Enter')
-                expect(self.page.get_by_role('combobox', name='Select game turn')).to_have_value(turn_index)
-                expect(hidden).to_be_focused()
+                expect(self.page.get_by_role('combobox', name='Select game turn')).to_have_value('37')
+                expect(selected).to_be_focused()
                 self.page.get_by_role('button', name='Game summary', exact=True).click()
+
+    def test_draw_hit_bands_and_inspector_button_make_draws_easy_to_select(self):
+        self.open_summary()
+        self.set_draw_points()
+        self.wait_for_timeline_layout()
+        chart = self.page.locator('.win-history')
+        before = chart.locator('[data-turn-index="0"][data-phase="before-draw"]')
+        after = chart.locator('[data-turn-index="0"][data-phase="after-draw"]')
+        before.focus()
+        chart.get_by_role('button', name='Inspect rack draw', exact=True).click()
+        expect(chart.locator('.win-history-inspector')).to_have_attribute('data-inspected-phase', 'after-draw')
+        expect(chart.locator('.win-history-inspector')).to_contain_text('+12.0')
+        chart.get_by_role('button', name='Inspect recorded move', exact=True).click()
+        expect(chart.locator('.win-history-inspector')).to_have_attribute('data-inspected-phase', 'before-draw')
+        move_hit = chart.locator('.win-history-hit[data-hit-turn="0"][data-hit-phase="before-draw"]').bounding_box()
+        draw_hit = chart.locator('.win-history-hit[data-hit-turn="' + after.get_attribute('data-turn-index') + '"][data-hit-phase="after-draw"]').bounding_box()
+        self.assertGreaterEqual(draw_hit['width'], 24)
+        self.assertGreaterEqual(draw_hit['height'], 24)
+        self.assertGreaterEqual(draw_hit['y'], move_hit['y'] + move_hit['height'])
+        chart.locator('.win-history-hit[data-hit-turn="' + after.get_attribute('data-turn-index') + '"][data-hit-phase="after-draw"]').click(position={'x': draw_hit['width'] / 2, 'y': draw_hit['height'] - 2})
+        expect(self.page.get_by_role('combobox', name='Select game turn')).to_have_value('0')
+        expect(self.page.locator('.win-history-inspector')).to_have_attribute('data-inspected-phase', 'after-draw')
+
+    def test_phase_button_keeps_keyboard_focus_during_refresh(self):
+        self.open_summary()
+        self.set_draw_points()
+        self.page.locator('.win-history-point[data-turn-index="0"][data-phase="before-draw"]').focus()
+        button = self.page.get_by_role('button', name='Inspect rack draw', exact=True)
+        button.focus()
+        for refresh in ['refreshMoveQualityPanel()', 'refreshTrendPanel()']:
+            self.page.evaluate(refresh)
+            expect(button).to_be_focused()
+        self.page.keyboard.press('Enter')
+        expect(self.page.locator('.win-history-inspector')).to_have_attribute('data-inspected-phase', 'after-draw')
+        self.page.get_by_role('button', name='Inspect recorded move', exact=True).focus()
+        self.page.evaluate('refreshMoveQualityPanel()')
+        expect(self.page.get_by_role('button', name='Inspect recorded move', exact=True)).to_be_focused()
+
+    def test_dense_marker_centers_select_their_own_phase(self):
+        self.page.set_viewport_size({'width': 320, 'height': 844})
+        self.open_summary()
+        self.set_long_draw_history()
+        self.page.evaluate("""() => {
+          trendResults.points.forEach(point => point.mine = 50);
+          renderReview();
+        }""")
+        self.wait_for_timeline_layout()
+        for turn_index, phase in [(3, 'after-draw'), (3, 'before-draw'), (40, 'after-draw')]:
+            marker = self.page.locator(f'.win-history-point[data-turn-index="{turn_index}"][data-phase="{phase}"] .win-history-marker')
+            marker.scroll_into_view_if_needed()
+            rect = marker.bounding_box()
+            self.page.mouse.click(rect['x'] + rect['width'] / 2, rect['y'] + rect['height'] / 2)
+            expect(self.page.get_by_role('combobox', name='Select game turn')).to_have_value(str(turn_index))
+            expect(self.page.locator('.win-history-inspector')).to_have_attribute('data-inspected-phase', phase)
+            self.page.get_by_role('button', name='Game summary', exact=True).click()
+            self.wait_for_timeline_layout()
+
+    def test_clicking_each_visible_marker_selects_its_own_phase(self):
+        self.open_summary()
+        self.set_draw_points()
+        for phase in ['before-draw', 'after-draw']:
+            marker = self.page.locator(f'.win-history-point[data-turn-index="0"][data-phase="{phase}"] .win-history-marker')
+            rect = marker.bounding_box()
+            self.page.mouse.click(rect['x'] + rect['width'] / 2, rect['y'] + rect['height'] / 2)
+            expect(self.page.get_by_role('combobox', name='Select game turn')).to_have_value('0')
+            expect(self.page.locator('.win-history-inspector')).to_have_attribute('data-inspected-phase', phase)
+            self.page.get_by_role('button', name='Game summary', exact=True).click()
 
     def test_missing_selected_point_stays_clear_of_its_event_badge(self):
         self.open_summary()
@@ -348,7 +404,7 @@ class GameOverviewTest(unittest.TestCase):
         expect(point).to_have_attribute('data-estimate', 'missing')
         ring = point.locator(':scope > circle').first.bounding_box()
         badge = point.locator('.win-history-grade').bounding_box()
-        self.assertLess(ring['y'] + ring['height'] + 1, badge['y'] - .5)
+        self.assertTrue(ring['y'] + ring['height'] + 1 < badge['y'] - .5 or badge['y'] + badge['height'] + 1 < ring['y'] - .5)
 
     def test_icon_edges_select_their_own_turn_in_a_dense_chart(self):
         self.page.set_viewport_size({'width': 1366, 'height': 768})
@@ -412,7 +468,7 @@ class GameOverviewTest(unittest.TestCase):
         self.page.get_by_role('button', name='Game summary', exact=True).click()
         expect(self.page.locator('.game-overview')).to_be_visible()
         expect(self.page.get_by_role('button', name='Start Review', exact=True)).to_be_focused()
-        self.page.locator('.win-history-point[data-turn-index="3"]').click()
+        self.page.locator('.win-history-point[data-turn-index="3"] .win-history-marker').click()
         expect(self.page.get_by_role('combobox', name='Select game turn')).to_have_value('3')
         expect(self.page.locator('.board')).to_be_visible()
         self.page.get_by_role('button', name='Game summary', exact=True).click()
@@ -531,7 +587,7 @@ class GameOverviewTest(unittest.TestCase):
         selection = self.page.locator('.win-history-selection')
         self.page.mouse.move(0, 0)
         self.page.locator('.win-history-point[data-turn-index="0"]').focus()
-        self.page.locator('.win-history-point[data-turn-index="1"]').hover()
+        self.page.locator('.win-history-point[data-turn-index="1"] .win-history-marker').hover()
         expect(inspector).to_have_attribute('data-inspected-turn', '1')
         highlight_x = selection.get_attribute('x')
         for refresh in ['quality', 'trend']:
@@ -546,7 +602,7 @@ class GameOverviewTest(unittest.TestCase):
         self.page.keyboard.press('Tab')
         self.page.keyboard.press('Tab')
         expect(inspector).to_have_attribute('data-inspected-turn', '2')
-        self.page.locator('.win-history-point[data-turn-index="3"]').click()
+        self.page.locator('.win-history-point[data-turn-index="3"] .win-history-marker').click()
         expect(self.page.get_by_role('combobox', name='Select game turn')).to_have_value('3')
         expect(inspector).to_have_attribute('data-inspected-turn', '3')
 
@@ -607,8 +663,4 @@ class GameOverviewTest(unittest.TestCase):
                 for label in labels:
                     self.assertTrue(label['inside'], label)
                     self.assertGreaterEqual(label['size'], 11, label)
-                badges = self.page.locator('.overview-chart .win-history-grade:visible').evaluate_all('''nodes => nodes.map(node => {
-                  const r = node.getBoundingClientRect(); return {left: r.left, right: r.right};
-                })''')
-                for previous, following in zip(badges, badges[1:]):
-                    self.assertLess(previous['right'], following['left'])
+                self.assert_timeline_icons_fit()

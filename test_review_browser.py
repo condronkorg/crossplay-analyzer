@@ -1102,6 +1102,46 @@ class ReviewBrowserTest(unittest.TestCase):
         self.assertEqual(result['point']['playedMove']['tiles'], 'AE?')
         self.assertFalse(result['point']['provisional'])
 
+    def test_legacy_swap_parse_error_without_tiles_recovers_to_explicit_unrated_state(self):
+        grid = ['.' * 15 for _ in range(15)]
+        self.use_saved_analysis({
+            'version': 'quackle-equity-v1',
+            'move_quality': {'state': 'done', 'evaluation': 'win-probability-v1', 'points': [{
+                'turnIndex': 0, 'turn': 1, 'mine': True, 'action': 'swap -- 0',
+                'category': 'unrated', 'loss': None, 'provisional': False, 'retryable': False,
+                'reason': 'Quackle could not evaluate the played move: The recorded move could not be read.',
+            }]},
+        }, turns=[{'index': 0, 'mine': True, 'action': 'swap -- 0', 'score': 0,
+                   'rack': 'AEIRST?', 'swapped_tiles': None, 'grid': grid, 'grid_after': grid,
+                   'bag_count': 86, 'final_turns_remaining': 0, 'mover_score': 12, 'other_score': 10}],
+            my_score=12, opponent_score=10, turn_count=1)
+        self.open_game()
+        self.page.evaluate("""async () => {
+          const context = contextFor(currentReview);
+          await analyzeReviewTurn(context, 0, 'preview');
+          await finishReviewAnalysis(context);
+        }""")
+        result = self.page.evaluate("""() => {
+          const context = contextFor(currentReview), point = context.quality.points[0];
+          const restored = makeReviewContext({...currentReview, stored_analysis: {
+            version: ANALYSIS_VERSION, move_quality: context.quality,
+            turn_analyses: context.cache.results
+          }}, context.owner);
+          return {point, states: context.states, error: context.error, errors: [...context.cache.errors],
+            hasCandidates: Boolean(context.cache.get(currentReview.turns[0], 'candidates')),
+            restoredStates: restored.states};
+        }""")
+        self.assertIsNotNone(result.get('point'), result)
+        self.assertEqual(result['point']['reason'], 'The recorded exchanged tiles are missing.')
+        self.assertFalse(result['point']['retryable'])
+        self.assertNotIn('playedWin', result['point'])
+        self.assertEqual(result['errors'], [])
+        self.assertTrue(result['hasCandidates'])
+        self.assertEqual(result['restoredStates'], ['done'])
+        expect(self.page.locator('#engineStatus')).to_contain_text('recorded exchanged tiles are missing')
+        expect(self.page.locator('#engineStatus')).not_to_contain_text('Analysis failed')
+        expect(self.page.locator('.analysis-panel .analysis-button')).to_be_hidden()
+
     def test_saved_exchange_without_tile_details_does_not_guess_a_probability(self):
         self.install_review_worker()
         self.use_saved_unrated_exchange(None)
@@ -1500,6 +1540,101 @@ class ReviewBrowserTest(unittest.TestCase):
         self.assertRegex(self.page.locator('.custom-move-result tbody tr').first.locator('td').last.inner_text(), r'^\d+\.\d%$')
         self.page.get_by_role('combobox', name='Select game turn').select_option('1')
         expect(self.page.locator('.custom-move-result tbody tr')).to_have_count(0)
+
+    def test_custom_swap_static_validation_and_action_reset(self):
+        self.open_game()
+        action = self.page.get_by_role('combobox', name='Custom move action', exact=True)
+        action.select_option('exchange')
+        tiles = self.page.get_by_role('textbox', name='Tiles to swap', exact=True)
+        expect(self.page.get_by_role('textbox', name='Custom move word', exact=True)).to_be_hidden()
+        for letters, message in [('ZZ', 'rack does not contain'), ('CC', 'rack does not contain'), ('C!', '1 to 7 letters')]:
+            with self.subTest(letters=letters):
+                tiles.fill(letters)
+                self.page.get_by_role('button', name='Evaluate move', exact=True).click()
+                expect(self.page.locator('.custom-move-status')).to_contain_text(message, timeout=30_000)
+                expect(self.page.locator('.custom-move-result tbody tr')).to_have_count(0)
+        tiles.fill('TC')
+        self.page.get_by_role('button', name='Evaluate move', exact=True).click()
+        expect(self.page.locator('.custom-move-status')).to_have_text('Move evaluated.', timeout=30_000)
+        row = self.page.locator('.custom-move-result tbody tr').first
+        expect(row).to_contain_text('Your move: Swap CT')
+        expect(row.locator('td').nth(1)).to_have_text('0')
+        expect(row.locator('td').nth(2)).to_have_text('AERSU')
+        expect(self.page.locator('.board .tile')).to_have_count(3)
+        action.select_option('place')
+        expect(tiles).to_be_hidden()
+        expect(self.page.locator('.custom-move-result tbody tr')).to_have_count(0)
+        self.enter_custom_move('CAT', 'G8')
+        expect(self.page.locator('.custom-move-status')).to_have_text('Move evaluated.', timeout=30_000)
+        expect(self.page.locator('.custom-move-result tbody tr').first).to_contain_text('Your move: 8G CAT')
+        self.page.get_by_role('combobox', name='Select game turn').select_option('2')
+        self.page.get_by_role('combobox', name='Custom move action', exact=True).select_option('exchange')
+        self.page.get_by_role('textbox', name='Tiles to swap', exact=True).fill('?')
+        self.page.get_by_role('button', name='Evaluate move', exact=True).click()
+        expect(self.page.locator('.custom-move-status')).to_have_text('Move evaluated.', timeout=30_000)
+        expect(self.page.locator('.custom-move-result tbody tr').first).to_contain_text('Your move: Swap ?')
+
+    def test_custom_swap_win_simulation_and_cancellation(self):
+        self.open_game()
+        self.page.get_by_role('combobox', name='Custom move action', exact=True).select_option('exchange')
+        self.page.get_by_role('textbox', name='Tiles to swap', exact=True).fill('TC')
+        self.page.get_by_role('button', name='Evaluate move', exact=True).click()
+        expect(self.page.locator('.custom-move-status')).to_have_text('Move evaluated.', timeout=30_000)
+        self.page.get_by_role('button', name='Estimate win% (slower)', exact=True).click()
+        self.page.get_by_role('button', name='Cancel evaluation', exact=True).click()
+        expect(self.page.locator('.custom-move-status')).to_have_text('Evaluation cancelled.')
+        self.page.get_by_role('button', name='Estimate win% (slower)', exact=True).click()
+        expect(self.page.locator('.custom-move-status')).to_have_text('Win simulation complete.', timeout=120_000)
+        row = self.page.locator('.custom-move-result tbody tr').first
+        expect(row).to_contain_text('Your move: Swap CT')
+        self.assertRegex(row.locator('td').last.inner_text(), r'^\d+\.\d%$')
+        expect(self.page.locator('.custom-move-result')).to_contain_text('277 samples each')
+        expect(self.page.locator('.custom-move-result')).to_contain_text('WP loss')
+        compared = re.search(r'Compared (\d+) moves', self.page.locator('.custom-move-result').inner_text())
+        self.assertIsNotNone(compared)
+        self.assertLessEqual(int(compared.group(1)), 16)
+        self.assertLessEqual(self.page.locator('.custom-move-result').evaluate('el => el.scrollWidth'),
+                             self.page.locator('.custom-move-result').evaluate('el => el.clientWidth') + 1)
+
+    def test_custom_simulation_best_row_matches_wp_loss(self):
+        self.open_game()
+        result = self.page.evaluate("""async () => {
+          const result = await customMoveController.request('simulateMove', {
+            gridJson: JSON.stringify(Array(15).fill('.'.repeat(15))), rack: 'AEQRSTU',
+            playerScore: 100, opponentScore: 52, bagCount: 86, finalTurnsRemaining: 0,
+            iterations: 10, customMove: {action: 'place', word: 'TEA', square: 'G8', direction: 'across'}
+          });
+          customMoveController.renderResult(result);
+          return result;
+        }""")
+        self.assertEqual(result['best']['win'], max(move['win'] for move in result['moves']))
+        rows = self.page.locator('.custom-move-result tbody tr')
+        expect(rows.nth(1)).to_contain_text('Best WP move:')
+        expect(rows.nth(1).locator('td').last).to_have_text(f"{100 * result['best']['win']:.1f}%")
+        loss = max(0, result['best']['win'] - result['selected']['win']) * 100
+        expect(self.page.locator('.custom-move-result')).to_contain_text(
+            f'WP loss: {loss:.1f} pp versus the best WP move.')
+
+    def test_custom_swap_rejects_low_bag_before_engine_evaluation(self):
+        self.open_game()
+        response = self.page.evaluate("""async () => {
+          const grid = [
+            'CD........G....', '.......A.NOUN.Y', '.......L...TAME',
+            '......YEAH...E.', '.........ab.yA.', '......LOB.OWED.',
+            '..PROG..I.TEN.F', '....D..JOGS...I', '...LASSI.O..RUN',
+            '.......V.R.MI..', '...C...E..HIPS.', '...A.BASE.A.E..',
+            '...R.O..D.V....', '..RENT.LITER...', '.....H..T......'];
+          const worker = new Worker('quackle-worker.js');
+          return await new Promise(resolve => {
+            worker.onmessage = event => { worker.terminate(); resolve(event.data); };
+            worker.postMessage({ id: 1, type: 'evaluateMove', payload: {
+              gridJson: JSON.stringify(grid), rack: 'WEAFTUO', playerScore: 0,
+              opponentScore: 0, bagCount: 0, finalTurnsRemaining: 1,
+              customMove: { action: 'exchange', tiles: 'W' }
+            }});
+          });
+        }""")
+        self.assertIn('at least seven', response.get('error', ''))
 
     def test_frequency_failure_preserves_move_quality_and_can_be_retried(self):
         self.page.route('**/wordfreq-en-25000-log.json',
