@@ -299,7 +299,7 @@ class WinBarBrowserTest(unittest.TestCase):
         self.set_points([self.point(3, 0.6), self.point(1, 0.8), self.point(0, 0.75)])
         chart = self.page.locator('.win-history')
         expect(chart).to_be_visible()
-        for label in ['100%', '50%', '0%', 'Turn 1', 'Finish']:
+        for label in ['100%', '50%', '0%']:
             expect(chart).to_contain_text(label)
         points = chart.locator('.win-history-point')
         self.assertEqual(points.evaluate_all("nodes => nodes.map(n => n.dataset.turnIndex)"),
@@ -398,7 +398,7 @@ class WinBarBrowserTest(unittest.TestCase):
         expect(inspector.locator('[data-move="played"] strong')).to_have_text('70.0%')
         expect(inspector.locator('[data-move="best"] strong')).to_have_text('77.0%')
         board = self.page.locator('.turn-panel table.board').inner_text()
-        self.page.locator('.win-history-point[data-turn-index="1"]').hover()
+        self.page.locator('.win-history-point[data-turn-index="1"] .win-history-marker').hover()
         expect(inspector).to_have_attribute('data-inspected-turn', '1')
         expect(inspector.locator('.win-history-inspector-player')).to_have_text('Demo Cedar moved')
         expect(inspector.locator('[data-move="played"] strong')).to_have_text('80.0%')
@@ -447,7 +447,7 @@ class WinBarBrowserTest(unittest.TestCase):
         selection = self.page.locator('.win-history-selection')
         self.page.mouse.move(0, 0)
         self.page.locator('.win-history-point[data-turn-index="0"]').focus()
-        self.page.locator('.win-history-point[data-turn-index="1"]').hover()
+        self.page.locator('.win-history-point[data-turn-index="1"] .win-history-marker').hover()
         expect(inspector).to_have_attribute('data-inspected-turn', '1')
         highlight_x = selection.get_attribute('x')
         for refresh in ['quality', 'trend']:
@@ -645,10 +645,13 @@ class WinBarBrowserTest(unittest.TestCase):
                         self.page.locator('.win-evaluation').bounding_box()['y'])
         expect(self.page.locator('.win-history-point')).to_have_count(43)
         badges = panel.locator('.win-history-grade:visible').evaluate_all('''nodes => nodes.map(node => {
-          const r = node.getBoundingClientRect(); return {left: r.left, right: r.right};
+          const r = node.getBoundingClientRect(); return {left: r.left, right: r.right, top: r.top, bottom: r.bottom};
         })''')
-        for previous, following in zip(badges, badges[1:]):
-            self.assertLess(previous['right'], following['left'], 'Adjacent error labels overlap')
+        self.assertEqual(len(badges), 42)
+        for index, first in enumerate(badges):
+            for second in badges[index + 1:]:
+                overlap = min(first['right'], second['right']) - max(first['left'], second['left']) > .5 and min(first['bottom'], second['bottom']) - max(first['top'], second['top']) > .5
+                self.assertFalse(overlap, 'Error labels overlap')
 
     def test_candidate_table_labels_pass_and_exchange(self):
         self.open_game()
@@ -696,6 +699,71 @@ class WinBarBrowserTest(unittest.TestCase):
         expect(self.page.locator('.position-output')).to_contain_text('277 samples per move')
         expect(self.page.locator('.moves-table')).to_contain_text('70.0%')
         expect(self.page.get_by_role('button', name='Retry this turn')).to_be_hidden()
+
+
+    def test_turn_list_separates_wp_change_best_loss_and_draw_change(self):
+        self.open_game()
+        points = [self.point(0, .50), self.point(1, .60), self.point(2, .55)]
+        points[0].update(loss=6, bestWin=.56, category='mistake', draw={
+            'beforeWin': .48, 'afterWin': .62, 'drawCount': 3, 'provisional': False})
+        points[1].update(loss=0, bestWin=.60, draw={
+            'beforeWin': .58, 'afterWin': .53, 'drawCount': 1, 'provisional': True})
+        self.set_points(points)
+        rows = self.page.locator('.turn-row')
+        expect(rows.nth(0).locator('.turn-wp-played')).to_have_text('WP 50.0%')
+        expect(rows.nth(0).locator('.turn-wp-change')).to_have_text('Change —')
+        expect(rows.nth(0).locator('.turn-wp-loss')).to_have_text('Loss vs best 6.0 pp')
+        # Previous owner after-draw .62 is .38 for the opponent; .58-.38=.20.
+        expect(rows.nth(1).locator('.turn-wp-change')).to_have_text('Change +20.0 pp · Early')
+        expect(rows.nth(1).locator('.turn-wp-loss')).to_have_text('Loss vs best 0.0 pp')
+        expect(rows.nth(1).locator('.turn-wp-draw')).to_have_text('Draw −5.0 pp · Early')
+        # Previous opponent after-draw .53 is .47 for the owner; .55-.47=.08.
+        expect(rows.nth(2).locator('.turn-wp-change')).to_have_text('Change +8.0 pp · Early')
+        rows.nth(1).click()
+        selected = self.page.locator('.turn-meta .turn-wp-metrics')
+        expect(selected.locator('.turn-wp-draw')).to_have_text('Draw −5.0 pp · Early')
+        expect(selected.locator('.turn-wp-played')).to_have_text('WP 60.0%')
+        # Async draw updates must update the list and selected move without reselection.
+        self.page.evaluate("""() => {
+          Object.assign(moveQualityResults.points[1].draw, {afterWin: .65, provisional: false});
+          refreshMoveQualityPanel();
+        }""")
+        expect(selected.locator('.turn-wp-draw')).to_have_text('Draw +7.0 pp')
+        expect(rows.nth(1).locator('.turn-wp-draw')).to_have_text('Draw +7.0 pp')
+        expect(self.page.locator('.turn-row.selected')).to_have_attribute('data-turn-index', '1')
+
+    def test_turn_wp_change_does_not_bridge_missing_draws_or_moves(self):
+        self.open_game()
+        points = [self.point(0, .50), self.point(1, .60), self.point(2, .55)]
+        self.set_points(points)
+        rows = self.page.locator('.turn-row')
+        # First fixture turn is a placement with a refill, but its draw is not measured.
+        expect(rows.nth(1).locator('.turn-wp-change')).to_have_text('Change —')
+        expect(rows.nth(0).locator('.turn-wp-draw')).to_have_text('Draw —')
+        self.page.evaluate("""() => {
+          delete moveQualityResults.points[1].playedWin;
+          moveQualityResults.points[1].category = 'unrated';
+          delete moveQualityResults.points[1].loss;
+          refreshMoveQualityPanel();
+        }""")
+        expect(rows.nth(2).locator('.turn-wp-change')).to_have_text('Change —')
+        expect(rows.nth(1).locator('.turn-wp-played')).to_have_text('WP —')
+        expect(rows.nth(1).locator('.turn-wp-loss')).to_have_text('Loss vs best —')
+        # A pass has no refill and provides its move estimate as the next baseline.
+        self.page.evaluate("""() => {
+          currentReview.turns[1].action = 'PASS 0';
+          Object.assign(moveQualityResults.points[1], {playedWin: .60, loss: 1, category: 'best'});
+          refreshMoveQualityPanel();
+        }""")
+        expect(rows.nth(1).locator('.turn-wp-draw')).to_have_text('Draw: no tiles')
+        expect(rows.nth(2).locator('.turn-wp-change')).to_have_text('Change +15.0 pp')
+        # Both the list and selected values must fit a phone, with long player names.
+        for width in [1366, 390, 320]:
+            self.page.set_viewport_size({'width': width, 'height': 844})
+            rows.nth(1).click()
+            for selector in ['.turn-row.selected', '.turn-meta .turn-wp-metrics']:
+                self.assertTrue(self.page.locator(selector).evaluate(
+                    'node => node.scrollWidth <= node.clientWidth + 1'))
 
 
 if __name__ == '__main__':

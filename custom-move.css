@@ -18,3 +18,5 @@
 .custom-move-result th:not(:first-child), .custom-move-result td:not(:first-child) { white-space: nowrap; overflow-wrap: normal; }
 .custom-move-result tbody tr:first-child { font-weight: 700; background: rgba(80, 160, 100, .1); }
 .custom-move-comparison { margin: 10px 0 6px; font-weight: 600; }
+
+.custom-move-form label[hidden] { display: none; }

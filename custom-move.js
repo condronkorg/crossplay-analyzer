@@ -13,6 +13,8 @@ window.CustomMove = class CustomMove {
       <h3>Try a custom move</h3>
       <p class="custom-move-note"></p>
       <form class="custom-move-form">
+        <label>Action<select name="action" aria-label="Custom move action"><option value="place">Play a word</option><option value="exchange">Swap tiles</option></select></label>
+        <label hidden>Tiles to swap<input name="tiles" aria-label="Tiles to swap" maxlength="7" placeholder="ABC?" autocomplete="off" spellcheck="false"></label>
         <label>Word<input name="word" aria-label="Custom move word" maxlength="15" placeholder="CAT" autocomplete="off" spellcheck="false" autocapitalize="off" required></label>
         <label>Start square<input name="square" aria-label="Custom move start square" maxlength="3" placeholder="G8" autocomplete="off" spellcheck="false" required></label>
         <label>Direction<select name="direction" aria-label="Custom move direction"><option value="across">Across →</option><option value="down">Down ↓</option></select></label>
@@ -33,6 +35,19 @@ window.CustomMove = class CustomMove {
       this.evaluate(false);
     });
     this.form.addEventListener('input', () => this.reset());
+    this.form.elements.action.addEventListener('change', () => {
+      this.reset();
+      const swapping = this.form.elements.action.value === 'exchange';
+      for (const name of ['word', 'square', 'direction', 'tiles']) {
+        const input = this.form.elements[name];
+        const visible = swapping === (name === 'tiles');
+        input.closest('label').hidden = !visible;
+        input.required = visible && name !== 'direction';
+      }
+      this.root.querySelector('.custom-move-help').textContent = swapping
+        ? 'Enter the tiles to return to the bag. Use ? for a blank. Swaps require at least seven tiles in the bag.'
+        : 'Include existing letters, or use . for them. Use uppercase for regular tiles and lowercase for blanks (e.g. CAt).';
+    });
     this.cancelButton.addEventListener('click', () => {
       this.stop();
       this.status.textContent = 'Evaluation cancelled.';
@@ -108,6 +123,8 @@ window.CustomMove = class CustomMove {
         const position = this.getPosition();
         if (!position) throw new Error('Analyze a board first.');
         this.payload = { ...position, iterations: 277, customMove: {
+          action: this.form.elements.action.value,
+          tiles: this.form.elements.tiles.value.trim(),
           word: this.form.elements.word.value.trim(),
           square: this.form.elements.square.value.trim(),
           direction: this.form.elements.direction.value
@@ -141,9 +158,10 @@ window.CustomMove = class CustomMove {
     if (result.simulated) labels.push('Win%');
     for (const label of labels) append(head, 'th', label);
     const body = table.createTBody();
-    for (const [label, move] of [['Your move', result.selected], ['Best compared move', result.best]]) {
+    for (const [label, move] of [['Your move', result.selected], [result.simulated ? 'Best WP move' : 'Best static move', result.best]]) {
       const row = body.insertRow();
-      append(row, 'td', label + ': ' + (move.position ? move.position + ' ' : '') + move.tiles);
+      append(row, 'td', label + ': ' + (move.action === 'exchange' ? 'Swap ' + move.tiles
+        : move.action === 'pass' ? 'Pass' : (move.position ? move.position + ' ' : '') + move.tiles));
       append(row, 'td', move.score);
       append(row, 'td', move.leave || '—');
       append(row, 'td', move.equity.toFixed(1));
@@ -151,9 +169,11 @@ window.CustomMove = class CustomMove {
     }
     this.output.append(table);
     const loss = Math.max(0, result.best.equity - result.selected.equity);
-    append(this.output, 'p', loss.toFixed(1) + ' equity points behind the best compared move.', 'custom-move-comparison');
+    if (!result.simulated) append(this.output, 'p', loss.toFixed(1) + ' equity points behind the best static move.', 'custom-move-comparison');
     append(this.output, 'p', 'Static rank #' + result.staticRank + ' of ' + result.legalMoveCount + ' legal moves.', 'custom-move-help');
     if (result.simulated) {
+      const wpLoss = Math.max(0, result.best.win - result.selected.win) * 100;
+      append(this.output, 'p', 'WP loss: ' + wpLoss.toFixed(1) + ' pp versus the best WP move.', 'custom-move-comparison');
       append(this.output, 'p', 'Compared ' + result.candidateCount + ' moves with ' + result.iterationsCompleted +
         ' samples each. ' + (result.playToEnd ? 'Samples follow Crossplay’s final-turn rules to the finish.' :
           'Win chances use Quackle’s two-ply estimate.'), 'custom-move-help');
