@@ -29,7 +29,7 @@ test('custom swaps reject missing physical tiles, invalid letters, and low bags'
   lowBag.gridJson = JSON.stringify(Array(15).fill('AAAAAA.........'));
   lowBag.bagCount = 0;
   lowBag.finalTurnsRemaining = 1;
-  assert.throws(() => context.customMoveKey(lowBag), /at least seven/);
+  assert.throws(() => context.customMoveKey(lowBag), /bag/);
 });
 
 test('simulated custom placements compare with highest WP while static compares equity', () => {
@@ -60,4 +60,28 @@ test('custom swaps reject Unicode before case expansion can change physical tile
   for (const tiles of ['ß', 'ßS', 'ßßßß']) {
     assert.throws(() => context.customMoveKey({ ...position({ action: 'exchange', tiles }), rack: 'SSSSSSS' }), /1 to 7 letters/);
   }
+});
+
+test('custom swaps allow fewer than seven bag tiles and filter overdraw alternatives', () => {
+  const payload = {...position({action:'exchange', tiles:'AA?'}), bagCount:6,
+    gridJson:JSON.stringify(Array.from({length:15}, (_, i) => i < 5 ? 'AAAAAAAAAAAAAAA' : i === 5 ? 'AAAAA..........' : '.'.repeat(15)))};
+  assert.equal(context.customMoveKey(payload).move.tiles, '?AA');
+  const module = {kibitz: () => ({moves:[
+    {action:'exchange', position:'', tiles:'AAEIRT?', equity:100},
+    {action:'exchange', position:'', tiles:'?AA', equity:2},
+    {action:'pass', position:'', tiles:'', equity:0}
+  ]})};
+  const result = context.evaluateCustomMove(module, payload, false);
+  assert.equal(result.legalMoveCount, 2);
+  assert.equal(result.staticRank, 1);
+  assert.equal(result.best.tiles, '?AA');
+  assert.throws(() => context.customMoveKey({...payload,customMove:{action:'exchange',tiles:'AAEIRT?'}}), /bag/);
+});
+
+test('a custom swap can use the last bag tile without overdrawing', () => {
+  const board = 'A'.repeat(85).padEnd(225,'.');
+  const payload = {...position({action:'exchange',tiles:'?'}), bagCount:1,
+    gridJson:JSON.stringify(Array.from({length:15},(_,i)=>board.slice(i*15,i*15+15)))};
+  assert.equal(context.customMoveKey(payload).move.tiles, '?');
+  assert.throws(()=>context.customMoveKey({...payload,customMove:{action:'exchange',tiles:'AA'}}),/bag/);
 });

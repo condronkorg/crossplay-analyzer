@@ -1,6 +1,6 @@
 {
   "_note": "Synthetic saved-analysis display fixture for mockgame01; not measured Quackle results. Opponent's larger loss must not affect personal stats or opportunities.",
-  "version": "quackle-equity-v1",
+  "version": "quackle-crossplay-v2",
   "move_quality": {
     "state": "done",
     "message": "Move-quality analysis complete \u00b7 3 of 6 moves rated.",

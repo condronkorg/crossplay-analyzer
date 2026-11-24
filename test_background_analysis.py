@@ -137,6 +137,83 @@ class BackgroundAnalysisTest(unittest.TestCase):
             self.handler.validate_game_analysis({'analysis_version': ANALYSIS_VERSION,
                 'turn_analyses': {json.dumps(identity): result}})
 
+    def test_low_bag_exchange_draw_round_trips_both_profiles(self):
+        # Synthetic inventory: 80 board tiles, 7 mover tiles, 6 in the bag,
+        # and 7 hidden opponent tiles. Four exchanged tiles fit in that bag.
+        rack = 'AAEIRST'
+        inventory = Counter(TILE_COUNTS)
+        inventory.subtract(rack)
+        inventory.subtract('BCDEFGHIJKLMN')
+        board_tiles = ''.join(letter * count for letter, count in inventory.items())
+        self.assertEqual(len(board_tiles), 80)
+        board_tiles = board_tiles.replace('?', 'a')
+        cells = board_tiles + '.' * (225 - len(board_tiles))
+        grid = [cells[index:index + 15] for index in range(0, 225, 15)]
+        saved_entries = {}
+        for kind in ('draw-preview', 'draw'):
+            key, original = draw_analysis_entry(kind)
+            identity = json.loads(key)
+            identity[2:4] = [grid, rack]
+            identity[6:8] = [6, 0]
+            identity[11:14] = ['swap -- 0', 'AIRS', 'AETBCDE']
+            result = {**original, 'rackAfter': 'AETBCDE', 'drawCount': 4,
+                      'bagCount': 6, 'playToEnd': True, 'plies': -1,
+                      'simulationMode': 'play-to-end', 'winModel': 'terminal',
+                      'selected': {'action': 'exchange', 'position': '', 'tiles': 'AIRS'}}
+            key = json.dumps(identity)
+            body = {'analysis_version': ANALYSIS_VERSION, 'turn_analyses': {key: result}}
+            self.handler.save_game_analysis('account-a', 'synthetic-swap', body)
+            saved_entries.update(self.handler.supabase_data_request.call_args.kwargs['payload']['snapshot']['turn_analyses'])
+            # There are only six replacement tiles. Exchanging all seven is invalid.
+            invalid_identity = copy.deepcopy(identity)
+            invalid_identity[12:14] = [rack, 'BCDEFG']
+            invalid_result = {**result, 'rackAfter': 'BCDEFG', 'drawCount': 6,
+                              'selected': {'action': 'exchange', 'position': '', 'tiles': rack}}
+            with self.assertRaises(CrossplayError):
+                self.handler.validate_game_analysis({'analysis_version': ANALYSIS_VERSION,
+                    'turn_analyses': {json.dumps(invalid_identity): invalid_result}})
+        self.handler.supabase_data_request.return_value = [{
+            'analysis_version': ANALYSIS_VERSION, 'turn_analyses': saved_entries}]
+        restored = self.handler.saved_game_analysis('account-a', 'synthetic-swap')
+        self.assertEqual(restored['turn_analyses'], saved_entries)
+        self.assertEqual(len(restored['turn_analyses']), 2)
+
+    def test_low_bag_move_results_reject_exchanges_larger_than_bag(self):
+        for kind in ('preview', 'review'):
+            key, result = review_analysis_entry(kind)
+            identity = json.loads(key)
+            inventory = Counter(TILE_COUNTS)
+            inventory.subtract(identity[3])
+            inventory.subtract('BCDEFGHIJKLMN')
+            cells = ''.join(letter * count for letter, count in inventory.items()).replace('?', 'a')
+            self.assertEqual(len(cells), 80)
+            cells += '.' * (225 - len(cells))
+            identity[2] = [cells[index:index + 15] for index in range(0, 225, 15)]
+            identity[6] = result['bagCount'] = 6
+            identity[12:14] = ['swap -- 0', 'CATS']
+            result.update(playToEnd=True, plies=-1, simulationMode='play-to-end', winModel='terminal')
+            for move in result['moves'] + result['staticMoves']:
+                move.update(action='exchange', position='', tiles='CATS', terminalSamples=move['samples'])
+            # A single legal comparison move keeps its static identity unique.
+            result['moves'] = result['moves'][:1]
+            result['staticMoves'] = result['staticMoves'][:1]
+            result.update(selected=result['moves'][0], best=result['moves'][0],
+                          candidateCount=1, totalPlayaheads=result['iterationsCompleted'],
+                          bestStaticEquity=result['staticMoves'][0]['equity'])
+            body = {'analysis_version': ANALYSIS_VERSION, 'turn_analyses': {json.dumps(identity): result}}
+            self.handler.validate_game_analysis(body)
+            for move in result['moves'] + result['staticMoves']:
+                move['tiles'] = identity[3]
+            identity[13] = identity[3]
+            with self.subTest(kind=kind), self.assertRaises(CrossplayError):
+                self.handler.validate_game_analysis({'analysis_version': ANALYSIS_VERSION,
+                    'turn_analyses': {json.dumps(identity): result}})
+
+    def test_previous_engine_analysis_version_is_not_accepted(self):
+        with self.assertRaises(CrossplayError) as caught:
+            self.handler.validate_game_analysis({'analysis_version': 'quackle-equity-v1', 'turn_analyses': {}})
+        self.assertEqual(caught.exception.status, 400)
+
     def test_draw_estimate_counts_assigned_blank_and_partial_bag_refill(self):
         key, original = draw_analysis_entry()
         identity = json.loads(key)

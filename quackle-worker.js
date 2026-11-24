@@ -36,10 +36,10 @@ function customMoveKey(payload) {
   }
   const move = payload.customMove || {};
   if (move.action === 'exchange') {
-    if (bagCount < 7) throw new Error('Swapping requires at least seven tiles in the bag.');
     const enteredTiles = String(move.tiles || '').trim();
     if (!/^[A-Za-z?]{1,7}$/.test(enteredTiles)) throw new Error('Enter 1 to 7 letters to swap; use ? for a blank.');
     const tiles = enteredTiles.toUpperCase();
+    if (tiles.length > bagCount) throw new Error('The bag must contain at least as many tiles as the swap.');
     const remaining = [...rack];
     for (const tile of tiles) {
       const index = remaining.indexOf(tile);
@@ -120,7 +120,8 @@ function evaluateCustomMove(module, payload, simulateWin) {
   if (!Array.isArray(generated.moves) || generated.moves.length >= limit) {
     throw new Error('Quackle could not return the complete move list for this position.');
   }
-  if (payload.bagCount < 7) generated.moves = generated.moves.filter(move => move.action !== 'exchange');
+  generated.moves = generated.moves.filter(move => move.action !== 'exchange' ||
+    (move.tiles.length > 0 && move.tiles.length <= payload.bagCount));
   const index = generated.moves.findIndex(move => candidateKey(move, grid) === key);
   if (index < 0) {
     throw new Error('This move is not legal in Quackle’s dictionary at this position. Check the word, connecting words, start square, and direction.');

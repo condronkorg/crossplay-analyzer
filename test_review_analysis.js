@@ -405,3 +405,17 @@ test('draw result validation rejects wrong rack, action, probabilities, profile 
   }
   assert.equal(validDrawResult({...result,iterationsCompleted:64,iterationsRequested:64},drawTurn,123,64),true);
 });
+
+test('recorded low-bag swaps draw only available physical tiles', () => {
+  const { rackDraw } = require('./review-analysis.js');
+  const { TILE_COUNTS } = require('./luck-analysis.js');
+  const rack = 'AAEIRT?', other = 'EINORST', bag = 'BCDEFG';
+  const pool = Object.entries(TILE_COUNTS).flatMap(([tile,count])=>Array(count).fill(tile));
+  for (const tile of rack + other + bag) pool.splice(pool.indexOf(tile), 1);
+  const board = pool.map(tile=>tile === '?' ? 'a' : tile).join('').padEnd(225,'.');
+  const grid = Array.from({length:15},(_,i)=>board.slice(i*15,i*15+15));
+  const turn = {grid,rack,bag_count:6,action:'swap -- 0',swapped_tiles:'AA?',rack_after:'EIRTBCD'};
+  assert.deepEqual(rackDraw(turn), {rackAfter:'EIRTBCD',drawCount:3,drawn:'BCD',retained:'EIRT'});
+  assert.throws(()=>rackDraw({...turn,swapped_tiles:'AAEIRT?'}),/bag/);
+  assert.throws(()=>rackDraw({...turn,bag_count:0}),/bag/);
+});

@@ -186,7 +186,7 @@ class CrossplayAPITest(unittest.TestCase):
             for moves in (result['moves'], result['staticMoves']):
                 moves[0].update(action='exchange', position='', tiles='UV', score=0)
                 moves[1].update(action='pass', position='', tiles='', score=0)
-            body = {'analysis_version': 'quackle-equity-v1', 'turn_analyses': {key: result}}
+            body = {'analysis_version': 'quackle-crossplay-v2', 'turn_analyses': {key: result}}
             status, saved, _ = self.request('PUT', 'games/mockgame01/analysis', body)
             self.assertEqual(status, 200, saved)
             restored = self.request('GET', 'games/mockgame01/review')[1]
@@ -265,12 +265,12 @@ class CrossplayAPITest(unittest.TestCase):
     def test_analysis_progress_is_reused_and_isolated_between_sessions(self):
         self.connect()
         review = self.request('GET', 'games/mockgame01/review')[1]
-        payload = {'analysis_version': 'quackle-equity-v1', 'turn_analyses': {
+        payload = {'analysis_version': 'quackle-crossplay-v2', 'turn_analyses': {
             'synthetic-candidates': {'simulated': False, 'moves': [{'tiles': 'CAT'}]}}}
         self.assertEqual(self.request('PUT', 'games/mockgame01/analysis', payload)[0], 200)
         quality = {'state': 'done', 'points': []}
         self.assertEqual(self.request('PUT', 'games/mockgame01/analysis', {
-            'analysis_version': 'quackle-equity-v1', 'move_quality': quality})[0], 200)
+            'analysis_version': 'quackle-crossplay-v2', 'move_quality': quality})[0], 200)
         saved = self.request('GET', 'games/mockgame01/review')[1]['stored_analysis']
         self.assertEqual(saved['turn_analyses'], payload['turn_analyses'])
         self.assertEqual(saved['move_quality'], quality)
@@ -288,9 +288,9 @@ class CrossplayAPITest(unittest.TestCase):
         self.connect()
         self.request('GET', 'games/mockgame01/review')
         key, result = review_analysis_entry()
-        first = {'analysis_version': 'quackle-equity-v1', 'turn_analyses': {key: result}}
+        first = {'analysis_version': 'quackle-crossplay-v2', 'turn_analyses': {key: result}}
         self.assertEqual(self.request('PUT', 'games/mockgame01/analysis', first)[0], 200)
-        second = {'analysis_version': 'quackle-equity-v1', 'turn_analyses': {
+        second = {'analysis_version': 'quackle-crossplay-v2', 'turn_analyses': {
             'old-static-result': {'simulated': False, 'moves': [{'equity': 5}]}}}
         self.assertEqual(self.request('PUT', 'games/mockgame01/analysis', second)[0], 200)
         saved = self.request('GET', 'games/mockgame01/review')[1]['stored_analysis']['turn_analyses']
