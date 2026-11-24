@@ -438,6 +438,30 @@ test('recorded low-bag swaps draw only available physical tiles', () => {
   assert.throws(()=>rackDraw({...turn,bag_count:0}),/bag/);
 });
 
+test('low-bag move and draw validation requires the current endgame policy', () => {
+  const {validResult, validDrawResult} = require('./review-analysis.js');
+  const {TILE_COUNTS} = require('./luck-analysis.js');
+  const rack = 'AAEIRT?', other = 'EINORST', bag = 'BCDEFG';
+  const pool = Object.entries(TILE_COUNTS).flatMap(([tile, count]) => Array(count).fill(tile));
+  for (const tile of rack + other + bag) pool.splice(pool.indexOf(tile), 1);
+  const cells = pool.map(tile => tile === '?' ? 'a' : tile).join('').padEnd(225, '.');
+  const turn = {grid: Array.from({length:15}, (_, i) => cells.slice(i*15, i*15+15)),
+    rack, bag_count:6, final_turns_remaining:0, action:'PASS 0', rack_after:rack};
+  const move = {action:'pass', position:'', tiles:'', win:.4, equity:0, staticEquity:0,
+    samples:277, terminalSamples:277};
+  const common = {simulated:true, seed:123, iterationsRequested:277, iterationsCompleted:277,
+    bagCount:6, finalTurnsRemaining:0, playToEnd:true, plies:-1, simulationMode:'play-to-end', winModel:'terminal'};
+  const review = {...common, samplingVersion:'paired-review-v1', moves:[move], selected:move, best:move,
+    staticMoves:[move], bestStaticEquity:0, candidateCount:1, totalPlayaheads:277};
+  const draw = {...common, samplingVersion:'rack-draw-v1', rackAfter:rack, drawCount:0,
+    beforeWin:.4, afterWin:.4, selected:move};
+  for (const [result, validate] of [[review, validResult], [draw, validDrawResult]]) {
+    assert.equal(validate(result, turn, 123), false);
+    assert.equal(validate({...result, endgamePolicy:'old-policy'}, turn, 123), false);
+    assert.equal(validate({...result, endgamePolicy:'crossplay-endgame-v1'}, turn, 123), true);
+  }
+});
+
 test('background retry keeps successful moves and retries only failed move and draw work', async () => {
   const calls = [];
   const points = [

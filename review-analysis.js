@@ -1,6 +1,7 @@
 /* Background review work is account-scoped. Navigation changes priority, not ownership. */
 (function(root) {
   'use strict';
+  const ENDGAME_POLICY = 'crossplay-endgame-v1';
   function playedMove(turn) {
     const action = String(turn.action || '').trim();
     if (/^PASS(?:\s+(?:--\s+)?-?\d+)?$/i.test(action)) return { action: 'pass', position: '', tiles: '' };
@@ -90,6 +91,7 @@
     try { draw = rackDraw(turn); move = playedMove(turn); } catch (_) { return false; }
     const bag = turn.bag_count, end = bag <= 21;
     return Boolean(result && result.simulated === true && !result.error &&
+      (!end || result.endgamePolicy === ENDGAME_POLICY) &&
       result.samplingVersion === 'rack-draw-v1' && result.seed === seed &&
       result.rackAfter === draw.rackAfter && result.drawCount === draw.drawCount &&
       result.iterationsRequested === iterations && result.iterationsCompleted === iterations &&
@@ -174,6 +176,7 @@
     let played;
     try { played = playedMove(turn); } catch (_) { return false; }
     if (!result || result.error || !Array.isArray(result.moves) || !result.moves.length || result.moves.length > moveCount + 1 ||
+        (end && result.endgamePolicy !== ENDGAME_POLICY) ||
         result.simulated !== true || result.plies !== (end ? -1 : 2) || result.playToEnd !== end ||
         result.simulationMode !== (end ? 'play-to-end' : '2-ply') || result.winModel !== (end ? 'terminal' : 'bogowin') ||
         result.bagCount !== bag || result.finalTurnsRemaining !== (bag === 0 ? Number(turn.final_turns_remaining) : 0) ||

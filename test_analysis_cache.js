@@ -154,6 +154,30 @@ test('rack draws have separate early and full identities without invalidating mo
   assert.equal(cache.seed(played), cache.seed({ ...played, rack_after: 'ERSTU??' }));
 });
 
+test('endgame policy invalidates only sampled low-bag caches and keeps paired seeds', () => {
+  const cache = new AnalysisCache();
+  for (const bag_count of [0, 2, 21, 22, 86]) {
+    const played = {...turn, bag_count, final_turns_remaining: bag_count === 0 ? 2 : 0,
+      action: 'CAT 8G 10', rack_after: 'ERSTUAE'};
+    for (const kind of ['review', 'preview', 'draw', 'draw-preview', 'simulation', 'trend']) {
+      const identity = JSON.parse(cache.key(played, kind));
+      assert.equal(identity.at(-1) === 'crossplay-endgame-v1', bag_count <= 21, kind + ':' + bag_count);
+      if (bag_count <= 21) {
+        const legacyKey = JSON.stringify(identity.slice(0, -1));
+        const saved = new AnalysisCache({[legacyKey]: {legacy: true}});
+        assert.equal(saved.get(played, kind), null);
+        assert.deepEqual(saved.results[legacyKey], {legacy: true});
+      }
+    }
+    assert.equal(JSON.parse(cache.key(played, 'candidates')).includes('crossplay-endgame-v1'), false);
+    const legacyReview = JSON.parse(cache.key(played, 'review'));
+    if (legacyReview.at(-1) === 'crossplay-endgame-v1') legacyReview.pop();
+    let expectedSeed = 2166136261;
+    for (const character of JSON.stringify(legacyReview)) expectedSeed = Math.imul(expectedSeed ^ character.charCodeAt(0), 16777619);
+    assert.equal(cache.seed(played), expectedSeed >>> 0);
+  }
+});
+
 test('non-move opening identities share work and restore without a turn key', async () => {
   const cache = new AnalysisCache();
   const key = JSON.stringify(['quackle-opening-draw-v1', 'ACERSTU', 'AEINORS', 277]);

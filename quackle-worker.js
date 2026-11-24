@@ -1,6 +1,7 @@
 importScripts('quackle.js');
 importScripts('luck-analysis.js', 'review-analysis.js', 'opening-draw.js');
 
+const ENDGAME_POLICY = 'crossplay-endgame-v1';
 let modulePromise = null;
 
 async function getModule() {
@@ -103,10 +104,14 @@ function candidateKey(move, grid) {
 }
 
 function simulate(module, payload, numMoves = payload.numMoves, iterations = payload.iterations) {
-  return module.simulateKibitz(
+  const result = module.simulateKibitz(
     payload.gridJson, payload.rack, payload.playerScore, payload.opponentScore,
     numMoves, iterations, payload.bagCount, payload.finalTurnsRemaining,
   );
+  if (!result.error && payload.bagCount <= 21 && result.endgamePolicy !== ENDGAME_POLICY) {
+    throw new Error('Quackle returned an unsupported endgame policy.');
+  }
+  return result;
 }
 
 function evaluateCustomMove(module, payload, simulateWin) {
@@ -200,6 +205,7 @@ function simulateRecordedMove(module, payload) {
     Number.isFinite(move.equity) && Number.isFinite(move.staticEquity) &&
     Number.isFinite(move.win) && move.win >= 0 && move.win <= 1;
   if (result.simulated !== true || result.seed !== payload.seed || result.samplingVersion !== 'paired-review-v1' ||
+      (playToEnd && result.endgamePolicy !== ENDGAME_POLICY) ||
       result.iterationsRequested !== payload.iterations || result.iterationsCompleted !== payload.iterations ||
       result.bagCount !== payload.bagCount || result.finalTurnsRemaining !== payload.finalTurnsRemaining ||
       result.plies !== (playToEnd ? -1 : 2) || result.playToEnd !== playToEnd ||

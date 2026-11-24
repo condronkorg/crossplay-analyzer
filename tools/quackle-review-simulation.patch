@@ -40,10 +40,366 @@ index 19c7d8e..8981ecf 100644
  		move.action = Move::Exchange;
  		move.setTiles(String::alphabetize(thrown));
 diff --git i/sim.cpp w/sim.cpp
-index 6271bcd..d4f4cf9 100644
+index 6271bcd..78ddc2c 100644
 --- i/sim.cpp
 +++ w/sim.cpp
-@@ -426,6 +426,7 @@ void Simulator::simulate(int plies, int iterations)
+@@ -18,11 +18,17 @@
+ 
+ #include <iostream>
+ #include <math.h>
++#include <algorithm>
++#include <limits>
++#include <map>
++#include <string>
++#include <unordered_map>
+ 
+ #include "computerplayer.h"
+ #include "datamanager.h"
+ #include "game.h"
+ #include "gameparameters.h"
++#include "generator.h"
+ #include "move.h"
+ #include "sim.h"
+ #include "strategyparameters.h"
+@@ -43,6 +49,337 @@ using namespace std;
+ 
+ std::atomic_long SimmedMove::objectIdCounter { 0 };
+ 
++namespace
++{
++// The empty-bag game has at most two moves. Before that phase, use one
++// bounded policy-improvement layer. Its inner final-phase screening is also
++// bounded; actual empty-bag decisions always use the full exact search.
++// Never choose from a sampled true rack.
++constexpr size_t crossplayPolicyCacheLimit = 32768;
++constexpr int crossplayPolicyCandidates = 4;
++constexpr int crossplayPolicyWorlds = 2;
++constexpr int crossplayBaseMoveLimit = 12;
++thread_local unordered_map<string, Move> crossplayFinalCache;
++thread_local unordered_map<string, Move> crossplayPreemptyCache;
++
++void appendLetters(string &key, const LetterString &letters)
++{
++    for (const auto letter : letters) key.push_back(static_cast<char>(letter));
++    key.push_back('\0');
++}
++
++string crossplayInformationKey(const GamePosition &position)
++{
++    string key;
++    key.reserve(576);
++    const auto &board = position.board();
++    for (int row = 0; row < board.height(); ++row)
++        for (int col = 0; col < board.width(); ++col)
++        {
++            key.push_back(static_cast<char>(board.letter(row, col)));
++            key.push_back(board.isBlank(row, col) ? 1 : 0);
++        }
++    appendLetters(key, position.currentPlayer().rack().alphaTiles());
++    key += to_string(position.currentPlayer().id()) + ":";
++    for (const auto &player : position.players())
++        key += to_string(player.id()) + ":" + to_string(player.score()) + ":";
++    key += to_string(position.bag().size()) + ":" + to_string(position.finalTurnsRemaining());
++    return key;
++}
++
++bool stableStaticOrder(const Move &a, const Move &b)
++{
++    if (a.equity != b.equity) return a.equity > b.equity;
++    if (a.score != b.score) return a.score > b.score;
++    if (a.action != b.action) return a.action < b.action;
++    if (a.startrow != b.startrow) return a.startrow < b.startrow;
++    if (a.startcol != b.startcol) return a.startcol < b.startcol;
++    if (a.horizontal != b.horizontal) return a.horizontal < b.horizontal;
++    return a.tiles() < b.tiles();
++}
++
++MoveList crossplayAllMoves(const GamePosition &position)
++{
++    Generator generator(position);
++    // Two requests full recording; allPossiblePlays is the untruncated list.
++    generator.kibitz(2, position.exchangeAllowed() ? Generator::RegularKibitz : Generator::CannotExchange);
++    MoveList moves = generator.allPossiblePlays();
++    bool hasPass = false;
++    for (const auto &move : moves) hasPass |= move.action == Move::Pass;
++    if (!hasPass) moves.push_back(Move::createPassMove());
++    stable_sort(moves.begin(), moves.end(), stableStaticOrder);
++    return moves;
++}
++
++GamePosition crossplayAfterMove(const GamePosition &position, const Move &move)
++{
++    GamePosition next(position);
++    next.setMoveMade(move);
++    next.incrementTurn(nullptr);
++    next.makeMove(move, true);
++    return next;
++}
++
++double crossplayWinUtility(int spread)
++{
++    return spread > 0 ? 1.0 : spread == 0 ? 0.5 : 0.0;
++}
++
++MoveList crossplayShortlist(const MoveList &all)
++{
++    MoveList candidates;
++    bool includedCount[8] = {};
++    int rank = 0;
++    for (const auto &move : all)
++    {
++        const size_t used = move.usedTiles().size();
++        const bool firstCount = used <= 7 && !includedCount[used];
++        if (rank++ < crossplayPolicyCandidates || firstCount || move.action == Move::Pass)
++            candidates.push_back(move);
++        if (used <= 7) includedCount[used] = true;
++    }
++    return candidates;
++}
++
++Move crossplayFinalMove(GamePosition &position, bool boundedScreen = false)
++{
++    if (position.finalTurnsRemaining() != 1 && position.finalTurnsRemaining() != 2)
++        throw invalid_argument("Crossplay empty-bag position is missing its final-turn state");
++    string key = crossplayInformationKey(position);
++    // A bounded inner policy estimate must never populate the exact cache.
++    key.push_back(boundedScreen ? 1 : 0);
++    // In a conserved empty-bag position this rack is already inferable. Include
++    // it explicitly so native callers with synthetic distributions stay safe.
++    for (const auto &player : position.players())
++        if (player.id() != position.currentPlayer().id()) appendLetters(key, player.rack().alphaTiles());
++    const auto cached = crossplayFinalCache.find(key);
++    if (cached != crossplayFinalCache.end()) return cached->second;
++
++    Move chosen;
++    if (position.finalTurnsRemaining() == 1 || boundedScreen)
++        chosen = position.staticBestMove(); // Exact on the last turn; inner screening otherwise.
++    else
++    {
++        const int actor = position.currentPlayer().id();
++        // Avoid recording/sorting every placement for the common easy cases.
++        const Move greedy = position.staticBestMove();
++        chosen = greedy;
++        const int optimistic = position.spread(actor) + greedy.score;
++        GamePosition greedyNext = crossplayAfterMove(position, greedy);
++        const int greedySpread = optimistic - greedyNext.staticBestMove().score;
++        double bestWin = crossplayWinUtility(greedySpread);
++        int bestSpread = greedySpread;
++        if (bestWin < 1 && optimistic >= 0)
++        {
++        const MoveList moves = crossplayAllMoves(position);
++        GamePosition opposing(position);
++        opposing.setCurrentPlayer(position.nextPlayer()->id());
++        const Move priorReply = opposing.staticBestMove();
++        for (const auto &move : moves)
++        {
++            if (move == greedy) continue;
++            // Passing is always available to the final player. Even that reply
++            // defeats these moves; the remaining score-sorted moves cannot win.
++            const int upperSpread = position.spread(actor) + move.score;
++            if (upperSpread < 0 || (upperSpread == 0 && bestWin >= 0.5)) break;
++            GamePosition next = crossplayAfterMove(position, move);
++            // A still-legal high reply is a lower bound on the final player's
++            // score. Test that bound before doing another full move generation.
++            bool priorFits = priorReply.action == Move::Place;
++            int row = priorReply.startrow, col = priorReply.startcol;
++            for (const auto tile : priorReply.tiles())
++            {
++                if (tile != QUACKLE_PLAYED_THRU_MARK && next.board().letter(row, col) != QUACKLE_NULL_MARK)
++                    priorFits = false;
++                row += !priorReply.horizontal; col += priorReply.horizontal;
++            }
++            // Do not reuse a word that the new play extends at either end.
++            const int beforeRow = priorReply.startrow - !priorReply.horizontal;
++            const int beforeCol = priorReply.startcol - priorReply.horizontal;
++            if ((beforeRow >= 0 && beforeCol >= 0 && next.board().letter(beforeRow, beforeCol) != QUACKLE_NULL_MARK) ||
++                (row < next.board().height() && col < next.board().width() && next.board().letter(row, col) != QUACKLE_NULL_MARK))
++                priorFits = false;
++            if (priorFits && next.validateMove(priorReply) == GamePosition::ValidMove)
++            {
++                const int boundedSpread = next.spread(actor) - next.calculateScore(priorReply);
++                if (crossplayWinUtility(boundedSpread) <= bestWin) continue;
++            }
++            const Move reply = next.staticBestMove();
++            const int spread = next.spread(actor) - reply.score;
++            const double win = crossplayWinUtility(spread);
++            if (win > bestWin || (win == bestWin && spread > bestSpread))
++            {
++                bestWin = win;
++                bestSpread = spread;
++                chosen = move;
++            }
++            // Any proved win is optimal for the win-utility objective. This
++            // does not claim the chosen winning move maximizes final margin.
++            if (bestWin == 1) break;
++        }
++        }
++    }
++    if (crossplayFinalCache.size() >= crossplayPolicyCacheLimit) crossplayFinalCache.erase(crossplayFinalCache.begin());
++    crossplayFinalCache.emplace(std::move(key), chosen);
++    return chosen;
++}
++
++unsigned int crossplayLocalSeed(const string &key)
++{
++    unsigned int seed = 2166136261u;
++    for (unsigned char ch : key) seed = (seed ^ ch) * 16777619u;
++    return seed ? seed : 1;
++}
++
++LetterString crossplayLocalDrawingOrder(const Bag &bag, unsigned int &state)
++{
++    // Chance uses its own PRNG. Policy evaluation must not consume the outer
++    // paired simulation's random stream, including on a cache hit.
++    vector<Letter> tiles(bag.tiles().begin(), bag.tiles().end());
++    sort(tiles.begin(), tiles.end());
++    for (size_t i = tiles.size(); i > 1; --i)
++    {
++        state ^= state << 13; state ^= state >> 17; state ^= state << 5;
++        swap(tiles[i - 1], tiles[state % i]);
++    }
++    LetterString result;
++    for (const auto tile : tiles) result.push_back(tile);
++    return result;
++}
++
++double crossplayBaseValue(GamePosition position, const Move &candidate, int actor, unsigned int seed)
++{
++    position = crossplayAfterMove(position, candidate);
++    for (int ply = 0; ply < crossplayBaseMoveLimit && !position.gameOver(); ++ply)
++    {
++        if (!position.bag().empty())
++            position.setDrawingOrder(crossplayLocalDrawingOrder(position.bag(), seed));
++        const Move move = position.bag().empty()
++            ? crossplayFinalMove(position, true) : position.staticBestMove();
++        position = crossplayAfterMove(position, move);
++    }
++    const int spread = position.spread(actor);
++    if (position.gameOver()) return crossplayWinUtility(spread);
++    // Exchanges and passes can prevent depletion. Bound that policy evaluation
++    // and use the existing win model; this is not an exact preempty solver.
++    const int tiles = position.bag().size() + QUACKLE_PARAMETERS->rackSize();
++    return position.currentPlayer().id() == actor
++        ? QUACKLE_STRATEGY_PARAMETERS->bogowin(spread, tiles, 0)
++        : 1.0 - QUACKLE_STRATEGY_PARAMETERS->bogowin(-spread, tiles, 0);
++}
++
++Move crossplayPreemptyMove(GamePosition &position)
++{
++    const string key = crossplayInformationKey(position);
++    const auto cached = crossplayPreemptyCache.find(key);
++    if (cached != crossplayPreemptyCache.end()) return cached->second;
++
++    MoveList all = crossplayAllMoves(position);
++    const bool canPlace = any_of(all.begin(), all.end(), [](const Move &move) { return move.action == Move::Place; });
++    if (canPlace)
++        all.erase(remove_if(all.begin(), all.end(), [](const Move &move) { return move.action != Move::Place; }), all.end());
++    // A future placement always reduces a nonempty bag. Do not let the bounded
++    // model invent pass/swap cycles while a legal placement can finish the game.
++    const MoveList candidates = crossplayShortlist(all);
++
++    const Bag unseenBag = position.unseenBag();
++    const auto &unseen = unseenBag.tiles();
++    // Enumerate ordered physical bag allocations; equal letter sequences are
++    // combined, preserving multiplicities. The actor does not know this bag.
++    map<string, int> allocations;
++    for (size_t i = 0; i < unseen.size(); ++i)
++    {
++        string allocation(1, static_cast<char>(unseen[i]));
++        if (position.bag().size() == 1) ++allocations[allocation];
++        else for (size_t j = 0; j < unseen.size(); ++j)
++            if (i != j) ++allocations[allocation + static_cast<char>(unseen[j])];
++    }
++    // Small pools are enumerated exactly. Larger pools use the same two
++    // deterministic weighted worlds for every candidate and every outer trial.
++    // The seed uses only actor information, never the actual sampled bag.
++    if (allocations.size() > crossplayPolicyWorlds)
++    {
++        int physicalCount = 0;
++        for (const auto &allocation : allocations) physicalCount += allocation.second;
++        map<string, int> sampled;
++        unsigned int state = crossplayLocalSeed(key);
++        for (int trial = 0; trial < crossplayPolicyWorlds; ++trial)
++        {
++            state ^= state << 13; state ^= state >> 17; state ^= state << 5;
++            int draw = state % physicalCount;
++            for (const auto &allocation : allocations)
++            {
++                draw -= allocation.second;
++                if (draw < 0) { ++sampled[allocation.first]; break; }
++            }
++        }
++        allocations = std::move(sampled);
++    }
++    const int actor = position.currentPlayer().id();
++    Move chosen = candidates.front();
++    double bestValue = -1;
++    for (const auto &candidate : candidates)
++    {
++        double weightedValue = 0;
++        int totalWeight = 0;
++        for (const auto &allocation : allocations) totalWeight += allocation.second;
++        int seenWeight = 0;
++        bool canImprove = true;
++        for (const auto &allocation : allocations)
++        {
++            Bag hidden(unseenBag);
++            LetterString bagLetters;
++            for (unsigned char tile : allocation.first) bagLetters.push_back(static_cast<Letter>(tile));
++            hidden.removeLetters(bagLetters);
++            LetterString hiddenLetters;
++            for (const auto tile : hidden.tiles()) hiddenLetters.push_back(tile);
++            GamePosition scenario(position);
++            for (const auto &player : position.players())
++                if (player.id() != actor) scenario.setPlayerRack(player.id(), Rack(hiddenLetters), false);
++            scenario.setBag(Bag(bagLetters));
++            scenario.setDrawingOrder(bagLetters);
++            const unsigned int seed = crossplayLocalSeed(key + allocation.first);
++            weightedValue += allocation.second * crossplayBaseValue(scenario, candidate, actor, seed);
++            seenWeight += allocation.second;
++            // Unvisited worlds can contribute at most one win each.
++            if (weightedValue + totalWeight - seenWeight <= bestValue * totalWeight + 1e-12)
++            {
++                canImprove = false;
++                break;
++            }
++        }
++        if (!canImprove) continue;
++        const double value = weightedValue / totalWeight;
++        if (value > bestValue + 1e-12)
++        {
++            bestValue = value;
++            chosen = candidate;
++        }
++        if (bestValue >= 1.0 - 1e-12) break;
++    }
++    if (crossplayPreemptyCache.size() >= crossplayPolicyCacheLimit) crossplayPreemptyCache.erase(crossplayPreemptyCache.begin());
++    crossplayPreemptyCache.emplace(key, chosen);
++    return chosen;
++}
++
++Move crossplayFutureMove(GamePosition &position)
++{
++    if (!QUACKLE_PARAMETERS->equalTurnsEndgame() || position.players().size() != 2 || position.bag().size() > 2)
++        return position.staticBestMove();
++    return position.bag().empty() ? crossplayFinalMove(position) : crossplayPreemptyMove(position);
++}
++}
++
++
++
++Move Simulator::crossplayFinalBestMove(const GamePosition &position)
++{
++    if (!QUACKLE_PARAMETERS->equalTurnsEndgame() || !position.bag().empty() || position.players().size() != 2)
++        throw invalid_argument("The exact Crossplay final solver requires two players and an empty bag");
++    GamePosition copy(position);
++    return crossplayFinalMove(copy);
++}
++
+ Simulator::Simulator()
+ 	: m_logfileIsOpen(false)
+ 	, m_hasHeader(false)
+@@ -426,6 +763,7 @@ void Simulator::simulate(int plies, int iterations)
  	SimmedMoveConstants constants;
  	constants.game = m_originalGame;
  	constants.partialOppoRack = m_partialOppoRack;
@@ -51,7 +407,7 @@ index 6271bcd..d4f4cf9 100644
  	constants.startPlayerId = m_originalGame.currentPosition().currentPlayer().id();
  	constants.playerCount = int(m_originalGame.currentPosition().players().size());
  	// level one's first move is the zeroth ply (the candidate)
-@@ -434,6 +435,8 @@ void Simulator::simulate(int plies, int iterations)
+@@ -434,6 +772,8 @@ void Simulator::simulate(int plies, int iterations)
  	constants.levelCount = (int)((plies - constants.decimalTurns) / constants.playerCount);
  	constants.ignoreOppos = m_ignoreOppos;
  	constants.isLogging = isLogging();
@@ -60,7 +416,7 @@ index 6271bcd..d4f4cf9 100644
  
  	if (isLogging() && !m_hasHeader)
  		writeLogHeader();
-@@ -668,10 +671,68 @@ void Simulator::simulateOnePosition(SimmedMoveMessage &message, const SimmedMove
+@@ -668,10 +1008,68 @@ void Simulator::simulateOnePosition(SimmedMoveMessage &message, const SimmedMove
  {
  	Game game = constants.game;
  
@@ -133,7 +489,7 @@ index 6271bcd..d4f4cf9 100644
  
  	double residual = 0;
  
-@@ -703,7 +764,17 @@ void Simulator::simulateOnePosition(SimmedMoveMessage &message, const SimmedMove
+@@ -703,12 +1101,22 @@ void Simulator::simulateOnePosition(SimmedMoveMessage &message, const SimmedMove
  
  			Move move = Move::createNonmove();
  
@@ -152,8 +508,14 @@ index 6271bcd..d4f4cf9 100644
  				move = message.move;
  			else if (constants.ignoreOppos && playerId != constants.startPlayerId)
  				move = Move::createPassMove();
+ 			else
+-				move = game.currentPosition().staticBestMove();
++				move = crossplayFutureMove(game.currentPosition());
+ 
+ 			int deadwoodScore = 0;
+ 			if (!QUACKLE_PARAMETERS->noEndgamePenalty() && game.currentPosition().doesMoveEndGame(move))
 diff --git i/sim.h w/sim.h
-index b236a24..0ae3865 100644
+index b236a24..82e1b62 100644
 --- i/sim.h
 +++ w/sim.h
 @@ -228,12 +228,19 @@ class SimmedMoveConstants
@@ -190,7 +552,17 @@ index b236a24..0ae3865 100644
  	void makeSureConsideredMovesAreIncluded();
  	void moveConsideredMovesToBeginning(MoveList &moves) const;
  
-@@ -441,6 +455,9 @@ protected:
+@@ -367,6 +381,9 @@ public:
+ 	// Set this to an empty rack if no tiles are known, so
+ 	// that all tiles are chosen randomly each iteration.
+ 	void setPartialOppoRack(const Rack &rack);
++
++	// Exact win-utility choice for the one/two-move Crossplay final phase.
++	static Move crossplayFinalBestMove(const GamePosition &position);
+ 	const Rack &partialOppoRack() const;
+ 
+ 	// Set oppo's racks to something random, including
+@@ -441,6 +458,9 @@ protected:
  
  	int m_iterations;
  	bool m_ignoreOppos;
@@ -213,7 +585,7 @@ index c87b8ad..075eeee 100755
      --bind \
      --preload-file "$DATA_DIR/alphabets/crossplay.quackle_alphabet@/data/alphabets/crossplay.quackle_alphabet" \
 diff --git i/wasm/quackle_wasm.cpp w/wasm/quackle_wasm.cpp
-index 6de2970..ec9d300 100644
+index 6de2970..b1d735a 100644
 --- i/wasm/quackle_wasm.cpp
 +++ w/wasm/quackle_wasm.cpp
 @@ -14,6 +14,8 @@
@@ -225,7 +597,37 @@ index 6de2970..ec9d300 100644
  
  #include "alphabetparameters.h"
  #include "boardparameters.h"
-@@ -549,6 +551,390 @@ emscripten::val simulateKibitz(std::string gridJson, std::string rackStr, int pl
+@@ -396,8 +398,20 @@ bool prepareGame(std::string gridJson, std::string rackStr, int playerScore, int
+ 		}
+ 	}
+ 
+-    // Generate moves
++    // Generate moves. Preserve the requested candidate limit, but never miss
++    // the exact empty-bag winner merely because its score ranks below it.
+     pos.kibitz(numMoves);
++    if (requireObservedState && requestedBagCount == 0 && !pos.moves().empty())
++    {
++        Quackle::Move exact = Quackle::Simulator::crossplayFinalBestMove(pos);
++        pos.ensureMovePrettiness(exact);
++        Quackle::MoveList candidates = pos.moves();
++        if (!candidates.contains(exact))
++        {
++            candidates.back() = exact;
++            pos.setMoves(candidates);
++        }
++    }
+ 
+     if (pos.moves().empty())
+     {
+@@ -537,6 +551,7 @@ emscripten::val simulateKibitz(std::string gridJson, std::string rackStr, int pl
+         result.set("candidateCount", candidateCount);
+         result.set("totalPlayaheads", completed * candidateCount);
+ 		result.set("winModel", std::string(playToEnd ? "terminal" : "bogowin"));
++        if (playToEnd) result.set("endgamePolicy", std::string("crossplay-endgame-v1"));
+ 		result.set("error", playToEnd && !allTerminal
+ 			? std::string("A sampled endgame did not reach the official Crossplay finish")
+ 			: std::string(""));
+@@ -549,6 +564,392 @@ emscripten::val simulateKibitz(std::string gridJson, std::string rackStr, int pl
      return result;
  }
  
@@ -417,6 +819,7 @@ index 6de2970..ec9d300 100644
 +        result.set("playToEnd", playToEnd);
 +        result.set("simulationMode", std::string(playToEnd ? "play-to-end" : "2-ply"));
 +        result.set("winModel", std::string(playToEnd ? "terminal" : "bogowin"));
++        if (playToEnd) result.set("endgamePolicy", std::string("crossplay-endgame-v1"));
 +        result.set("error", playToEnd && !allTerminal
 +            ? std::string("A sampled endgame did not reach the official Crossplay finish") : std::string(""));
 +    }
@@ -508,6 +911,7 @@ index 6de2970..ec9d300 100644
 +        result.set("playToEnd", playToEnd);
 +        result.set("simulationMode", std::string(playToEnd ? "play-to-end" : "2-ply"));
 +        result.set("winModel", std::string(playToEnd ? "terminal" : "bogowin"));
++        if (playToEnd) result.set("endgamePolicy", std::string("crossplay-endgame-v1"));
 +        result.set("simulated", true);
 +        result.set("error", std::string(""));
 +    }
@@ -616,7 +1020,7 @@ index 6de2970..ec9d300 100644
  bool isWordValid(std::string word)
  {
      if (!s_dm || !s_dm->isGood())
-@@ -587,6 +973,9 @@ EMSCRIPTEN_BINDINGS(quackle)
+@@ -587,6 +988,9 @@ EMSCRIPTEN_BINDINGS(quackle)
      emscripten::function("initEngine", &initEngine);
      emscripten::function("kibitz", &kibitz);
      emscripten::function("simulateKibitz", &simulateKibitz);

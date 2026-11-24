@@ -85,3 +85,12 @@ test('a custom swap can use the last bag tile without overdrawing', () => {
   assert.equal(context.customMoveKey(payload).move.tiles, '?');
   assert.throws(()=>context.customMoveKey({...payload,customMove:{action:'exchange',tiles:'AA'}}),/bag/);
 });
+
+test('sampled position requests reject stale low-bag engine policies', () => {
+  const payload = {bagCount:2, finalTurnsRemaining:0};
+  const legacy = {simulated:true};
+  assert.throws(() => context.simulate({simulateKibitz:() => legacy}, payload), /endgame policy/);
+  const current = {...legacy, endgamePolicy:'crossplay-endgame-v1'};
+  assert.equal(context.simulate({simulateKibitz:() => current}, payload), current);
+  assert.equal(context.simulate({simulateKibitz:() => legacy}, {...payload, bagCount:22}), legacy);
+});

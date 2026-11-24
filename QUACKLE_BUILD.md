@@ -17,7 +17,7 @@ Artifact SHA-256 values:
 
 ```text
 quackle.js    d3bd3b6997cd2ace135a05f3f21c2c764eaef5c988dd015945356b85689f54fe
-quackle.wasm  cea5b5941079872d27ab9adc5eaac2e22cd5b38665319dc4f928f706664549aa
+quackle.wasm  dc47ca672a7cefdc0434e25207f54e23e2d24e5c09a1f7aa2b50a724b19e92cc
 quackle.data  0f7b4e8cdcf4cb743c5423d6befe23ea77691c588f7c7dfb603bf475c1fbf8f3
 ```
 
@@ -55,8 +55,8 @@ and after estimates. Results include `samplingVersion: "rack-draw-v1"`, the seed
 results. These two sampled estimates can include sampling noise.
 
 The patch enables C++ exception handling so invalid moves return an error without
-stopping the worker. Existing `simulateKibitz` callers retain their prior sample
-behavior. Run `python3 -m unittest -v test_review_simulation` for real browser/WASM
+stopping the worker. Existing `simulateKibitz` callers retain the same sample
+counts and result contract. Run `python3 -m unittest -v test_review_simulation` for real browser/WASM
 checks of candidate inclusion, determinism, blanks, exchanges, and final turns.
 Run `python3 -m unittest -v test_rack_draw_simulation` for real WASM checks of
 draw conditioning, retained tiles, partial bags, and exact zero-draw deltas.
@@ -72,7 +72,43 @@ current bag. Scrabble parameters retain their seven-tile minimum.
 The patch includes these changes in `gameparameters.cpp`, `game.cpp`, and
 `generator.cpp`. Recorded swap failures now distinguish unavailable rack tiles
 from insufficient bag tiles instead of reporting a dictionary error. The data file remains byte-identical to the prior build. The loader and WASM
-include the opening-deal API below.
+also include the opening-deal API below.
+
+## Endgame policy
+
+Low-bag results include `endgamePolicy: "crossplay-endgame-v1"`. The existing
+64/277 outer samples and terminal-result metadata remain in use. A100% result
+means every sampled continuation won; it is not a proof under hidden tiles.
+
+When the bag is empty, future moves use an exact Crossplay win-utility search:
+all legal first actions, including pass, followed by the opponent's maximum
+score on the last turn. A proved winning action can stop the search. The solver first checks the static best move and the bound from an opponent
+pass before it records all legal actions. It does not promise the largest
+winning margin. Empty-bag root candidate lists
+include that winning action even when it falls outside the static shortlist.
+The existing two-final-turn countdown and no-rack-penalty rule are unchanged.
+
+With one or two tiles in the bag, future decisions compare the top four static
+placements and the best static placement for each physical tile count. If a
+legal placement exists, future policy decisions use placements so the bag count
+falls. Recorded root passes and exchanges remain legal, and the exact empty-bag
+search still includes pass. Each decision
+uses at most two deterministic weighted hidden-tile worlds, drawn from the
+acting player's unseen pool. One action is selected across these worlds. The
+policy key uses the board, physical blank flags, the actor's rack, scores, bag
+count, and final-turn state. It excludes the sampled true opponent rack and bag.
+
+This preempty policy is bounded. Candidate evaluation uses a static continuation
+for at most12 moves. Its internal two-turn screening uses one static first
+move and an exact maximum-score last reply; unfinished continuations
+use Bogowin. Actual empty-bag decisions always use the full exact search. Larger
+bags retain the static continuation until they reach this policy. Local chance
+sampling does not consume the outer paired random stream. Separate, bounded
+thread-local caches prevent repeated decisions and keep estimated inner choices
+separate from exact final-phase choices.
+
+Run `python3 -m unittest -v test_endgame_simulation` for the synthetic winning-block,
+root shortlist, blank identity, and paired-sample cache regressions.
 
 ## Opening deal
 
