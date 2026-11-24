@@ -140,10 +140,10 @@ class GameOverviewTest(unittest.TestCase):
         expect(before.locator('.win-history-grade')).to_have_text('?')
         expect(after.locator('.win-history-grade, .win-history-sweep')).to_have_count(0)
         expect(after).to_have_attribute('aria-label', re.compile('After rack draw'))
-        self.assertGreater(float(chart.locator('.win-history-hit[data-hit-turn="0"][data-hit-phase="after-draw"]').get_attribute('x')),
-                           float(chart.locator('.win-history-hit[data-hit-turn="0"][data-hit-phase="before-draw"]').get_attribute('x')))
-        self.assertGreater(float(chart.locator('.win-history-hit[data-hit-turn="' + after.get_attribute('data-turn-index') + '"][data-hit-phase="after-draw"]').get_attribute('y')),
-                           float(chart.locator('.win-history-hit[data-hit-turn="0"][data-hit-phase="before-draw"]').get_attribute('y')))
+        # Move/draw selection uses stable controls, not hidden vertical bands.
+        expect(chart.locator('.win-history-hit[data-hit-turn="0"]')).to_have_count(1)
+        expect(chart.get_by_role('button', name='Inspect recorded move', exact=True)).to_be_visible()
+        expect(chart.get_by_role('button', name='Inspect rack draw', exact=True)).to_be_visible()
         after.focus()
         inspector = chart.locator('.win-history-inspector')
         expect(inspector).to_have_attribute('data-inspected-phase', 'after-draw')
@@ -173,7 +173,7 @@ class GameOverviewTest(unittest.TestCase):
         before = self.page.locator('.win-history-point[data-turn-index="0"][data-phase="before-draw"]')
         after = self.page.locator('.win-history-point[data-turn-index="1"][data-phase="after-draw"]')
         before.focus()
-        chart.locator('.win-history-hit[data-hit-turn="' + after.get_attribute('data-turn-index') + '"][data-hit-phase="after-draw"]').hover()
+        after.locator('.win-history-marker').hover()
         for refresh in ['refreshMoveQualityPanel()', 'refreshTrendPanel()']:
             state = self.page.evaluate("""refresh => {
               eval(refresh);
@@ -230,12 +230,12 @@ class GameOverviewTest(unittest.TestCase):
         before = chart.locator('[data-turn-index="0"][data-phase="before-draw"]')
         after = chart.locator('[data-turn-index="1"][data-phase="after-draw"]')
         before.focus()
-        chart.locator('.win-history-hit[data-hit-turn="' + after.get_attribute('data-turn-index') + '"][data-hit-phase="after-draw"]').hover()
+        after.locator('.win-history-marker').hover()
         self.assertLessEqual(summary.bounding_box()['height'], 640)
-        chart.locator('.win-history-hit[data-hit-turn="1"][data-hit-phase="before-draw"]').hover()
+        chart.locator('.win-history-point[data-turn-index="1"][data-phase="before-draw"] .win-history-marker').hover()
         self.assertGreater(chart.locator('.win-history-grade:visible').count(), 1)
         expect(chart.locator('[data-turn-index="1"][data-phase="before-draw"] .win-history-grade')).to_be_visible()
-        chart.locator('.win-history-hit[data-hit-turn="' + after.get_attribute('data-turn-index') + '"][data-hit-phase="after-draw"]').hover()
+        after.locator('.win-history-marker').hover()
         self.page.evaluate("""() => {
           moveQualityResults.points[1].bestMove = {action: 'place', position: '8D', tiles: 'RETAINS'};
           refreshGameOverview();
@@ -248,7 +248,7 @@ class GameOverviewTest(unittest.TestCase):
         expect(missed.locator('polygon')).to_be_visible()
         expect(missed.locator('line')).to_be_visible()
         before.focus()
-        chart.locator('.win-history-hit[data-hit-turn="' + after.get_attribute('data-turn-index') + '"][data-hit-phase="after-draw"]').hover()
+        after.locator('.win-history-marker').hover()
         for width in [390, 1280, 1440]:
             self.page.set_viewport_size({'width': width, 'height': 900})
             self.wait_for_timeline_layout()
@@ -324,27 +324,28 @@ class GameOverviewTest(unittest.TestCase):
                 expect(selected).to_be_focused()
                 self.page.get_by_role('button', name='Game summary', exact=True).click()
 
-    def test_draw_hit_bands_and_inspector_button_make_draws_easy_to_select(self):
+    def test_chart_controls_make_each_phase_easy_to_select(self):
         self.open_summary()
         self.set_draw_points()
         self.wait_for_timeline_layout()
         chart = self.page.locator('.win-history')
-        before = chart.locator('[data-turn-index="0"][data-phase="before-draw"]')
-        after = chart.locator('[data-turn-index="0"][data-phase="after-draw"]')
-        before.focus()
+        turn = chart.get_by_role('combobox', name='Chart turn', exact=True)
+        turn.select_option('0')
+        for name, phase in [('Inspect rack draw', 'after-draw'),
+                            ('Inspect recorded move', 'before-draw')]:
+            button = chart.get_by_role('button', name=name, exact=True)
+            box = button.bounding_box()
+            self.assertGreaterEqual(box['width'], 44)
+            self.assertGreaterEqual(box['height'], 44)
+            button.click()
+            expect(chart.locator('.win-history-inspector')).to_have_attribute('data-inspected-phase', phase)
+            expect(button).to_have_attribute('aria-pressed', 'true')
         chart.get_by_role('button', name='Inspect rack draw', exact=True).click()
+        target = chart.locator('.win-history-hit[data-hit-turn="0"]')
+        box = target.bounding_box()
+        target.click(position={'x': box['width'] / 2, 'y': 2})
+        expect(self.page.get_by_role('combobox', name='Select game turn', exact=True)).to_have_value('0')
         expect(chart.locator('.win-history-inspector')).to_have_attribute('data-inspected-phase', 'after-draw')
-        expect(chart.locator('.win-history-inspector')).to_contain_text('+12.0')
-        chart.get_by_role('button', name='Inspect recorded move', exact=True).click()
-        expect(chart.locator('.win-history-inspector')).to_have_attribute('data-inspected-phase', 'before-draw')
-        move_hit = chart.locator('.win-history-hit[data-hit-turn="0"][data-hit-phase="before-draw"]').bounding_box()
-        draw_hit = chart.locator('.win-history-hit[data-hit-turn="' + after.get_attribute('data-turn-index') + '"][data-hit-phase="after-draw"]').bounding_box()
-        self.assertGreaterEqual(draw_hit['width'], 24)
-        self.assertGreaterEqual(draw_hit['height'], 24)
-        self.assertGreaterEqual(draw_hit['y'], move_hit['y'] + move_hit['height'])
-        chart.locator('.win-history-hit[data-hit-turn="' + after.get_attribute('data-turn-index') + '"][data-hit-phase="after-draw"]').click(position={'x': draw_hit['width'] / 2, 'y': draw_hit['height'] - 2})
-        expect(self.page.get_by_role('combobox', name='Select game turn')).to_have_value('0')
-        expect(self.page.locator('.win-history-inspector')).to_have_attribute('data-inspected-phase', 'after-draw')
 
     def test_phase_button_keeps_keyboard_focus_during_refresh(self):
         self.open_summary()
