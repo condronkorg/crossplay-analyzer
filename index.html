@@ -278,6 +278,16 @@
   .win-history-opening:focus .win-history-marker { stroke-width: 4; }
   .opening-rack-letters { margin: 4px 0; font: 700 15px monospace; letter-spacing: 2px; overflow-wrap: anywhere; }
   .opening-rack-wpa { margin: 4px 0 12px; font-size: 12px; }
+  @media (min-width: 1200px) {
+    .opening-draw-inspector { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 4px 14px; }
+    .opening-draw-inspector > .eyebrow, .opening-draw-inspector > .win-history-comparison,
+    .opening-draw-inspector > details { grid-column: 1 / -1; }
+    .opening-draw-inspector > .eyebrow { grid-column: 1; align-self: center; }
+    .opening-draw-inspector > h4 { display: none; }
+    .opening-draw-inspector > h4 + p { grid-column: 2; margin: 0; text-align: right; }
+    .opening-draw-inspector .opening-rack-wpa { margin: 2px 0 0; }
+    .opening-draw-inspector > .win-history-comparison { grid-row: auto; margin-top: 2px; }
+  }
   .win-history-point[data-phase="after-draw"] .win-history-marker,
   .win-history-draw-mark { opacity: .45; }
   .win-history-point[data-phase="after-draw"]:hover .win-history-marker,
@@ -2695,7 +2705,7 @@ function makeRackDrawTiles(turn) {
 }
 
 function makeOpeningDrawInspector(opening, review) {
-  const inspector = makeElement('aside', 'win-history-inspector win-history-detail');
+  const inspector = makeElement('aside', 'win-history-inspector win-history-detail opening-draw-inspector');
   inspector.setAttribute('aria-label', 'Initial rack draw details');
   inspector.dataset.inspectedTurn = 'opening';
   inspector.dataset.inspectedPhase = 'opening';
@@ -2707,7 +2717,8 @@ function makeOpeningDrawInspector(opening, review) {
     : opening.unavailable ? 'Estimate unavailable' : opening.retryable ? 'Estimate needs a retry' : 'Waiting for estimate';
   inspector.append(makeElement('p', 'eyebrow', 'Initial rack draw · Before Turn 1'),
     makeElement('h4', '', 'Both initial racks'),
-    makeElement('p', known && opening.provisional ? 'win-history-inspector-early' : 'win-history-inspector-note', state));
+    makeElement('p', known && opening.provisional ? 'win-history-inspector-early' : 'win-history-inspector-note',
+      state + (known ? ' · ' + opening.samples + ' samples' : '')));
   for (const [index, rack] of [opening.firstRack, opening.secondRack].entries()) {
     const row = makeElement('div', 'opening-rack');
     row.append(makeElement('p', 'draw-letters-label', names[index] + (index === 0 ? ' · Moves first' : '')),
@@ -2725,8 +2736,6 @@ function makeOpeningDrawInspector(opening, review) {
     ? ((firstMine ? opening.afterWin : 1 - opening.afterWin) * 100).toFixed(1) + '%' : '—'));
   comparison.append(row);
   if (opening.reason) comparison.append(makeElement('p', 'win-history-inspector-note', opening.reason));
-  if (known) comparison.append(makeElement('p', 'win-history-inspector-note',
-    opening.samples + ' samples. ' + (opening.provisional ? 'Early estimates can change.' : 'Full estimate.')));
   inspector.append(comparison);
   const method = makeReviewDetails('opening-method', 'opening-method', 'Opening estimate method');
   method.append(makeElement('p', 'win-history-inspector-note', 'Fixed static-best move policy, conditioned on both initial racks. The policy does not see the other rack. Opening WPA averages both rack reveal orders and removes normal first-move advantage from draw luck. These values do not exactly divide the whole chart into move and draw effects.'));

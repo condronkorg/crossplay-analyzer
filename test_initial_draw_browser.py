@@ -149,5 +149,16 @@ class InitialDrawBrowserTest(unittest.TestCase):
         expect(self.page.locator('.win-history-inspector')).to_have_attribute('data-inspected-phase', 'before-draw')
 
 
+    def test_selected_opening_summary_fits_desktop_height(self):
+        self.page.set_viewport_size({'width':1366,'height':768})
+        self.open_summary()
+        self.set_draw_points()
+        self.set_opening()
+        self.page.locator('.win-history-opening').click()
+        self.page.evaluate('scrollTo(0,0)')
+        bounds=self.page.locator('.game-overview').bounding_box()
+        self.assertLessEqual(bounds['y']+bounds['height'],768)
+
+
 if __name__ == '__main__':
     unittest.main()
