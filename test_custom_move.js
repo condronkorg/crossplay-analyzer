@@ -7,6 +7,49 @@ vm.runInContext(fs.readFileSync('quackle-worker.js', 'utf8'), context);
 const position = customMove => ({ gridJson: JSON.stringify(Array(15).fill('.'.repeat(15))),
   rack: 'AAEIRT?', bagCount: 86, finalTurnsRemaining: 0, customMove });
 
+function reviewResult(moves, samples, bagCount, finalTurnsRemaining, seed, selected = moves[0]) {
+  const simulated = moves.map(move => ({ ...move, staticEquity: move.equity, samples }));
+  return { moves: simulated, selected: simulated[moves.indexOf(selected)],
+    best: simulated.reduce((top, move) => move.win > top.win ? move : top),
+    staticMoves: moves, bestStaticEquity: Math.max(...moves.map(move => move.equity)),
+    simulated: true, seed, samplingVersion: 'paired-review-v1',
+    iterationsRequested: samples, iterationsCompleted: samples,
+    bagCount, finalTurnsRemaining, playToEnd: false,
+    simulationMode: '2-ply', plies: 2, winModel: 'bogowin',
+    candidateCount: moves.length, totalPlayaheads: samples * moves.length };
+}
+
+test('custom placements force the selected move into a bounded comparison at any static rank', () => {
+  for (const rank of [1, 187, 4755]) {
+    const selected = { action: 'place', position: '8G', tiles: 'TEA', equity: 10, win: .70 };
+    const alternative = { action: 'place', position: '8D', tiles: 'QUARTES', equity: 70, win: .91 };
+    const moves = Array(4755).fill(alternative);
+    moves[rank - 1] = selected;
+    let calls = 0;
+    const module = {
+      kibitz: () => ({ moves }),
+      simulateKibitz: () => { throw new Error('Must not simulate every higher-ranked move'); },
+      simulateReviewMove: (_grid, _rack, _player, _opponent, count, samples, bag, finalTurns, played, seed) => {
+        calls++;
+        assert.equal(count, 15);
+        assert.equal(samples, 277);
+        assert.deepEqual(JSON.parse(JSON.stringify(played)), { action: 'place', position: '8G', tiles: 'TEA' });
+        return reviewResult([alternative, selected], samples, bag, finalTurns, seed, selected);
+      },
+    };
+    const payload = { ...position({ action: 'place', word: 'TEA', square: 'G8', direction: 'across' }),
+      rack: 'AEQRSTU', playerScore: 100, opponentScore: 52, iterations: 277, numMoves: 4755 };
+    const result = context.evaluateCustomMove(module, payload, true);
+    assert.equal(calls, 1);
+    assert.equal(result.staticRank, rank);
+    assert.equal(result.legalMoveCount, 4755);
+    assert.equal(result.selected.tiles, 'TEA');
+    assert.equal(result.selected.samples, 277);
+    assert.equal(result.best.tiles, 'QUARTES');
+    assert.ok(result.candidateCount <= 16);
+  }
+});
+
 test('custom swaps match physical repeated tiles and blanks independently of order', () => {
   for (const tiles of ['AA?', '?AA']) {
     const result = context.customMoveKey(position({ action: 'exchange', tiles }));
@@ -40,13 +83,8 @@ test('simulated custom placements compare with highest WP while static compares 
   ];
   const module = {
     kibitz: () => ({ moves }),
-    simulateKibitz: (_grid, _rack, _player, _opponent, _count, samples, bagCount, finalTurnsRemaining) => ({
-      moves: moves.map(move => ({ ...move, samples })), simulated: true,
-      iterationsRequested: samples, iterationsCompleted: samples,
-      bagCount, finalTurnsRemaining, playToEnd: false,
-      simulationMode: '2-ply', plies: 2, winModel: 'bogowin',
-      candidateCount: moves.length, totalPlayaheads: samples * moves.length,
-    }),
+    simulateReviewMove: (_grid, _rack, _player, _opponent, _count, samples, bagCount, finalTurnsRemaining, _played, seed) =>
+      reviewResult(moves, samples, bagCount, finalTurnsRemaining, seed),
   };
   const payload = { ...position({ action: 'place', word: 'TEA', square: 'G8', direction: 'across' }),
     rack: 'AEQRSTU', playerScore: 100, opponentScore: 52, iterations: 10 };
