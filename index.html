@@ -1063,10 +1063,18 @@ function drawPoint(result) {
     rackAfter: result.rackAfter, samples: result.iterationsCompleted,
     provisional: result.iterationsCompleted !== SIMULATION_ITERATIONS};
 }
+function savedFailureMatches(failure, key, preview) {
+  return failure?.analysisKey === key || (!failure?.analysisKey && Boolean(preview));
+}
 function restoreDrawPoint(cache, turn, point) {
   const restored = {...point};
   delete restored.draw;
   if (!Number.isFinite(point.playedWin)) return restored;
+  if (!cache.get(turn, 'draw') && point.draw?.retryable &&
+      savedFailureMatches(point.draw, cache.key(turn, 'draw'), cache.get(turn, 'draw-preview'))) {
+    restored.draw = {...point.draw};
+    return restored;
+  }
   try {
     const draw = CrossplayReview.rackDraw(turn);
     const result = cache.get(turn, 'draw') || cache.get(turn, 'draw-preview');
@@ -1119,9 +1127,16 @@ function makeReviewContext(review, owner, shared = false) {
     const key = CrossplayOpening.key(openingInput, iterations), result = stored.turn_analyses?.[key];
     if (CrossplayOpening.validResult(result, openingInput, iterations)) cache.results[key] = result;
   }
-  const opening = cachedOpeningPoint(openingInput, cache);
-  const openingState = openingInput.unavailable ? 'unavailable' : opening && !opening.provisional ? 'done' :
+  let opening = cachedOpeningPoint(openingInput, cache);
+  let openingState = openingInput.unavailable ? 'unavailable' : opening && !opening.provisional ? 'done' :
     opening ? 'pending' : 'pending-preview';
+  const openingFailure = stored.move_quality?.opening;
+  if (!openingInput.unavailable && (!opening || opening.provisional) && openingFailure?.retryable &&
+      savedFailureMatches(openingFailure, CrossplayOpening.key(openingInput, SIMULATION_ITERATIONS),
+        cache.results[CrossplayOpening.key(openingInput, PREVIEW_ITERATIONS)])) {
+    opening = {...openingFailure};
+    openingState = 'error';
+  }
   cache.owner = owner;
   cache.shared = shared;
   const savedQuality = stored.move_quality;
@@ -1145,6 +1160,8 @@ function makeReviewContext(review, owner, shared = false) {
       // A permanent missing-data result has no probability to invalidate.
       if (point.category === 'unrated' && !point.retryable &&
           !Number.isFinite(point.playedWin) && !Number.isFinite(point.bestWin)) return true;
+      if (point.retryable && !cache.get(turn, 'review') &&
+          savedFailureMatches(point, cache.key(turn, 'review'), cache.get(turn, 'preview'))) return true;
       const result = cache.get(turn, 'review');
       return point.endgamePolicy === 'crossplay-endgame-v1' &&
         result?.endgamePolicy === point.endgamePolicy &&
@@ -1158,13 +1175,51 @@ function makeReviewContext(review, owner, shared = false) {
   } else if (opening && !opening.unavailable) quality = {
     state: 'running', evaluation: MOVE_QUALITY_EVALUATION, points: [], opening
   };
-  const trend = quality ? deriveWinTrend({ review, quality }, quality.state === 'done') : null;
-  const complete = quality?.state === 'done' && trend?.state === 'done' && quality.points.length === review.turns.length &&
-    new Set(quality.points.map(point => point.turnIndex)).size === review.turns.length && !quality.points.some(point => point.retryable) && quality.points.every(point => point.category === 'unrated' ||
-      (cache.get(review.turns[point.turnIndex], 'review')?.selected.win === point.playedWin &&
-        drawWorkComplete({review, cache}, point.turnIndex)));
-  return { review, cache, owner, shared, quality, trend, openingInput, openingState,
-    states: review.turns.map(() => complete ? 'done' : 'pending-preview') };
+  const restored = new Map((quality?.points || []).map(point => [point.turnIndex, point]));
+  let rebuilt = false;
+  for (const [index, turn] of review.turns.entries()) {
+    const result = cache.get(turn, 'review');
+    let point = restored.get(index);
+    if (result && (!point || point.provisional || point.retryable ||
+        point.playedWin !== result.selected.win || point.bestWin !== result.best.win)) {
+      const drawFailure = point?.draw;
+      point = qualityPointFromResult(index, turn, result);
+      if (drawFailure?.retryable) point.draw = drawFailure;
+      point = restoreDrawPoint(cache, turn, point);
+      restored.set(index, point);
+      rebuilt = true;
+    } else if (point?.retryable &&
+        !savedFailureMatches(point, cache.key(turn, 'review'), cache.get(turn, 'preview'))) {
+      restored.delete(index);
+      rebuilt = true;
+    }
+  }
+  if (restored.size || quality) {
+    quality = {...quality, evaluation: MOVE_QUALITY_EVALUATION,
+      points: [...restored.values()].sort((a, b) => a.turnIndex - b.turnIndex)};
+    quality.current = quality.points.length;
+    if (opening) quality.opening = opening;
+  }
+  const states = review.turns.map((turn, index) => {
+    const point = restored.get(index);
+    if (point?.retryable || point?.draw?.retryable) return 'error';
+    if (point?.category === 'unrated' && !point.provisional) return 'done';
+    const result = cache.get(turn, 'review');
+    return point && !point.provisional && result?.selected.win === point.playedWin &&
+      result.best.win === point.bestWin && drawWorkComplete({review, cache}, index) ? 'done' : 'pending-preview';
+  });
+  if (quality) quality.state = states.some(state => state === 'pending-preview') ||
+    ['pending', 'pending-preview'].includes(openingState) ? 'running' : 'done';
+  const trend = quality ? deriveWinTrend({review, quality}, quality.state === 'done') : null;
+  const context = {review, cache, owner, shared, quality, trend, openingInput, openingState, states,
+    openingError: openingState === 'error' ? opening.reason : null};
+  // Raw results may have reached the database before the derived summary.
+  // Repair that summary without starting the engine or rewriting valid saves.
+  if (rebuilt && quality?.points.length === review.turns.length &&
+      states.every(state => state === 'done') && !['pending', 'pending-preview'].includes(openingState)) {
+    queueMicrotask(() => finishReviewAnalysis(context).catch(() => {}));
+  }
+  return context;
 }
 function getReviewQueue() {
   if (reviewQueue) return reviewQueue;
@@ -1347,7 +1402,7 @@ async function loadAnalysisCatalog(queue) {
   }
   updateBackgroundStatus();
 }
-async function openGame(gameId, { shareToken = null } = {}) {
+async function openGame(gameId, { shareToken = null, preloadedReview = null } = {}) {
   rememberReviewDetails();
   customMoveController?.dispose();
   customMoveController = null;
@@ -1374,9 +1429,12 @@ async function openGame(gameId, { shareToken = null } = {}) {
     const queue = getReviewQueue();
     let context;
     if (viewingSharedGame) {
-      const review = await api('shared/' + encodeURIComponent(shareToken), { publicRequest: true });
+      const review = preloadedReview || await api('shared/' + encodeURIComponent(shareToken), { publicRequest: true });
       context = makeReviewContext(review, analysisOwner(), true);
       queue.contexts.set(review.id, context);
+    } else if (preloadedReview) {
+      context = makeReviewContext(preloadedReview, analysisOwner());
+      queue.contexts.set(preloadedReview.id, context);
     } else context = await queue.get(gameId);
     if (requestToken !== reviewRequestToken || queue.closed) return;
     currentReview = context.review;
@@ -1404,7 +1462,10 @@ async function openGame(gameId, { shareToken = null } = {}) {
 function recordEngineResult(review, cache, key, result) {
   if (cache.shared || cache.owner !== analysisOwner()) return;
   cache.unsaved = { ...cache.unsaved, [key]: result };
-  if (!cache.saveTimer) cache.saveTimer = setTimeout(() => flushAnalysisSave(review, cache), ANALYSIS_SAVE_DELAY);
+  if (result.simulated === true && result.iterationsCompleted === SIMULATION_ITERATIONS) {
+    // Full simulations are expensive. Start their save before displaying them.
+    void flushAnalysisSave(review, cache);
+  } else if (!cache.saveTimer) cache.saveTimer = setTimeout(() => flushAnalysisSave(review, cache), ANALYSIS_SAVE_DELAY);
 }
 function markAnalysisComplete(field, value, cache = positionCache) {
   if (cache.shared || cache.owner !== analysisOwner()) return;
@@ -3428,19 +3489,7 @@ async function analyzeReviewTurn(context, index, phase = 'review', options = {})
       if (fullPointReady()) return { complete: true };
       // A full result can arrive while a visible-turn preview is still running.
       const result = cache.get(turn, 'review') || requested;
-      const loss = Math.max(0, result.best.win - result.selected.win) * 100;
-      const staticLoss = Math.max(0, result.bestStaticEquity - result.selected.staticEquity);
-      point = {
-        turnIndex: index, turn: index + 1, mine: Boolean(turn.mine), action: turn.action,
-        evaluation: MOVE_QUALITY_EVALUATION, category: qualityBand(loss), loss,
-        playedWin: result.selected.win, bestWin: result.best.win, samples: result.iterationsCompleted,
-        provisional: result.iterationsCompleted !== SIMULATION_ITERATIONS,
-        equityLoss: result.selected.action === 'place' ? staticLoss : null,
-        playedEquity: result.selected.staticEquity, bestEquity: result.bestStaticEquity,
-        playedMove: reviewMove(turn, result.selected), bestMove: reviewMove(turn, result.best),
-        candidateCount: result.moves.length,
-        ...(result.endgamePolicy ? {endgamePolicy: result.endgamePolicy} : {})
-      };
+      point = qualityPointFromResult(index, turn, result);
       if (!point.provisional) {
         const frequencies = await loadWordFrequency().catch(() => null);
         if (frequencies && result.selected.action === 'place') {
@@ -3458,6 +3507,7 @@ async function analyzeReviewTurn(context, index, phase = 'review', options = {})
       point = makeUnratedPoint(index, turn, missingExchangeTiles ? error.message
         : 'Quackle could not evaluate the played move: ' + error.message);
       point.retryable = !missingExchangeTiles;
+      if (point.retryable) point.analysisKey = cache.key(turn, 'review');
       point.provisional = !missingExchangeTiles && phase === 'preview';
     }
   }
@@ -3477,6 +3527,7 @@ async function analyzeReviewTurn(context, index, phase = 'review', options = {})
       } catch (error) {
         if (error.name === 'AbortError' || context.cancelled || owner !== analysisOwner()) throw error;
         point.draw = {retryable: true, provisional: phase === 'preview',
+          analysisKey: cache.key(turn, 'draw'),
           reason: 'Rack draw analysis failed: ' + error.message};
       }
     }
@@ -3531,6 +3582,19 @@ async function finishReviewAnalysis(context) {
   if (reviewQueue?.openingPending(context) || context.quality?.opening?.provisional ||
       context.quality?.points.some(point => point.provisional || point.draw?.provisional)) return;
   if (!context.quality) context.quality = { evaluation: MOVE_QUALITY_EVALUATION, points: [] };
+  const quality = context.quality;
+  const missingOpportunity = (quality.points || []).filter(point =>
+    Number.isFinite(point.playedWin) && !point.opportunity &&
+    context.cache.get(context.review.turns[point.turnIndex], 'review')?.selected.action === 'place');
+  if (missingOpportunity.length) {
+    const frequencies = await loadWordFrequency().catch(() => null);
+    if (context.cancelled || context.owner !== analysisOwner() || context.quality !== quality) return;
+    if (frequencies) for (const point of missingOpportunity) {
+      const turn = context.review.turns[point.turnIndex];
+      point.opportunity = CrossplayLuck.opportunityContext(turn,
+        context.cache.get(turn, 'review').staticMoves, frequencies, candidateWord);
+    }
+  }
   context.quality.state = 'done';
   context.quality.message = 'Move-quality analysis complete · ' + context.quality.points.filter(point => Number.isFinite(point.loss)).length + ' of ' + context.review.turns.length + ' moves rated.';
   context.trend = deriveWinTrend(context, true);
@@ -3538,9 +3602,25 @@ async function finishReviewAnalysis(context) {
   markAnalysisComplete('win_trend', context.trend, context.cache);
   syncVisibleContext(context);
   const saveError = await flushAnalysisSave(context.review, context.cache);
-  if (context.cancelled || context.owner !== analysisOwner()) return;
+  if (context.cancelled || context.owner !== analysisOwner() || context.quality !== quality) return;
   if (saveError) context.quality.message += ' Save failed: ' + saveError;
   syncVisibleContext(context);
+}
+
+function qualityPointFromResult(index, turn, result) {
+  const loss = Math.max(0, result.best.win - result.selected.win) * 100;
+  const staticLoss = Math.max(0, result.bestStaticEquity - result.selected.staticEquity);
+  return {
+    turnIndex: index, turn: index + 1, mine: Boolean(turn.mine), action: turn.action,
+    evaluation: MOVE_QUALITY_EVALUATION, category: qualityBand(loss), loss,
+    playedWin: result.selected.win, bestWin: result.best.win, samples: result.iterationsCompleted,
+    provisional: result.iterationsCompleted !== SIMULATION_ITERATIONS,
+    equityLoss: result.selected.action === 'place' ? staticLoss : null,
+    playedEquity: result.selected.staticEquity, bestEquity: result.bestStaticEquity,
+    playedMove: reviewMove(turn, result.selected), bestMove: reviewMove(turn, result.best),
+    candidateCount: result.moves.length,
+    ...(result.endgamePolicy ? {endgamePolicy: result.endgamePolicy} : {})
+  };
 }
 
 function makeUnratedPoint(turnIndex, turn, reason) {
@@ -3620,7 +3700,7 @@ async function analyzeOpeningDraw(context, phase = 'review') {
     if (error.name === 'AbortError' || context.cancelled || owner !== analysisOwner()) throw error;
     if (phase === 'preview' && cache.results[fullKey]) return {complete: true};
     if (phase !== 'preview' || !cache.errors.has(fullKey)) {
-      context.quality.opening = {unavailable: true, retryable: true, reason: error.message};
+      context.quality.opening = {unavailable: true, retryable: true, reason: error.message, analysisKey: fullKey};
       context.openingError = error.message;
       context.openingState = 'error';
       syncVisibleContext(context);
@@ -3999,42 +4079,131 @@ byId('forgetButton').addEventListener('click', async () => {
   }
 });
 
-byId('googleSignInButton').addEventListener('click', async () => {
-  byId('googleSignInButton').disabled = true;
-  try { await window.CrossplayAuth.signInWithGoogle(); }
-  catch (error) { setConnection(error.message, 'error'); }
-  finally { byId('googleSignInButton').disabled = false; }
-});
-
-byId('signOutButton').addEventListener('click', async () => {
-  byId('signOutButton').disabled = true;
-  try {
-    await window.CrossplayAuth.signOut();
-    signedInUser = null;
-    clearAccountUi('Signed out. Sign in with Google to load your saved games.');
-    updateAuthUi();
-  } catch (error) {
-    setConnection(error.message, 'error');
-  } finally {
-    byId('signOutButton').disabled = false;
+// Finish current work and save it while the current account can still write.
+// Do not abort the queue controller: the save requests use that same signal.
+async function saveAnalysisBeforeAuthChange() {
+  const queue = reviewQueue, owner = analysisOwner();
+  const concurrency = queue?.concurrency;
+  const paused = new Map(queue ? [...queue.contexts.values()].map(context => [context, Boolean(context.paused)]) : []);
+  const resume = () => {
+    if (!queue || queue !== reviewQueue || queue.closed || owner !== analysisOwner()) return;
+    for (const context of queue.contexts.values()) context.paused = paused.get(context) || false;
+    queue.concurrency = concurrency;
+    queue.pump();
+  };
+  if (queue) {
+    queue.concurrency = 0;
+    for (const context of queue.contexts.values()) context.paused = true;
   }
-});
+  try {
+    const deadline = Date.now() + 30000;
+    while (queue && (queue.running || [...queue.contexts.values()].some(context => context.cache.pending.size))) {
+      if (owner !== analysisOwner() || queue !== reviewQueue) throw accountChanged();
+      if (Date.now() >= deadline) throw new Error('An analysis is still running. Try again after it finishes.');
+      await new Promise(resolve => setTimeout(resolve, 20));
+    }
+    if (owner !== analysisOwner()) throw accountChanged();
+    const contexts = queue ? [...queue.contexts.values()].filter(context => !context.cache.shared) : [];
+    const results = await Promise.all(contexts.map(context => flushAnalysisSave(context.review, context.cache)));
+    if (owner !== analysisOwner()) throw accountChanged();
+    const error = results.find(Boolean);
+    if (error) throw new Error(error);
+    if (contexts.some(context => Object.keys(context.cache.unsaved || {}).length || Object.keys(context.cache.completed || {}).length)) {
+      throw new Error('Some results still need to be saved.');
+    }
+    return resume;
+  } catch (error) {
+    resume();
+    if (error.name === 'AbortError') throw error;
+    throw new Error('Analysis could not be saved. Your current work is still open. Try again before leaving this page. ' + error.message);
+  }
+}
+
+let authChangeInProgress = false;
+async function changeAuthAfterSaving(action, signingOut) {
+  if (authChangeInProgress) return;
+  authChangeInProgress = true;
+  byId('googleSignInButton').disabled = byId('signOutButton').disabled = true;
+  let resume;
+  try {
+    setConnection('Saving analysis before ' + (signingOut ? 'sign-out' : 'Google sign-in') + '…');
+    resume = await saveAnalysisBeforeAuthChange();
+    await action();
+    if (signingOut) {
+      signedInUser = null;
+      clearAccountUi('Signed out. Sign in with Google to load your saved games.');
+      updateAuthUi();
+    }
+  } catch (error) {
+    if (resume && signingOut && signedInUser && !window.CrossplayAuth.getSession()?.user) {
+      signedInUser = null;
+      clearAccountUi('Signed out locally. ' + error.message);
+      updateAuthUi();
+    } else resume?.();
+    if (error.name !== 'AbortError') setConnection(error.message, 'error');
+  } finally {
+    authChangeInProgress = false;
+    byId('googleSignInButton').disabled = byId('signOutButton').disabled = false;
+  }
+}
+byId('googleSignInButton').addEventListener('click', () =>
+  changeAuthAfterSaving(() => window.CrossplayAuth.signInWithGoogle(), false));
+byId('signOutButton').addEventListener('click', () =>
+  changeAuthAfterSaving(() => window.CrossplayAuth.signOut(), true));
+
+async function openSharedGameWithOptionalOwner(shareToken) {
+  const sharedReview = await api('shared/' + encodeURIComponent(shareToken), {publicRequest: true});
+  if (signedInUser?.id) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 3000);
+    try {
+      const owner = analysisOwner();
+      const state = await api('status', {signal: controller.signal});
+      if (owner !== analysisOwner()) throw accountChanged();
+      if (state.auth_required === true && state.authenticated === true) {
+        persistenceEnabled = true;
+        const privateReview = await api('games/' + encodeURIComponent(sharedReview.id) + '/review',
+          {expectedOwner: analysisOwner(), signal: controller.signal});
+        // A participant can have a separate private copy of the same game.
+        // Only a matching server-issued share token proves ownership of this link.
+        if (privateReview.id === sharedReview.id && privateReview.share_token === shareToken) {
+          updateAuthUi();
+          if (state.configured) updateAccountUi(privateReview.my_name || '');
+          else showNytDisconnected('Signed in as ' + (signedInUser.email || 'Google account') + '. Your saved games remain available.');
+          await openGame(privateReview.id, {preloadedReview: privateReview});
+          await loadGames();
+          return;
+        }
+      }
+    } catch (_) {
+      // A shared link must still work when optional sign-in or owner lookup fails.
+    } finally { clearTimeout(timer); }
+  }
+  await openGame(null, {shareToken, preloadedReview: sharedReview});
+}
 
 byId('refreshButton').addEventListener('click', refreshGames);
 
 async function start() {
   const url = new URL(location.href);
-  if (url.searchParams.has('game')) {
-    await openGame(null, { shareToken: url.searchParams.get('game') });
-    return;
-  }
-  let authError = null;
+  let authError = null, authTimer;
   try {
-    await window.CrossplayAuth.initialize();
+    const initialization = window.CrossplayAuth.initialize();
+    if (url.searchParams.has('game')) await Promise.race([initialization,
+      new Promise((_, reject) => { authTimer = setTimeout(() => reject(new Error('Optional sign-in timed out.')), 3000); })]);
+    else await initialization;
   } catch (error) {
     authError = error;
+  } finally { clearTimeout(authTimer); }
+  signedInUser = authError && url.searchParams.has('game') ? null
+    : window.CrossplayAuth.getSession()?.user || null;
+  if (url.searchParams.has('game')) {
+    try { await openSharedGameWithOptionalOwner(url.searchParams.get('game')); }
+    catch (error) {
+      byId('reviewPanel').replaceChildren(makeElement('div', 'review-placeholder', error.message));
+    }
+    return;
   }
-  signedInUser = window.CrossplayAuth.getSession() && window.CrossplayAuth.getSession().user || null;
   try {
     const state = await api('status');
     persistenceEnabled = Boolean(state.auth_required);
@@ -4116,7 +4285,7 @@ window.addEventListener('storage', event => {
 window.addEventListener('popstate', () => location.reload());
 start().then(async () => {
   const reviewId = new URL(location.href).searchParams.get('review');
-  if (reviewId && !viewingSharedGame && (persistenceEnabled ? signedInUser : nytConfigured)) await openGame(reviewId);
+  if (reviewId && !currentReview && !viewingSharedGame && (persistenceEnabled ? signedInUser : nytConfigured)) await openGame(reviewId);
   await refreshGamesIfDue();
 });
 </script>
