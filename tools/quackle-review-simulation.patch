@@ -1,6 +1,6 @@
-diff --git i/game.cpp w/game.cpp
+diff --git c/game.cpp w/game.cpp
 index 73817a9..1d142bb 100644
---- i/game.cpp
+--- c/game.cpp
 +++ w/game.cpp
 @@ -380,7 +380,7 @@ int GamePosition::validateMove(const Move &move) const
  		else
@@ -11,9 +11,9 @@ index 73817a9..1d142bb 100644
  				ret |= TooLateExchange;
  		}
  		break;
-diff --git i/gameparameters.cpp w/gameparameters.cpp
+diff --git c/gameparameters.cpp w/gameparameters.cpp
 index 15bc035..f77ebf9 100644
---- i/gameparameters.cpp
+--- c/gameparameters.cpp
 +++ w/gameparameters.cpp
 @@ -39,7 +39,8 @@ EnglishParameters::EnglishParameters()
  
@@ -25,9 +25,9 @@ index 15bc035..f77ebf9 100644
  	// Crossplay ends after both players take one final turn following bag
  	// depletion. It does not use Scrabble's six-scoreless-turn finish.
  	m_numberOfScorelessTurnsThatEndsGame = -1;
-diff --git i/generator.cpp w/generator.cpp
+diff --git c/generator.cpp w/generator.cpp
 index 19c7d8e..8981ecf 100644
---- i/generator.cpp
+--- c/generator.cpp
 +++ w/generator.cpp
 @@ -1872,6 +1872,9 @@ Move Generator::exchange()
  			if (i & (1 << j))
@@ -39,9 +39,9 @@ index 19c7d8e..8981ecf 100644
  		Move move;
  		move.action = Move::Exchange;
  		move.setTiles(String::alphabetize(thrown));
-diff --git i/sim.cpp w/sim.cpp
+diff --git c/sim.cpp w/sim.cpp
 index 6271bcd..78ddc2c 100644
---- i/sim.cpp
+--- c/sim.cpp
 +++ w/sim.cpp
 @@ -18,11 +18,17 @@
  
@@ -514,9 +514,9 @@ index 6271bcd..78ddc2c 100644
  
  			int deadwoodScore = 0;
  			if (!QUACKLE_PARAMETERS->noEndgamePenalty() && game.currentPosition().doesMoveEndGame(move))
-diff --git i/sim.h w/sim.h
+diff --git c/sim.h w/sim.h
 index b236a24..82e1b62 100644
---- i/sim.h
+--- c/sim.h
 +++ w/sim.h
 @@ -228,12 +228,19 @@ class SimmedMoveConstants
  public:
@@ -572,9 +572,9 @@ index b236a24..82e1b62 100644
  
  	std::vector<std::thread> m_threadPool;
  	// requested; m_threadPool stays empty until the first simulate()
-diff --git i/wasm/build.sh w/wasm/build.sh
+diff --git c/wasm/build.sh w/wasm/build.sh
 index c87b8ad..075eeee 100755
---- i/wasm/build.sh
+--- c/wasm/build.sh
 +++ w/wasm/build.sh
 @@ -79,6 +79,7 @@ em++ \
      -s MAXIMUM_MEMORY=268435456 \
@@ -584,11 +584,19 @@ index c87b8ad..075eeee 100755
      -s ENVIRONMENT=web,worker \
      --bind \
      --preload-file "$DATA_DIR/alphabets/crossplay.quackle_alphabet@/data/alphabets/crossplay.quackle_alphabet" \
-diff --git i/wasm/quackle_wasm.cpp w/wasm/quackle_wasm.cpp
-index 6de2970..b1d735a 100644
---- i/wasm/quackle_wasm.cpp
+diff --git c/wasm/quackle_wasm.cpp w/wasm/quackle_wasm.cpp
+index 6de2970..2a81f8f 100644
+--- c/wasm/quackle_wasm.cpp
 +++ w/wasm/quackle_wasm.cpp
-@@ -14,6 +14,8 @@
+@@ -5,6 +5,7 @@
+  */
+ 
+ #include <emscripten/bind.h>
++#include <emscripten/emscripten.h>
+ #include <emscripten/val.h>
+ 
+ #include <fstream>
+@@ -14,6 +15,8 @@
  #include <iostream>
  #include <algorithm>
  #include <cctype>
@@ -597,7 +605,7 @@ index 6de2970..b1d735a 100644
  
  #include "alphabetparameters.h"
  #include "boardparameters.h"
-@@ -396,8 +398,20 @@ bool prepareGame(std::string gridJson, std::string rackStr, int playerScore, int
+@@ -396,8 +399,20 @@ bool prepareGame(std::string gridJson, std::string rackStr, int playerScore, int
  		}
  	}
  
@@ -619,7 +627,7 @@ index 6de2970..b1d735a 100644
  
      if (pos.moves().empty())
      {
-@@ -537,6 +551,7 @@ emscripten::val simulateKibitz(std::string gridJson, std::string rackStr, int pl
+@@ -537,6 +552,7 @@ emscripten::val simulateKibitz(std::string gridJson, std::string rackStr, int pl
          result.set("candidateCount", candidateCount);
          result.set("totalPlayaheads", completed * candidateCount);
  		result.set("winModel", std::string(playToEnd ? "terminal" : "bogowin"));
@@ -627,7 +635,7 @@ index 6de2970..b1d735a 100644
  		result.set("error", playToEnd && !allTerminal
  			? std::string("A sampled endgame did not reach the official Crossplay finish")
  			: std::string(""));
-@@ -549,6 +564,392 @@ emscripten::val simulateKibitz(std::string gridJson, std::string rackStr, int pl
+@@ -549,6 +565,545 @@ emscripten::val simulateKibitz(std::string gridJson, std::string rackStr, int pl
      return result;
  }
  
@@ -827,40 +835,193 @@ index 6de2970..b1d735a 100644
 +    return result;
 +}
 +
-+emscripten::val simulateReviewDraw(std::string gridJson, std::string rackStr, int playerScore, int oppScore,
-+                                  int numMoves, int iterations, int bagCount, int finalTurnsRemaining,
-+                                  emscripten::val played, double seedValue, std::string rackAfter)
++emscripten::val planBagEmptying(
++	std::string gridJson, std::string rackStr, int playerScore, int oppScore, emscripten::val played, unsigned int seed)
 +{
-+    emscripten::val result = emscripten::val::object();
-+    result.set("simulated", false);
-+    result.set("samplingVersion", std::string("rack-draw-v1"));
-+    result.set("rackAfter", rackAfter);
-+    try
-+    {
-+        if (!s_dm || !s_dm->isGood()) throw std::invalid_argument("Engine not initialized");
-+        if (numMoves < 1 || numMoves > 15) throw std::invalid_argument("Review candidate count must be between 1 and 15");
-+        if (iterations < 1 || iterations > 277) throw std::invalid_argument("Simulation iterations must be between 1 and 277");
-+        if (!std::isfinite(seedValue) || seedValue < 0 || seedValue > 4294967295.0 || std::floor(seedValue) != seedValue)
-+            throw std::invalid_argument("Review seed must be an unsigned 32-bit integer");
-+        const unsigned int seed = static_cast<unsigned int>(seedValue);
-+        result.set("seed", seed);
-+        s_dm->seedRandomNumbers(seed);
-+        Quackle::Game game;
-+        std::string error;
-+        if (!prepareGame(gridJson, rackStr, playerScore, oppScore, numMoves,
-+                         bagCount, finalTurnsRemaining, true, game, &error))
-+            throw std::invalid_argument(error);
-+        Quackle::GamePosition &pos = game.currentPosition();
-+        if (bagCount > 0 && rackStr.size() != 7)
-+            throw std::invalid_argument("A nonempty bag requires a full mover rack");
-+        Quackle::Move actual = recordedMove(pos, played);
-+        const std::string actualKey = physicalMoveKey(actual);
-+        for (const auto &move : pos.moves())
-+            if (physicalMoveKey(move) == actualKey) { actual = move; break; }
-+        if (rackAfter.size() > 7 || !std::all_of(rackAfter.begin(), rackAfter.end(),
-+            [](char c) { return c == '?' || (c >= 'A' && c <= 'Z'); }))
-+            throw std::invalid_argument("The rack after the draw must contain at most seven physical tiles");
-+        Quackle::LetterString lettersAfter;
++	auto result = emscripten::val::object();
++	try
++	{
++		if (!s_dm || !s_dm->isGood())
++			throw std::invalid_argument("Engine not initialized");
++		s_dm->seedRandomNumbers(seed);
++		Quackle::Game game;
++		std::string error;
++		if (!prepareGame(gridJson, rackStr, playerScore, oppScore, 1000000, -1, 0, false, game, &error))
++			throw std::invalid_argument(error);
++		auto &pos = game.currentPosition();
++		const int bag = pos.bag().size();
++		if (bag < 1 || bag > 7 || pos.moves().size() >= 1000000)
++			throw std::invalid_argument("Bag-emptying search requires a complete low-bag move list");
++		const auto rack = pos.currentPlayer().rack();
++		Quackle::MoveList candidates;
++		Quackle::MoveList equityMoves;
++		std::vector<std::string> keys;
++		auto add = [&](const Quackle::Move &move) {
++			const std::string key = physicalMoveKey(move);
++			if (std::find(keys.begin(), keys.end(), key) == keys.end())
++			{
++				candidates.push_back(move);
++				keys.push_back(key);
++			}
++		};
++		int staticCount = 0;
++		for (const auto &move : pos.moves())
++		{
++			if (move.action == Quackle::Move::Exchange && move.tiles().size() > (size_t)bag)
++				continue;
++			const bool empties = move.action == Quackle::Move::Place && 7 - (int)(rack - move).size() >= bag;
++			if (staticCount++ < 15)
++			{
++				equityMoves.push_back(move);
++				add(move);
++			}
++			else if (empties)
++				add(move);
++		}
++		int actualIndex = -1;
++		if (!played.isNull() && !played.isUndefined())
++		{
++			auto actual = recordedMove(pos, played);
++			add(actual);
++			const auto key = physicalMoveKey(actual);
++			if (std::none_of(
++					equityMoves.begin(), equityMoves.end(), [&](const Quackle::Move &move) { return physicalMoveKey(move) == key; }))
++				equityMoves.push_back(actual);
++			actualIndex = std::find(keys.begin(), keys.end(), key) - keys.begin();
++		}
++		auto indices = emscripten::val::array();
++		int count = 0;
++		for (size_t i = 0; i < candidates.size(); ++i)
++			if (candidates[i].action == Quackle::Move::Place && 7 - (int)(rack - candidates[i]).size() >= bag)
++				indices.set(count++, (int)i);
++		result.set("moves", serializeMoves(candidates, rack, nullptr));
++		result.set("equityMoves", serializeMoves(equityMoves, rack, nullptr));
++		result.set("bagEmptyingIndices", indices);
++		result.set("actualIndex", actualIndex);
++		result.set("seed", seed);
++		result.set("bagCount", bag);
++		result.set("finalTurnsRemaining", 0);
++		result.set("error", std::string(""));
++	}
++	catch (const std::exception &error)
++	{
++		result.set("error", std::string(error.what()));
++	}
++	return result;
++}
++
++emscripten::val simulateCandidateBatch(std::string gridJson, std::string rackStr, int playerScore, int oppScore, int bagCount,
++	emscripten::val candidates, unsigned int seed, int offset, int count)
++{
++	auto result = emscripten::val::object();
++	try
++	{
++		const int size = candidates["length"].as<int>();
++		if (size < 1 || size > 8 || count < 1 || count > 16 || offset < 0 || offset + count > 277 || bagCount < 1 || bagCount > 7)
++			throw std::invalid_argument("Invalid candidate batch bounds");
++		s_dm->seedRandomNumbers(seed);
++		Quackle::Game game;
++		std::string error;
++		if (!prepareGame(gridJson, rackStr, playerScore, oppScore, 1, bagCount, 0, true, game, &error))
++			throw std::invalid_argument(error);
++		auto &pos = game.currentPosition();
++		const auto rack = pos.currentPlayer().rack();
++		Quackle::MoveList moves;
++		for (int i = 0; i < size; ++i)
++			moves.push_back(recordedMove(pos, candidates[i]));
++		Quackle::Simulator simulator;
++		simulator.setThreadCount(0);
++		simulator.setPosition(pos);
++		simulator.setIncludedMoves(moves);
++		simulator.setPairedSampleSeed(seed + 0x9e3779b9u * (unsigned int)offset);
++		simulator.setIgnoreOppos(false);
++		const double start = emscripten_get_now();
++		int completed = 0;
++		do
++		{
++			simulator.simulate(-1, 1);
++			++completed;
++		} while (completed < count && emscripten_get_now() - start < 8000);
++		auto serialized = emscripten::val::array();
++		for (int i = 0; i < size; ++i)
++		{
++			Quackle::MoveList single;
++			single.push_back(moves[i]);
++			auto item = serializeMoves(single, rack, &simulator)[0];
++			const auto &simmed = simulator.simmedMoveForMove(moves[i]);
++			auto statistics = emscripten::val::array();
++			int statisticIndex = 0;
++			for (size_t level = 0; level < simmed.levels.size(); ++level)
++				for (size_t player = 0; player < simmed.levels[level].statistics.size(); ++player)
++				{
++					const auto &score = simmed.levels[level].statistics[player].score;
++					const int samples = score.incorporatedValues();
++					if (!samples)
++						continue;
++					auto entry = emscripten::val::array();
++					entry.set(0, (int)level);
++					entry.set(1, (int)player);
++					entry.set(2, score.averagedValue() * samples);
++					entry.set(3, samples);
++					statistics.set(statisticIndex++, entry);
++				}
++			item.set("equityStatistics", statistics);
++			item.set("residualSum", simmed.residual.averagedValue() * completed);
++			item.set("equity", simmed.calculateEquity());
++			item.set("win", simmed.wins.averagedValue());
++			serialized.set(i, item);
++		}
++		result.set("moves", serialized);
++		result.set("completed", completed);
++		result.set("offset", offset);
++		result.set("error", std::string(""));
++	}
++	catch (const std::exception &error)
++	{
++		result.set("error", std::string(error.what()));
++	}
++	return result;
++}
++
++emscripten::val simulateReviewDraw(std::string gridJson, std::string rackStr, int playerScore, int oppScore, int numMoves, int iterations,
++	int bagCount, int finalTurnsRemaining, emscripten::val played, double seedValue, std::string rackAfter)
++{
++	emscripten::val result = emscripten::val::object();
++	result.set("simulated", false);
++	result.set("samplingVersion", std::string("rack-draw-v1"));
++	result.set("rackAfter", rackAfter);
++	try
++	{
++		if (!s_dm || !s_dm->isGood())
++			throw std::invalid_argument("Engine not initialized");
++		if (numMoves < 1 || numMoves > 15)
++			throw std::invalid_argument("Review candidate count must be between 1 and 15");
++		if (iterations < 1 || iterations > 277)
++			throw std::invalid_argument("Simulation iterations must be between 1 and 277");
++		if (!std::isfinite(seedValue) || seedValue < 0 || seedValue > 4294967295.0 || std::floor(seedValue) != seedValue)
++			throw std::invalid_argument("Review seed must be an unsigned 32-bit integer");
++		const unsigned int seed = static_cast<unsigned int>(seedValue);
++		result.set("seed", seed);
++		s_dm->seedRandomNumbers(seed);
++		Quackle::Game game;
++		std::string error;
++		if (!prepareGame(gridJson, rackStr, playerScore, oppScore, numMoves, bagCount, finalTurnsRemaining, true, game, &error))
++			throw std::invalid_argument(error);
++		Quackle::GamePosition &pos = game.currentPosition();
++		if (bagCount > 0 && rackStr.size() != 7)
++			throw std::invalid_argument("A nonempty bag requires a full mover rack");
++		Quackle::Move actual = recordedMove(pos, played);
++		const std::string actualKey = physicalMoveKey(actual);
++		for (const auto &move : pos.moves())
++			if (physicalMoveKey(move) == actualKey)
++			{
++				actual = move;
++				break;
++			}
++		if (rackAfter.size() > 7
++			|| !std::all_of(rackAfter.begin(), rackAfter.end(), [](char c) { return c == '?' || (c >= 'A' && c <= 'Z'); }))
++			throw std::invalid_argument("The rack after the draw must contain at most seven physical tiles");
++		Quackle::LetterString lettersAfter;
 +        for (char c : rackAfter)
 +            lettersAfter.push_back(c == '?' ? QUACKLE_BLANK_MARK : charToLetter(c));
 +        const Quackle::Rack retained = pos.currentPlayer().rack() - actual;
@@ -914,8 +1075,8 @@ index 6de2970..b1d735a 100644
 +        if (playToEnd) result.set("endgamePolicy", std::string("crossplay-endgame-v1"));
 +        result.set("simulated", true);
 +        result.set("error", std::string(""));
-+    }
-+    catch (const std::exception &error) { result.set("error", std::string(error.what())); }
++	}
++	catch (const std::exception &error) { result.set("error", std::string(error.what())); }
 +    return result;
 +}
 +
@@ -1020,11 +1181,13 @@ index 6de2970..b1d735a 100644
  bool isWordValid(std::string word)
  {
      if (!s_dm || !s_dm->isGood())
-@@ -587,6 +988,9 @@ EMSCRIPTEN_BINDINGS(quackle)
+@@ -587,6 +1142,11 @@ EMSCRIPTEN_BINDINGS(quackle)
      emscripten::function("initEngine", &initEngine);
      emscripten::function("kibitz", &kibitz);
      emscripten::function("simulateKibitz", &simulateKibitz);
 +    emscripten::function("simulateReviewMove", &simulateReviewMove);
++    emscripten::function("planBagEmptying", &planBagEmptying);
++    emscripten::function("simulateCandidateBatch", &simulateCandidateBatch);
 +    emscripten::function("simulateReviewDraw", &simulateReviewDraw);
 +    emscripten::function("simulateInitialDeal", &simulateInitialDeal);
      emscripten::function("isWordValid", &isWordValid);

@@ -126,3 +126,82 @@ test('refresh cancellation stops workers without turning it into an engine failu
   reply(log, log.requests.at(-1), 'fresh');
   assert.equal(await replacement, 'fresh');
 });
+
+test('expanded jobs coalesce and resume completed samples after a failed batch', async () => {
+  const {pool,log}=makePool(2);
+  const payload={bagCount:5,iterations:277,seed:9};
+  const first=pool.run('simulateReview',payload);
+  const joined=pool.run('simulateReview',payload);
+  await settle();
+  assert.equal(log.requests.length,1);
+  reply(log,log.requests[0],{moves:[{action:'pass',position:'',tiles:'',equity:0}],actualIndex:0,bagEmptyingIndices:[],seed:9,bagCount:5,finalTurnsRemaining:0});
+  await settle();
+  const complete=request=>reply(log,request,{offset:request.payload.offset,completed:request.payload.count,moves:[{win:.5,equity:2,samples:request.payload.count,terminalSamples:request.payload.count}]});
+  complete(log.requests[0]);
+  await settle();
+  const failure=log.requests.shift();
+  failure.worker.emit({id:failure.id,error:'Transient worker failure'});
+  await assert.rejects(first,/Transient/);
+  await assert.rejects(joined,/Transient/);
+  const retry=pool.run('simulateReview',payload);
+  await settle();
+  assert.equal(log.requests[0].payload.offset,16);
+  while(log.requests.length){complete(log.requests[0]);await settle();}
+  const result=await retry;
+  assert.equal(result.selected.samples,277);
+  assert.equal(result.selected.win,.5);
+  assert.equal(pool.partial.size,0);
+  pool.stop();
+});
+
+test('expanded cancellation checkpoints a completed batch and keeps promoted priority on retry', async () => {
+  const {pool,log}=makePool(1);
+  const payload={bagCount:2,iterations:277,seed:4};
+  const abort=new AbortController();
+  const job=pool.run('simulateKibitz',payload,{signal:abort.signal,taskKey:'expanded',priority:1});
+  await settle();
+  reply(log,log.requests[0],{moves:[{action:'pass',position:'',tiles:'',equity:0}],actualIndex:-1,bagEmptyingIndices:[],seed:4,bagCount:2,finalTurnsRemaining:0});
+  await settle();
+  abort.abort();
+  const batch=log.requests[0];
+  reply(log,batch,{offset:0,completed:16,moves:[{win:.25,equity:1,samples:16,terminalSamples:16}]});
+  await assert.rejects(job,{name:'AbortError'});
+  const resumed=pool.run('simulateKibitz',payload,{taskKey:'expanded',priority:1});
+  await settle();
+  assert.equal(log.requests[0].payload.offset,16);
+  assert.equal(pool.promote('expanded',99),true);
+  while(log.requests.length){
+    const request=log.requests[0];
+    const n=request.payload.count;
+    reply(log,request,{offset:request.payload.offset,completed:n,moves:[{win:.25,equity:1,samples:n,terminalSamples:n}]});
+    await settle();
+    if(log.requests.length)assert.equal(pool.slots[0].task.priority,99);
+  }
+  assert.equal((await resumed).best.win,.25);
+  pool.stop();
+});
+
+test('stopping shared expanded jobs cannot restart workers or save late checkpoints', async () => {
+  for(const stopAt of ['pending','plan','batch']) {
+    const {pool,log}=makePool(1);
+    const payload={bagCount:2,iterations:277,seed:4};
+    const first=pool.run('simulateKibitz',payload);
+    const shared=pool.run('simulateKibitz',payload);
+    await settle();
+    if(stopAt!=='pending') {
+      reply(log,log.requests[0],{moves:[{action:'pass',position:'',tiles:'',equity:0}],actualIndex:-1,bagEmptyingIndices:[],seed:4,bagCount:2,finalTurnsRemaining:0});
+      if(stopAt==='batch') {
+        await settle();
+        reply(log,log.requests[0],{offset:0,completed:16,moves:[{win:.25,equity:1,samples:16,terminalSamples:16}]});
+      }
+    }
+    const error=new Error('Refresh cancelled');error.name='AbortError';
+    pool.stop(error);
+    await assert.rejects(first,{name:'AbortError'});
+    await assert.rejects(shared,{name:'AbortError'});
+    await settle();
+    assert.equal(pool.slots.length,0);
+    assert.equal(pool.partial.size,0);
+    assert.equal(log.workers.length,1);
+  }
+});

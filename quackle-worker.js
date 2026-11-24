@@ -1,5 +1,5 @@
 importScripts('quackle.js');
-importScripts('luck-analysis.js', 'review-analysis.js', 'opening-draw.js');
+importScripts('bag-emptying-analysis.js', 'luck-analysis.js', 'review-analysis.js', 'opening-draw.js');
 
 const ENDGAME_POLICY = 'crossplay-endgame-v1';
 let modulePromise = null;
@@ -266,7 +266,37 @@ self.addEventListener('message', async event => {
     const module = await getModule();
     let result;
 
-    if (type === 'init') {
+    if (type === 'planBagEmptying') {
+      const seed = payload.seed ?? 123456789;
+      if (!Number.isInteger(seed) || seed < 0 || seed > 0xffffffff ||
+          !Number.isInteger(payload.bagCount) || payload.bagCount < 1 || payload.bagCount > 7 ||
+          payload.finalTurnsRemaining !== 0 || payload.iterations !== 277 ||
+          !Number.isInteger(payload.playerScore) || !Number.isInteger(payload.opponentScore)) {
+        throw new Error('Candidate search requires valid scores, seed, samples, and bag state.');
+      }
+      let played = payload.requestType === 'simulateKibitz' ? null : payload.played;
+      let evaluation;
+      if (payload.requestType === 'simulateMove') {
+        evaluation = evaluateCustomMove(module, payload, false);
+        played = evaluation.selected;
+      }
+      result = module.planBagEmptying(payload.gridJson, payload.rack, payload.playerScore,
+        payload.opponentScore, played ?? null, seed);
+      if (result.error) throw new Error(result.error);
+      if (result.bagCount !== payload.bagCount) throw new Error('Candidate plan has an invalid bag state.');
+      if (evaluation) result.evaluation = evaluation;
+    } else if (type === 'simulateCandidateBatch') {
+      if (!Number.isInteger(payload.seed) || payload.seed < 0 || payload.seed > 0xffffffff ||
+          !Number.isInteger(payload.offset) || !Number.isInteger(payload.count) ||
+          payload.offset < 0 || payload.count < 1 || payload.count > 16 ||
+          payload.offset + payload.count > 277 || !Array.isArray(payload.candidates) ||
+          payload.candidates.length < 1 || payload.candidates.length > 8) {
+        throw new Error('Invalid candidate batch bounds.');
+      }
+      result = module.simulateCandidateBatch(payload.gridJson, payload.rack, payload.playerScore,
+        payload.opponentScore, payload.bagCount, payload.candidates, payload.seed, payload.offset, payload.count);
+      if (result.error) throw new Error(result.error);
+    } else if (type === 'init') {
       result = { info: module.getEngineInfo() };
     } else if (type === 'evaluateMove' || type === 'simulateMove') {
       result = evaluateCustomMove(module, payload, type === 'simulateMove');

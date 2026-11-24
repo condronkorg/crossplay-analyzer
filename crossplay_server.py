@@ -830,6 +830,12 @@ class Handler(SimpleHTTPRequestHandler):
     def valid_endgame_policy(identity, result, base_length):
         if not isinstance(identity, list) or len(identity) < base_length or type(identity[6]) is not int:
             return False
+        expanded = (1 <= identity[6] <= 7 and len(identity) > 1
+                    and identity[1] in ('review', 'simulation'))
+        if expanded:
+            if identity[-1] != 'bag-emptying-v1' or result.get('candidatePolicy') != 'bag-emptying-v1':
+                return False
+            identity = identity[:-1]
         if identity[6] <= 21:
             return (len(identity) == base_length + 1 and identity[-1] == 'crossplay-endgame-v1'
                     and result.get('endgamePolicy') == 'crossplay-endgame-v1')
@@ -857,10 +863,22 @@ class Handler(SimpleHTTPRequestHandler):
                 or (final not in (1, 2) if bag == 0 else final != 0)):
             invalid()
         play_to_end = bag <= 21
+        expanded = 1 <= bag <= 7 and iterations == 277
+        searched = result.get('searchedCandidateCount') if expanded else (len(result['moves']) if isinstance(result.get('moves'), list) else 0)
+        equity_moves = result.get('equityMoves')
+        if expanded and (not isinstance(equity_moves, list) or not 1 <= len(equity_moves) <= 16
+                         or not all(isinstance(move, dict) and Handler.finite_number(move.get('equity'))
+                                    for move in equity_moves)
+                         or type(searched) is not int or not 1 <= searched <= 1000000
+                         or type(result.get('requiredBagEmptyingCount')) is not int
+                         or not 0 <= result['requiredBagEmptyingCount'] <= searched
+                         or type(result.get('evaluatedBagEmptyingCount')) is not int
+                         or result.get('evaluatedBagEmptyingCount') != result['requiredBagEmptyingCount']):
+            invalid()
         moves = result.get('moves')
         integer_fields = ('bagCount', 'finalTurnsRemaining', 'plies', 'iterationsRequested',
                           'iterationsCompleted', 'candidateCount', 'totalPlayaheads')
-        if (not isinstance(moves, list) or not 1 <= len(moves) <= move_count + 1
+        if (not isinstance(moves, list) or not 1 <= len(moves) <= (17 if expanded else move_count + 1)
                 or result.get('simulated') is not True
                 or result.get('samplingVersion') != 'paired-review-v1'
                 or type(result.get('seed')) is not int or not 0 <= result['seed'] < 2 ** 32
@@ -872,7 +890,8 @@ class Handler(SimpleHTTPRequestHandler):
                 or result.get('plies') != (-1 if play_to_end else 2)
                 or result.get('iterationsRequested') != iterations or result.get('iterationsCompleted') != iterations
                 or result.get('candidateCount') != len(moves)
-                or result.get('totalPlayaheads') != iterations * len(moves)):
+                or searched < len(moves)
+                or result.get('totalPlayaheads') != iterations * searched):
             invalid()
         for move in moves:
             if (not isinstance(move, dict) or move.get('action') not in ('place', 'pass', 'exchange')

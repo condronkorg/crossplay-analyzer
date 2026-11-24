@@ -16,8 +16,8 @@ repository (SHA-256
 Artifact SHA-256 values:
 
 ```text
-quackle.js    d3bd3b6997cd2ace135a05f3f21c2c764eaef5c988dd015945356b85689f54fe
-quackle.wasm  dc47ca672a7cefdc0434e25207f54e23e2d24e5c09a1f7aa2b50a724b19e92cc
+quackle.js    3d0a388e0e53d937e7a5629a7f4602643994401b700a107dd7fd196c0babd319
+quackle.wasm  9cbb06be7ccb480590b8f10c7f6e6d38b163a6b558be5b412670928369dffb59
 quackle.data  0f7b4e8cdcf4cb743c5423d6befe23ea77691c588f7c7dfb603bf475c1fbf8f3
 ```
 
@@ -146,3 +146,41 @@ WPA identities, the full 277-sample result, exact preview-prefix identity, and
 worker dispatch. Run `node --test test_initial_deal_worker.js` for request and
 raw-result rejection checks. The source patch preserves the earlier review,
 draw, exception, low-bag exchange, and 1000-ply finish-bound changes.
+
+## Bag-emptying candidate coverage
+
+The worker pool uses `planBagEmptying` for full 277-sample recorded/custom
+comparisons and continuation alternatives with one through seven bag tiles.
+The shared native plan includes the top15 static actions and every legal,
+physically distinct placement whose refill empties the bag, plus the supplied
+recorded action. Existing board letters do not count as newly placed tiles.
+Exchanges do not empty the bag. Early64-sample previews retain their bounded
+shortlist and remain provisional. Empty-bag solving and future-play policy
+are unchanged; these remain estimates before the bag empties.
+
+`simulateCandidateBatch` accepts up to8 explicit candidates, a zero-based
+sample offset, and up to16 samples. It uses the existing paired trial-seed
+schedule, shifted by the sample offset, and returns per-ply score sums/counts
+and residual sums so variable-length games retain the original simulated
+equity across batch boundaries. It checks an eight-second budget
+between trials. One trial cannot be interrupted. The worker pool retains
+completed sums across cancellation or transient failure, yields between calls,
+and coalesces matching jobs. It retains at most16 partial positions in memory;
+older evicted positions restart. The120-second worker deadline still applies.
+
+Full results retain the top15 sampled alternatives, the recorded action, and
+the highest static-equity action, with duplicates removed (at most17 moves).
+`candidateCount` is the retained count; `searchedCandidateCount` is the full
+search count. `requiredBagEmptyingCount` and `evaluatedBagEmptyingCount` must
+match before completion. `totalPlayaheads` counts all searched candidates.
+`equityMoves` preserves the original static shortlist plus the recorded action
+for word-commonness and adjusted-performance calculations. These metrics do
+not use the compact win-ranked display list. Results and affected cache identities carry `candidatePolicy: bag-emptying-v1`.
+The cache policy does not change the paired seed. Draw-only calculations keep
+their existing identity and behavior. Legacy synchronous native APIs remain
+available for bounded callers; browser full comparisons use the batch APIs.
+
+Run `node --test test_bag_emptying_analysis.js test_quackle_pool.js` for compact
+results, coverage, coalescing and resume checks, and
+`python3 -m unittest -v test_bag_emptying_simulation` for real browser/WASM
+coverage and sample-offset checks. The data artifact is unchanged.

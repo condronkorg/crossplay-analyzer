@@ -32,6 +32,14 @@ def review_analysis_entry(kind='review'):
     return key, result
 
 
+def expanded_policy(identity, result):
+    if 1 <= identity[6] <= 7 and identity[1] in ('review', 'simulation'):
+        identity.append('bag-emptying-v1')
+        result.update(equityMoves=result.get('staticMoves', result['moves']),
+                      candidatePolicy='bag-emptying-v1', searchedCandidateCount=len(result['moves']),
+                      requiredBagEmptyingCount=0, evaluatedBagEmptyingCount=0)
+
+
 def draw_analysis_entry(kind='draw'):
     iterations = 64 if kind == 'draw-preview' else 277
     key = json.dumps(['quackle-rack-draw-v1', kind, ['.' * 15] * 15, 'CATERS?',
@@ -76,6 +84,25 @@ class BackgroundAnalysisTest(unittest.TestCase):
         self.client.recent_games.return_value = []
         self.handler.current_session = Mock(return_value=('account-a', self.client))
 
+    def test_compact_low_bag_results_require_complete_search_coverage(self):
+        key, result = review_analysis_entry()
+        identity = json.loads(key)
+        identity[6] = result['bagCount'] = 6
+        identity.append('crossplay-endgame-v1')
+        result.update(endgamePolicy='crossplay-endgame-v1', playToEnd=True, plies=-1,
+                      simulationMode='play-to-end', winModel='terminal')
+        for move in result['moves']:
+            move['terminalSamples'] = 277
+        expanded_policy(identity, result)
+        result.update(searchedCandidateCount=30, requiredBagEmptyingCount=29,
+                      evaluatedBagEmptyingCount=29, totalPlayaheads=277 * 30)
+        Handler.validate_review_result(identity, result)
+        for changes in ({'evaluatedBagEmptyingCount': 28}, {'searchedCandidateCount': 1},
+                        {'requiredBagEmptyingCount': 31}, {'evaluatedBagEmptyingCount': True},
+                        {'totalPlayaheads': 277 * 2}, {'candidatePolicy': 'old-policy'}):
+            with self.subTest(changes=changes), self.assertRaises(CrossplayError):
+                Handler.validate_review_result(identity, {**result, **changes})
+
     def test_low_bag_review_and_draw_saves_require_matching_policy_identity(self):
         for kind in ('review', 'preview', 'draw', 'draw-preview'):
             key, result = review_analysis_entry(kind) if kind in ('review', 'preview') else draw_analysis_entry(kind)
@@ -106,6 +133,7 @@ class BackgroundAnalysisTest(unittest.TestCase):
                         'turn_analyses': {json.dumps(saved_identity): entry}})
             identity.append('crossplay-endgame-v1')
             result['endgamePolicy'] = 'crossplay-endgame-v1'
+            expanded_policy(identity, result)
             self.handler.validate_game_analysis({'analysis_version': ANALYSIS_VERSION,
                 'turn_analyses': {json.dumps(identity): result}})
 
@@ -114,7 +142,7 @@ class BackgroundAnalysisTest(unittest.TestCase):
             identity = ['quackle-position-v1', kind, ['.' * 15] * 15, 'CATERS?',
                         0, 0, 6, 0, 15 if kind == 'simulation' else 1,
                         277 if kind == 'simulation' else 80, 2, 21]
-            result = {'simulated': True, 'bagCount': 6, 'moves': [{'win': .5}]}
+            result = {'simulated': True, 'bagCount': 6, 'moves': [{'win': .5, 'equity': 0}]}
             with self.assertRaises(CrossplayError):
                 self.handler.validate_game_analysis({'analysis_version': ANALYSIS_VERSION,
                     'turn_analyses': {json.dumps(identity): result}})
@@ -123,6 +151,7 @@ class BackgroundAnalysisTest(unittest.TestCase):
                 self.handler.validate_game_analysis({'analysis_version': ANALYSIS_VERSION,
                     'turn_analyses': {json.dumps(identity): result}})
             result['endgamePolicy'] = 'crossplay-endgame-v1'
+            expanded_policy(identity, result)
             self.handler.validate_game_analysis({'analysis_version': ANALYSIS_VERSION,
                 'turn_analyses': {json.dumps(identity): result}})
 
@@ -370,6 +399,7 @@ class BackgroundAnalysisTest(unittest.TestCase):
             result.update(selected=result['moves'][0], best=result['moves'][0],
                           candidateCount=1, totalPlayaheads=result['iterationsCompleted'],
                           bestStaticEquity=result['staticMoves'][0]['equity'])
+            expanded_policy(identity, result)
             body = {'analysis_version': ANALYSIS_VERSION, 'turn_analyses': {json.dumps(identity): result}}
             self.handler.validate_game_analysis(body)
             for move in result['moves'] + result['staticMoves']:
