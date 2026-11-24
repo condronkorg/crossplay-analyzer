@@ -27,7 +27,7 @@ class MockCrossplayClient(CrossplayClient):
             if self.nyt_s == OUTAGE_COOKIE:
                 raise CrossplayError('NYT returned HTTP 503')
             if self.nyt_s == EMPTY_COOKIE:
-                return {'msgs': []}
+                return {'msgs': [{'recent-games': {'games': []}}]}
             return data['subscription']
         prefix = '/svc/games/mp/game/'
         if path.startswith(prefix):

@@ -419,3 +419,40 @@ test('recorded low-bag swaps draw only available physical tiles', () => {
   assert.throws(()=>rackDraw({...turn,swapped_tiles:'AAEIRT?'}),/bag/);
   assert.throws(()=>rackDraw({...turn,bag_count:0}),/bag/);
 });
+
+test('background retry keeps successful moves and retries only failed move and draw work', async () => {
+  const calls = [];
+  const points = [
+    { turnIndex: 0, playedWin: .8 },
+    { turnIndex: 1, retryable: true },
+    { turnIndex: 2, playedWin: .5, draw: { retryable: true } },
+    { turnIndex: 3, category: 'unrated', retryable: false }
+  ];
+  const queue = new ReviewQueue({ preview: true, concurrency: 1,
+    load: async () => { throw new Error('Already loaded'); },
+    run: async (context, index) => { calls.push(index); return { complete: true }; }
+  });
+  queue.ids = ['mixed', 'saved'];
+  queue.contexts.set('mixed', { review: { turns: [{}, {}, {}, {}, {}] },
+    states: ['done', 'done', 'done', 'done', 'error'], quality: { points }, error: 'Worker stopped' });
+  queue.contexts.set('saved', { review: { turns: [{}] }, states: ['done'], cache: { saveError: 'Offline' } });
+  queue.retry(); await tick();
+  assert.deepEqual(calls, [1, 2, 4]);
+  assert.equal(queue.contexts.get('mixed').states[0], 'done');
+  assert.equal(queue.contexts.get('mixed').states[3], 'done');
+  assert.equal(queue.contexts.get('saved').states[0], 'done');
+  assert.equal(queue.contexts.get('mixed').quality.points[0], points[0]);
+  queue.close();
+});
+
+test('background save retry does not resume other deliberately paused games', async () => {
+  let calls = 0;
+  const queue = new ReviewQueue({ load: async () => {}, run: async () => { calls++; } });
+  queue.ids = ['paused', 'save'];
+  queue.contexts.set('paused', { review: { turns: [{}] }, states: ['pending'], paused: true });
+  queue.contexts.set('save', { review: { turns: [{}] }, states: ['done'], cache: { saveError: 'Offline' } });
+  queue.retry(); await tick();
+  assert.equal(calls, 0);
+  assert.equal(queue.contexts.get('paused').paused, true);
+  queue.close();
+});

@@ -188,6 +188,70 @@ class RefreshBrowserTest(unittest.TestCase):
         self.respond(1, fresh=True)
         expect(self.page.locator('.game-card')).to_have_count(3)
 
+    def test_refresh_reports_source_counts_and_keeps_result_after_rerender(self):
+        self.connect()
+        expect(self.page.locator('.game-card')).to_have_count(2)
+        self.intercept_game_lists()
+        self.page.get_by_role('button', name='Refresh', exact=True).click()
+        self.page.wait_for_function('gameListRequests.length === 1')
+        self.page.evaluate("""() => gameListRequests[0].resolve(new Response(JSON.stringify({
+          games: [...savedRefreshGames, {...savedRefreshGames[0], id:'new-game', opponent:'New Opponent'}],
+          refresh: {status:'refreshed', checked_at:'2026-11-24T05:00:00Z', fetched:3,
+            added:1, updated:1, newest_timestamp:1795453200}
+        }), {status:200}))""")
+        expect(self.page.locator('.game-card')).to_have_count(3)
+        expect(self.page.locator('#refreshStatus')).to_contain_text('NYT returned 3 games')
+        expect(self.page.locator('#refreshStatus')).to_contain_text('1 new')
+        expect(self.page.locator('#refreshStatus')).to_contain_text('1 changed')
+        expect(self.page.locator('#refreshStatus')).to_contain_text('Newest returned game')
+        self.page.evaluate('renderGames()')
+        expect(self.page.locator('#refreshStatus')).to_contain_text('1 new')
+
+    def test_unchanged_refresh_is_visible_and_newer_request_owns_the_result(self):
+        self.connect()
+        expect(self.page.locator('.game-card')).to_have_count(2)
+        self.intercept_game_lists()
+        self.page.get_by_role('button', name='Refresh', exact=True).click()
+        self.page.get_by_role('button', name='Refresh', exact=True).click()
+        self.page.wait_for_function('gameListRequests.length === 2')
+        self.page.evaluate("""() => gameListRequests[1].resolve(new Response(JSON.stringify({
+          games: savedRefreshGames, refresh: {status:'refreshed',checked_at:'2026-11-24T05:00:00Z',
+            fetched:3,added:0,updated:0,newest_timestamp:1795453200}
+        }), {status:200}))""")
+        expect(self.page.locator('#refreshStatus')).to_contain_text('No new or changed games')
+        self.page.evaluate("""() => gameListRequests[0].resolve(new Response(JSON.stringify({
+          games: [], refresh:{status:'refreshed',checked_at:'2026-11-24T04:00:00Z',fetched:0,added:0,updated:0}
+        }), {status:200}))""")
+        self.page.evaluate('new Promise(resolve => setTimeout(resolve,0))')
+        expect(self.page.locator('#refreshStatus')).to_contain_text('NYT returned 3 games')
+        expect(self.page.locator('.game-card')).to_have_count(2)
+
+    def test_refresh_failure_clears_old_success_and_account_clear_removes_result(self):
+        self.connect()
+        expect(self.page.locator('.game-card')).to_have_count(2)
+        self.intercept_game_lists()
+        self.page.get_by_role('button', name='Refresh', exact=True).click()
+        self.respond(0)
+        expect(self.page.locator('#refreshStatus')).to_contain_text('Refresh completed')
+        self.page.get_by_role('button', name='Refresh', exact=True).click()
+        self.respond(1, status=502)
+        expect(self.page.locator('#gameCount')).to_contain_text('Refresh failed')
+        expect(self.page.locator('#refreshStatus')).not_to_contain_text('Refresh completed')
+        self.page.evaluate("clearAccountUi('Signed out')")
+        expect(self.page.locator('#refreshStatus')).to_have_text('')
+
+    def test_pending_refresh_status_survives_render_and_invalid_list_keeps_cards(self):
+        self.connect()
+        expect(self.page.locator('.game-card')).to_have_count(2)
+        self.intercept_game_lists()
+        self.page.get_by_role('button', name='Refresh', exact=True).click()
+        self.page.evaluate('renderGames()')
+        expect(self.page.locator('#refreshStatus')).to_contain_text('Checking NYT')
+        self.page.evaluate("gameListRequests[0].resolve(new Response('{}',{status:200}))")
+        expect(self.page.locator('#gameCount')).to_contain_text('Refresh failed')
+        expect(self.page.locator('.game-card')).to_have_count(2)
+        expect(self.page.locator('#refreshStatus')).to_have_text('')
+
 
 if __name__ == '__main__':
     unittest.main()

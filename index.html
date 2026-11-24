@@ -531,6 +531,7 @@
         </div>
         <button id="refreshButton" type="button">Refresh</button>
       </div>
+      <div id="refreshStatus" class="analysis-note" role="status"></div>
       <div id="backgroundStatus" class="analysis-note" role="status"></div>
           <button id="retryBackground" class="analysis-button hidden" type="button">Retry background analysis</button>
           <div id="gameList" class="game-list"><div class="empty-state">Connect your NYT account to load recent games.</div></div>
@@ -622,6 +623,7 @@ let catalogError = null;
 let dailyRefreshRunning = false;
 let gameListRequest = null;
 let gameRefreshError = "";
+let gameRefreshResult = "";
 let manualRefreshState = null;
 let lastDailyRefreshCheck = 0;
 const ANALYSIS_VERSION = 'quackle-crossplay-v2';
@@ -805,6 +807,8 @@ function clearAccountUi(message) {
   gameListRequest = null;
   manualRefreshState = null;
   gameRefreshError = "";
+  gameRefreshResult = "";
+  byId('refreshStatus').textContent = '';
   resetBackgroundAnalysis();
   stopContinuation();
   previewBestMove = false;
@@ -872,6 +876,10 @@ async function loadGames({ refresh = false, background = false, manual = false }
     request.controller.abort();
   }, 30000);
   if (!background) byId('gameCount').textContent = 'Updating games…';
+  if (refresh) {
+    gameRefreshResult = 'Checking NYT for recent games…';
+    byId('refreshStatus').textContent = gameRefreshResult;
+  }
   try {
     const useLiveRefresh = persistenceEnabled && refresh;
     const data = await api(useLiveRefresh ? 'games/refresh' : 'games', useLiveRefresh ? {
@@ -880,14 +888,17 @@ async function loadGames({ refresh = false, background = false, manual = false }
       body: JSON.stringify({ if_stale: background })
     } : { expectedOwner: owner, signal: request.controller.signal });
     if (!current() || request.controller.signal.aborted) return false;
-    games = Array.isArray(data.games) ? data.games : [];
+    if (!Array.isArray(data.games)) throw new Error('The server did not return a game list. Press Refresh to try again.');
+    games = data.games;
     gameRefreshError = "";
+    if (refresh) gameRefreshResult = refreshResultText(data.refresh);
     renderGames();
     if (!manualRefreshState) startBackgroundAnalysis();
     return true;
   } catch (error) {
     if (!current() || (!request.timedOut && request.controller.signal.aborted)) return false;
     const message = request.timedOut ? 'The game request timed out. Press Refresh to try again.' : error.message;
+    gameRefreshResult = '';
     gameRefreshError = 'Refresh failed: ' + message;
     renderGames();
     if (/cookie|session|logged in/i.test(message)) setConnection(message, 'error');
@@ -898,7 +909,20 @@ async function loadGames({ refresh = false, background = false, manual = false }
   }
 }
 
+function refreshResultText(report) {
+  if (!report || report.status !== 'refreshed') {
+    return report?.status === 'skipped' ? 'Saved games loaded. Press Refresh to check NYT now.' : 'Refresh completed.';
+  }
+  const checked = new Date(report.checked_at);
+  const when = Number.isNaN(checked.getTime()) ? '' : 'Checked ' + checked.toLocaleString() + '. ';
+  const counts = 'NYT returned ' + report.fetched + ' games · ' + report.added + ' new · ' + report.updated + ' changed.';
+  const unchanged = report.added === 0 && report.updated === 0 ? ' No new or changed games were returned.' : '';
+  const newest = report.newest_timestamp ? ' Newest returned game: ' + formatDate(report.newest_timestamp) + '.' : '';
+  return when + counts + unchanged + newest;
+}
+
 function renderGames() {
+  byId('refreshStatus').textContent = gameRefreshResult;
   const completed = games.filter(game => game.status === 'completed')
     .sort((a, b) => Number(b.timestamp || 0) - Number(a.timestamp || 0));
   const ongoing = games.length - completed.length;
@@ -1109,20 +1133,68 @@ function syncVisibleContext(context) {
 function updateBackgroundStatus() {
   const queue = reviewQueue;
   if (!queue || viewingSharedGame) return;
-  let moves = 0, early = 0, total = 0, done = 0, unrated = 0, failed = queue.errors.size;
-  for (const context of queue.contexts.values()) {
+  let moves = 0, early = 0, total = 0, done = 0, unrated = 0;
+  const failures = new Set(queue.errors.keys());
+  const details = [];
+  const gameLabel = id => 'vs ' + (queue.contexts.get(id)?.review.opponent || games.find(game => game.id === id)?.opponent || id);
+  for (const [id, reason] of queue.errors) details.push({id, label: 'Load failed', reason});
+  for (const [id, context] of queue.contexts) {
+    const points = context.quality?.points || [];
     moves += context.states.filter(state => state === 'done').length;
-    early += (context.quality?.points || []).filter(point => point.provisional && Number.isFinite(point.playedWin)).length;
+    early += points.filter(point => point.provisional && Number.isFinite(point.playedWin)).length;
     total += context.states.length;
-    unrated += (context.quality?.points || []).filter(point => point.category === 'unrated').length;
+    unrated += points.filter(point => point.category === 'unrated').length;
     if (context.states.every(state => state === 'done')) done++;
-    if (context.cache.saveError || context.error || context.quality?.points.some(point => point.retryable || point.draw?.retryable)) failed++;
+    if (context.cache.saveError) details.push({id, label: 'Save failed', reason: context.cache.saveError});
+    if (context.error) {
+      const turns = context.states.flatMap((state, index) => state === 'error' ? [index + 1] : []);
+      details.push({id, label: turns.length ? 'Turn ' + turns.join(', ') : 'Analysis failed', reason: context.error});
+    }
+    for (const point of points) {
+      if (point.category === 'unrated' || point.retryable) {
+        details.push({id, label: 'Turn ' + (point.turnIndex + 1) + (point.retryable ? ' · Retry available' : ' · Unrated'),
+          reason: point.reason || 'No win estimate is available for this move.'});
+      }
+      if (point.draw?.retryable) details.push({id, label: 'Turn ' + (point.turnIndex + 1) + ' · Draw failed',
+        reason: point.draw.reason || 'The rack draw could not be analyzed.'});
+    }
+    if (context.cache.saveError || context.error || points.some(point => point.retryable || point.draw?.retryable)) failures.add(id);
   }
-  const gameCount = queue.orderedIds().length;
-  const note = gameCount ? 'Background analysis: ' + done + '/' + gameCount + ' games · ' + moves + '/' + total + ' loaded moves checked' + (early ? ' · ' + early + ' early estimates awaiting full analysis' : '') + (unrated ? ' · ' + unrated + ' unrated' : '') + '. Keep this page open to continue.' : '';
-  const errors = [catalogError, ...queue.errors.values()].filter(Boolean);
-  byId('backgroundStatus').textContent = note + (failed ? ' ' + failed + ' games need a retry.' : '') + (errors.length ? ' ' + errors[0] : '');
-  byId('retryBackground').classList.toggle('hidden', !failed && !catalogError);
+  const ids = queue.orderedIds();
+  const inProgress = queue.loading.size > 0 || ids.some(id => !queue.contexts.has(id) && !queue.errors.has(id)) ||
+    [...queue.contexts.values()].some(context => !context.paused &&
+      context.states.some(state => ['pending', 'pending-preview', 'running', 'running-preview'].includes(state)));
+  const pausedWork = [...queue.contexts.values()].some(context => context.paused &&
+    context.states.some(state => ['pending', 'pending-preview', 'running', 'running-preview'].includes(state)));
+  const note = ids.length ? 'Background analysis: ' + done + '/' + ids.length + ' games · ' + moves + '/' + total + ' loaded moves checked' +
+    (early ? ' · ' + early + ' early estimates awaiting full analysis' : '') + (unrated ? ' · ' + unrated + ' unrated' : '') +
+    (inProgress ? '. Keep this page open to continue.' : pausedWork ? '. Analysis paused.' : '. Analysis pass finished.') : '';
+  const status = byId('backgroundStatus');
+  const detailsOpen = Boolean(status.querySelector('details')?.open);
+  status.replaceChildren(document.createTextNode(note +
+    (unrated ? ' Unrated moves have no win estimate. Retry counts games with a failed load, save, move, or draw.' : '') +
+    (failures.size ? ' ' + failures.size + ' games need a retry.' : '')));
+  if (catalogError) details.push({label: 'Saved game list failed', reason: catalogError});
+  if (details.length) {
+    const disclosure = makeElement('details');
+    disclosure.open = detailsOpen;
+    disclosure.append(makeElement('summary', '', 'Analysis details (' + details.length + ')'));
+    const list = makeElement('ul');
+    for (const item of details) {
+      const row = makeElement('li');
+      if (item.id) {
+        const link = makeElement('a', '', gameLabel(item.id));
+        link.href = '?review=' + encodeURIComponent(item.id);
+        link.addEventListener('click', event => { event.preventDefault(); void openGame(item.id); });
+        row.append(link, document.createTextNode(' · '));
+      }
+      row.append(document.createTextNode(item.label + ': ' + item.reason));
+      list.append(row);
+    }
+    disclosure.append(list);
+    status.append(disclosure);
+  }
+  byId('retryBackground').classList.toggle('hidden', !failures.size && !catalogError);
 }
 async function loadAnalysisCatalog(queue) {
   if (!persistenceEnabled || viewingSharedGame) { queue.add(games); return; }
@@ -1138,7 +1210,9 @@ async function loadAnalysisCatalog(queue) {
       if (token !== catalogRequest || queue.closed) return;
       const page = Array.isArray(data.games) ? data.games : [];
       const indexed = new Map(games.map(game => [game.id, game]));
-      for (const game of page) indexed.set(game.id, game);
+      // The current list includes the latest import. Catalog pages only fill
+      // missing history; they must not restore an older status or score.
+      for (const game of page) if (!indexed.has(game.id)) indexed.set(game.id, game);
       games = [...indexed.values()];
       renderGames();
       queue.add(page);
@@ -3618,11 +3692,14 @@ window.addEventListener('pagehide', () => {
 function flushAllAnalysis() {
   if (reviewQueue) for (const context of reviewQueue.contexts.values()) flushAnalysisSave(context.review, context.cache, { keepalive: true });
 }
-byId('retryBackground').addEventListener('click', () => {
+byId('retryBackground').addEventListener('click', async () => {
   const queue = getReviewQueue();
+  const saves = [...queue.contexts.values()].filter(context => context.cache.saveError)
+    .map(context => flushAnalysisSave(context.review, context.cache));
   queue.retry();
-  for (const context of queue.contexts.values()) flushAnalysisSave(context.review, context.cache);
-  loadAnalysisCatalog(queue);
+  if (catalogError) void loadAnalysisCatalog(queue);
+  await Promise.all(saves);
+  if (reviewQueue === queue) updateBackgroundStatus();
 });
 window.addEventListener('storage', event => {
   if (event.key === 'crossplay.supabase.session') {
