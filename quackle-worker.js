@@ -115,7 +115,7 @@ function simulate(module, payload, numMoves = payload.numMoves, iterations = pay
 }
 
 function evaluateCustomMove(module, payload, simulateWin) {
-  const { grid, key, move: proposed } = customMoveKey(payload);
+  const { grid, key } = customMoveKey(payload);
   // Validate and rank a custom move against the complete legal list.
   // Recorded game moves use the bounded simulateReview path below.
   const limit = 1000000;
@@ -138,44 +138,11 @@ function evaluateCustomMove(module, payload, simulateWin) {
   if (!Number.isInteger(payload.iterations) || payload.iterations < 1 || payload.iterations > 277) {
     throw new Error('Simulation iterations must be between 1 and 277.');
   }
-  if (proposed?.action === 'exchange') {
-    // Force the chosen swap into a bounded comparison. A low static rank must
-    // not require simulating every higher-ranked placement.
-    const result = simulateRecordedMove(module, { ...payload, numMoves: 15,
-      played: proposed, seed: 123456789 });
-    return { ...evaluation, ...result };
-  }
-  let count = Math.max(15, index + 1);
-  // Endgame ranking can differ from the static list. Check candidate inclusion
-  // with one sample before committing to all requested simulation rounds.
-  let result;
-  while (true) {
-    result = simulate(module, payload, count, 1);
-    if (result.error) throw new Error(result.error);
-    if (!result.simulated || !Array.isArray(result.moves)) throw new Error('Quackle could not simulate this position.');
-    if (result.moves.some(move => candidateKey(move, grid) === key)) break;
-    if (count >= generated.moves.length) throw new Error('Quackle could not include this move in its simulation.');
-    count = Math.min(generated.moves.length, count * 2);
-  }
-  result = payload.iterations === 1 ? result : simulate(module, payload, count);
-  if (result.error) throw new Error(result.error);
-  const playToEnd = payload.bagCount <= 21;
-  if (!result.simulated || result.iterationsCompleted !== payload.iterations ||
-      result.iterationsRequested !== payload.iterations ||
-      result.bagCount !== payload.bagCount || result.finalTurnsRemaining !== payload.finalTurnsRemaining ||
-      result.playToEnd !== playToEnd || result.simulationMode !== (playToEnd ? 'play-to-end' : '2-ply') ||
-      result.plies !== (playToEnd ? -1 : 2) || result.winModel !== (playToEnd ? 'terminal' : 'bogowin') ||
-      result.candidateCount !== result.moves.length ||
-      result.totalPlayaheads !== payload.iterations * result.moves.length ||
-      !result.moves.length || !result.moves.every(move =>
-        move.samples === payload.iterations && (!playToEnd || move.terminalSamples === payload.iterations) &&
-        Number.isFinite(move.equity) && Number.isFinite(move.win) && move.win >= 0 && move.win <= 1)) {
-    throw new Error('Quackle returned incomplete simulation results.');
-  }
-  const simulatedMove = result.moves.find(move => candidateKey(move, grid) === key);
-  if (!simulatedMove) throw new Error('Quackle did not return a simulation for this move.');
-  return { ...evaluation, ...result, selected: simulatedMove,
-    best: result.moves.reduce((top, move) => move.win > top.win ? move : top, simulatedMove) };
+  // Force the canonical legal move into a bounded comparison, preserving
+  // existing letters and assigned blanks without simulating its whole rank.
+  const result = simulateRecordedMove(module, { ...payload, numMoves: 15,
+    played: selected, seed: 123456789 });
+  return { ...evaluation, ...result };
 }
 
 function simulateRecordedMove(module, payload) {

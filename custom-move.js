@@ -115,7 +115,7 @@ window.CustomMove = class CustomMove {
     this.setBusy(true);
     this.status.classList.remove('custom-move-error');
     this.status.textContent = simulateWin
-      ? 'Estimating win chances… Moves farther down the ranking take longer. You can cancel.'
+      ? 'Estimating win chances against up to 15 leading alternatives… You can cancel.'
       : 'Checking the move and evaluating all legal alternatives…';
     if (!simulateWin) this.output.replaceChildren();
     try {

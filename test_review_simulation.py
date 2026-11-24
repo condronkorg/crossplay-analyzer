@@ -102,6 +102,32 @@ class ReviewSimulationTests(unittest.TestCase):
         self.assertEqual(result["selected"]["tiles"], actual["tiles"])
         self.assertEqual(result["selected"]["staticEquity"], actual["equity"])
 
+    def test_custom_placements_preserve_existing_letters_and_physical_blanks(self):
+        grid = ["." * 15] * 15
+        grid[7] = "......CAT......"
+        for word, square, direction, score in [
+            ("ARE", "H8", "down", 4),
+            (".RE", "H8", "down", 4),
+            ("sCAT", "F8", "across", 5),
+            ("s", "F8", "down", 5),
+        ]:
+            with self.subTest(word=word, direction=direction):
+                payload = self.payload(gridJson=json.dumps(grid), bagCount=83,
+                    customMove={"action": "place", "word": word, "square": square, "direction": direction})
+                static = self.request(payload, "evaluateMove")["result"]
+                response = self.request(payload, "simulateMove")
+                self.assertFalse(response.get("error"), response)
+                result = response["result"]
+                self.assertTrue(result["simulated"])
+                self.assertLessEqual(result["candidateCount"], 16)
+                self.assertEqual(result["staticRank"], static["staticRank"])
+                self.assertEqual(result["selected"]["samples"], payload["iterations"])
+                self.assertEqual(result["selected"]["score"], score)
+                self.assertEqual(result["selected"]["position"], static["selected"]["position"])
+                self.assertEqual(result["selected"]["tiles"], static["selected"]["tiles"])
+                if word.startswith("s"):
+                    self.assertIn("s", result["selected"]["tiles"])
+
     def test_seed_is_independent_of_other_requests_and_candidate_count(self):
         payload = self.payload(numMoves=1)
         first = self.result(payload)
