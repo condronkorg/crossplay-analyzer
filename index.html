@@ -1091,7 +1091,24 @@ function makeReviewContext(review, owner, shared = false) {
     quality = { ...quality, points, current: points.length, state: 'running',
       message: 'Refreshing saved swap analysis.' };
   }
-  if (quality) quality = {...quality, points: quality.points.map(point => restoreDrawPoint(cache, review.turns[point.turnIndex], point))};
+  // A summary can outlive its engine cache identity. Remove old late-game
+  // values before the first render, rather than show them while work restarts.
+  if (quality) {
+    const points = quality.points.filter(point => {
+      const turn = review.turns[point.turnIndex];
+      if (Number(turn.bag_count) > 21) return true;
+      // A permanent missing-data result has no probability to invalidate.
+      if (point.category === 'unrated' && !point.retryable &&
+          !Number.isFinite(point.playedWin) && !Number.isFinite(point.bestWin)) return true;
+      const result = cache.get(turn, 'review');
+      return point.endgamePolicy === 'crossplay-endgame-v1' &&
+        result?.endgamePolicy === point.endgamePolicy &&
+        result.selected.win === point.playedWin && result.best.win === point.bestWin;
+    });
+    if (points.length !== quality.points.length) quality = {...quality, points,
+      current: points.length, state: 'running', message: 'Refreshing saved endgame analysis.'};
+    quality = {...quality, points: quality.points.map(point => restoreDrawPoint(cache, review.turns[point.turnIndex], point))};
+  }
   const trend = quality ? deriveWinTrend({ review, quality }, quality.state === 'done') : null;
   const complete = quality?.state === 'done' && trend?.state === 'done' && quality.points.length === review.turns.length &&
     new Set(quality.points.map(point => point.turnIndex)).size === review.turns.length && !quality.points.some(point => point.retryable) && quality.points.every(point => point.category === 'unrated' ||
@@ -2433,7 +2450,7 @@ function makeMoveQualityPanel(review) {
   }
   panel.append(makeElement('p', 'analysis-note', 'Loss is measured in percentage points (pp) of estimated win chance. For example, 60% versus 45% is a loss of 15 pp. Lower is better.'));
   const methodology = makeReviewDetails('quality-method', 'estimate-details', 'How move quality is measured');
-  methodology.append(makeElement('p', 'analysis-note', 'Only your turns are shown here; both players are analyzed. Loss compares the recorded move with the highest win estimate among the sampled alternatives. Early estimates use fewer alternatives and samples, then full estimates compare Quackle’s top ' + MOVE_COUNT + ' static candidates plus the recorded move with ' + SIMULATION_ITERATIONS + ' samples each. Bands: Best <2 pp; Inaccuracy 2–<5; Mistake 5–<10; Blunder ≥10. Placements, passes, and legal exchanges are included. Missing or invalid moves remain unrated. Alternatives use the same initial hidden rack and bag samples. Above 21 bag tiles the engine uses two-ply play and its win model; at 21 or fewer it plays to the Crossplay finish. Ties count as half a win. These are engine estimates, not a calibrated prediction of human play.'));
+  methodology.append(makeElement('p', 'analysis-note', 'Only your turns are shown here; both players are analyzed. Loss compares the recorded move with the highest win estimate among the sampled alternatives. Early estimates use fewer alternatives and samples, then full estimates compare Quackle’s top ' + MOVE_COUNT + ' static candidates plus the recorded move with ' + SIMULATION_ITERATIONS + ' samples each. Bands: Best <2 pp; Inaccuracy 2–<5; Mistake 5–<10; Blunder ≥10. Placements, passes, and legal exchanges are included. Missing or invalid moves remain unrated. Alternatives use the same initial hidden rack and bag samples. Above 21 bag tiles the engine uses two-ply play and its win model; at 21 or fewer it plays to the Crossplay finish. Near an empty bag, the engine compares moves that can change who plays last, then searches both final turns. Earlier choices and hidden tiles remain sampled, so these are estimates, not a proof of perfect play. Ties count as half a win.'));
   panel.append(methodology);
   return panel;
 }
@@ -3140,7 +3157,8 @@ async function analyzeReviewTurn(context, index, phase = 'review', options = {})
         equityLoss: result.selected.action === 'place' ? staticLoss : null,
         playedEquity: result.selected.staticEquity, bestEquity: result.bestStaticEquity,
         playedMove: reviewMove(turn, result.selected), bestMove: reviewMove(turn, result.best),
-        candidateCount: result.moves.length
+        candidateCount: result.moves.length,
+        ...(result.endgamePolicy ? {endgamePolicy: result.endgamePolicy} : {})
       };
       if (!point.provisional) {
         const frequencies = await loadWordFrequency().catch(() => null);

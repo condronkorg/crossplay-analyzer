@@ -766,6 +766,11 @@ class Handler(SimpleHTTPRequestHandler):
             is_review = isinstance(identity, list) and len(identity) > 1 and identity[1] in ('review', 'preview')
             if is_review or 'samplingVersion' in result:
                 Handler.validate_review_result(identity, result)
+            elif (isinstance(identity, list) and len(identity) > 1
+                  and identity[0] == 'quackle-position-v1' and identity[1] in ('simulation', 'trend')):
+                if (not Handler.valid_endgame_policy(identity, result, 12)
+                        or result.get('bagCount') != identity[6]):
+                    raise CrossplayError('Invalid sampled position endgame policy.', 400)
         return {field: body[field] for field in ('win_trend', 'move_quality', 'turn_analyses') if field in body}
 
     @staticmethod
@@ -816,11 +821,20 @@ class Handler(SimpleHTTPRequestHandler):
         return actual is not None and actual == placements(candidate)
 
     @staticmethod
+    def valid_endgame_policy(identity, result, base_length):
+        if not isinstance(identity, list) or len(identity) < base_length or type(identity[6]) is not int:
+            return False
+        if identity[6] <= 21:
+            return (len(identity) == base_length + 1 and identity[-1] == 'crossplay-endgame-v1'
+                    and result.get('endgamePolicy') == 'crossplay-endgame-v1')
+        return len(identity) == base_length
+
+    @staticmethod
     def validate_review_result(identity, result):
         def invalid():
             raise CrossplayError('Invalid win-probability analysis result.', 400)
 
-        if (not isinstance(identity, list) or len(identity) != 15
+        if (not Handler.valid_endgame_policy(identity, result, 15)
                 or identity[0] != 'quackle-review-v1' or identity[1] not in ('review', 'preview')
                 or identity[14] != 'paired-review-v1'
                 or not all(isinstance(value, str) for value in identity[12:14])):
@@ -888,7 +902,7 @@ class Handler(SimpleHTTPRequestHandler):
         def invalid():
             raise CrossplayError('Invalid rack-draw analysis result.', 400)
 
-        if (not isinstance(identity, list) or len(identity) != 15
+        if (not Handler.valid_endgame_policy(identity, result, 15)
                 or identity[0] != 'quackle-rack-draw-v1' or identity[1] not in ('draw', 'draw-preview')
                 or identity[14] != 'rack-draw-v1'
                 or not all(isinstance(value, str) for value in identity[11:14])):

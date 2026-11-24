@@ -1,6 +1,7 @@
 /* Position results are shared by grading, turn details, and the win trend. */
 (function(root) {
   'use strict';
+  const ENDGAME_POLICY = 'crossplay-endgame-v1';
   class AnalysisCache {
     constructor(saved = {}, parameters = {}) {
       this.results = { ...saved };
@@ -15,11 +16,13 @@
     key(turn, kind) {
       const p = this.parameters;
       if (kind === 'draw' || kind === 'draw-preview') {
-        return JSON.stringify(['quackle-rack-draw-v1', kind, turn.grid, turn.rack,
+        const values = ['quackle-rack-draw-v1', kind, turn.grid, turn.rack,
           Number(turn.mover_score) || 0, Number(turn.other_score) || 0,
           Number(turn.bag_count), Number(turn.bag_count) === 0 ? Number(turn.final_turns_remaining) : 0,
           kind === 'draw-preview' ? p.previewIterations : p.iterations, p.plies, p.terminalBagLimit,
-          String(turn.action || ''), String(turn.swapped_tiles || ''), turn.rack_after ?? null, 'rack-draw-v1']);
+          String(turn.action || ''), String(turn.swapped_tiles || ''), turn.rack_after ?? null, 'rack-draw-v1'];
+        if (Number(turn.bag_count) <= 21) values.push(ENDGAME_POLICY);
+        return JSON.stringify(values);
       }
       const review = kind === 'review' || kind === 'preview';
       const sampled = review || kind === 'simulation' || kind === 'trend';
@@ -30,13 +33,17 @@
         kind === 'preview' ? p.previewIterations : kind === 'simulation' || kind === 'review' ? p.iterations : kind === 'trend' ? p.trendIterations : 0,
         sampled ? p.plies : 0, sampled ? p.terminalBagLimit : 0];
       if (review) values.push(String(turn.action || ''), String(turn.swapped_tiles || ''), 'paired-review-v1');
+      if (sampled && Number(turn.bag_count) <= 21) values.push(ENDGAME_POLICY);
       return JSON.stringify(values);
     }
 
     // Both profiles use the full review seed, so preview samples match its prefix.
     seed(turn) {
+      // Keep the same sampled worlds when the endgame policy changes.
+      const identity = JSON.parse(this.key(turn, 'review'));
+      if (identity.at(-1) === ENDGAME_POLICY) identity.pop();
       let hash = 2166136261;
-      for (const character of this.key(turn, 'review')) {
+      for (const character of JSON.stringify(identity)) {
         hash ^= character.charCodeAt(0);
         hash = Math.imul(hash, 16777619);
       }

@@ -21,6 +21,107 @@ class LowBagBrowserTest(unittest.TestCase):
         }}, analysisOwner()).quality""")
         self.assertIsNone(result)
 
+    def test_legacy_endgame_summary_is_removed_before_recalculation(self):
+        self.open_game()
+        result = self.page.evaluate("""() => {
+          const early = {...currentReview.turns[0], index:0, bag_count:86};
+          const late = {...currentReview.turns[0], index:1, bag_count:2};
+          const point = index => ({turnIndex:index, turn:index+1, mine:true,
+            action:currentReview.turns[0].action, evaluation:MOVE_QUALITY_EVALUATION,
+            playedWin:1, bestWin:1, loss:0, category:'best', samples:277,
+            provisional:false, draw:{beforeWin:1, afterWin:1, drawCount:2}});
+          const review = {...currentReview, turns:[early,late], stored_analysis:{
+            version:ANALYSIS_VERSION, turn_analyses:{},
+            move_quality:{evaluation:MOVE_QUALITY_EVALUATION, state:'done',
+              current:2, points:[point(0),point(1)]},
+            win_trend:{evaluation:MOVE_QUALITY_EVALUATION, state:'done',
+              points:[{x:1, mine:100, theirs:0}]}}};
+          const owner = makeReviewContext(review,analysisOwner());
+          const guest = makeReviewContext(review,analysisOwner(),true);
+          return {owner:{points:owner.quality.points, state:owner.quality.state,
+              current:owner.quality.current, trend:owner.trend, states:owner.states},
+            guest:{points:guest.quality.points, shared:guest.cache.shared}};
+        }""")
+        self.assertEqual([point['turnIndex'] for point in result['owner']['points']], [0])
+        self.assertEqual(result['owner']['points'][0]['playedWin'], 1)
+        self.assertEqual(result['owner']['state'], 'running')
+        self.assertEqual(result['owner']['current'], 1)
+        self.assertEqual(result['owner']['trend']['state'], 'running')
+        self.assertEqual([point['x'] for point in result['owner']['trend']['points']], [0])
+        self.assertEqual(result['owner']['states'], ['pending-preview', 'pending-preview'])
+        self.assertEqual([point['turnIndex'] for point in result['guest']['points']], [0])
+        self.assertTrue(result['guest']['shared'])
+
+    def test_current_policy_summary_is_restored_only_with_matching_raw_result(self):
+        self.open_game()
+        result = self.page.evaluate("""() => {
+          const grid = ['CD........G....','.......A.NOUN.Y','.......L...TAME',
+            '......YEAH...E.','.........ab.yA.','......LOB.OWED.',
+            '..PROG..I.TEN.F','....D..JOGS...I','...LASSI.O..RUN',
+            '.......V.R.MI..','...C...E..HIPS.','...A.BASE.A.E..',
+            '...R.O..D.V....','..RENT.LITER...','.....H..T......'];
+          const turn = {...currentReview.turns[0], index:0, grid, grid_after:grid,
+            rack:'WEAFTUO', rack_after:'WEAFTUO', action:'PASS', bag_count:0,
+            final_turns_remaining:1};
+          const cache = new AnalysisCache({},POSITION_PARAMETERS);
+          const move = {action:'pass', position:'', tiles:'', leave:'WEAFTUO',
+            score:0, equity:0, staticEquity:0, win:1, samples:277, terminalSamples:277};
+          const raw = {simulated:true, endgamePolicy:'crossplay-endgame-v1',
+            samplingVersion:'paired-review-v1', seed:cache.seed(turn),
+            moves:[move], selected:move, best:move, staticMoves:[{...move,equity:0}],
+            bestStaticEquity:0, candidateCount:1, totalPlayaheads:277,
+            plies:-1, playToEnd:true, simulationMode:'play-to-end',winModel:'terminal',
+            bagCount:0, finalTurnsRemaining:1, iterationsRequested:277,iterationsCompleted:277};
+          const point = {turnIndex:0, turn:1, mine:true, action:'PASS',
+            evaluation:MOVE_QUALITY_EVALUATION, playedWin:1,bestWin:1,loss:0,
+            category:'best',samples:277,provisional:false,endgamePolicy:'crossplay-endgame-v1'};
+          const saved = {...currentReview,turns:[turn],stored_analysis:{
+            version:ANALYSIS_VERSION,turn_analyses:{[cache.key(turn,'review')]:raw},
+            move_quality:{evaluation:MOVE_QUALITY_EVALUATION,state:'done',current:1,points:[point]}}};
+          const restored = makeReviewContext(saved,analysisOwner());
+          const stale = structuredClone(saved);
+          stale.stored_analysis.move_quality.points[0].playedWin = 0;
+          stale.stored_analysis.move_quality.points[0].bestWin = 0;
+          const mismatched = makeReviewContext(stale,analysisOwner());
+          const oldSummary = structuredClone(saved);
+          delete oldSummary.stored_analysis.move_quality.points[0].endgamePolicy;
+          const unmarked = makeReviewContext(oldSummary,analysisOwner());
+          delete raw.endgamePolicy;
+          const oldPolicy = makeReviewContext(saved,analysisOwner());
+          return {restored:{quality:restored.quality,states:restored.states},
+            mismatched:mismatched.quality,unmarked:unmarked.quality,oldPolicy:oldPolicy.quality};
+        }""")
+        self.assertEqual(len(result['restored']['quality']['points']), 1)
+        self.assertEqual(result['restored']['quality']['state'], 'done')
+        self.assertEqual(result['restored']['states'], ['done'])
+        self.assertEqual(result['mismatched']['points'], [])
+        self.assertEqual(result['mismatched']['state'], 'running')
+        self.assertEqual(result['unmarked']['points'], [])
+        self.assertEqual(result['unmarked']['state'], 'running')
+        self.assertEqual(result['oldPolicy']['points'], [])
+        self.assertEqual(result['oldPolicy']['state'], 'running')
+
+    def test_permanent_unrated_endgame_does_not_restart_on_each_load(self):
+        self.open_game()
+        result = self.page.evaluate("""() => {
+          const turn = {...currentReview.turns[0],bag_count:2,action:'swap -- 0',swapped_tiles:null};
+          let reason;
+          try { CrossplayReview.playedMove(turn); } catch(error) { reason=error.message; }
+          const point = makeUnratedPoint(0,turn,reason);
+          const review = {...currentReview,turns:[turn],stored_analysis:{version:ANALYSIS_VERSION,
+            turn_analyses:{},move_quality:{evaluation:MOVE_QUALITY_EVALUATION,state:'done',
+              current:1,points:[point]}}};
+          const first = makeReviewContext(review,analysisOwner());
+          const next = makeReviewContext({...review,stored_analysis:{...review.stored_analysis,
+            move_quality:first.quality}},analysisOwner());
+          return {first:first.quality,next:next.quality,states:next.states};
+        }""")
+        self.assertEqual(result['first']['state'], 'done')
+        self.assertEqual(result['next']['state'], 'done')
+        self.assertEqual(len(result['next']['points']), 1)
+        self.assertEqual(result['next']['points'][0]['category'], 'unrated')
+        self.assertEqual(result['states'], ['done'])
+
     def test_four_tile_swap_with_six_bag_tiles_has_saved_move_and_draw_wp(self):
         self.open_game()
         result = self.page.evaluate("""async () => {
