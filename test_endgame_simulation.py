@@ -34,6 +34,27 @@ class EndgameSimulationTests(unittest.TestCase):
         self.assertEqual(result['afterWin'], 0)
         self.assertEqual(result.get('endgamePolicy'), 'crossplay-endgame-v1')
 
+    def test_every_low_bag_candidate_finishes_after_recorded_pass_or_swap(self):
+        for bag_count in (1, 2):
+            grid = list(self.GRID)
+            grid[0] = ('.D' if bag_count == 1 else '..') + '........G....'
+            for action, tiles in (('pass', ''), ('exchange', 'W' if bag_count == 1 else 'WE')):
+                with self.subTest(bag=bag_count, action=action):
+                    result = self.request(self.payload(
+                        gridJson=json.dumps(grid), rack='WEAFTUO',
+                        playerScore=110, opponentScore=100,
+                        bagCount=bag_count, finalTurnsRemaining=0,
+                        played={'action': action, 'position': '', 'tiles': tiles},
+                        iterations=277, numMoves=15), 'simulateReviewMove')
+                    self.assertFalse(result.get('error'), result)
+                    self.assertTrue(result['simulated'])
+                    self.assertEqual(result['selected']['action'], action)
+                    # A future-policy cycle must not hide behind a completed
+                    # selected move: every candidate must finish every sample.
+                    self.assertTrue(result['moves'])
+                    for move in result['moves']:
+                        self.assertEqual(move['terminalSamples'], 277)
+
     def test_low_bag_policy_keeps_paired_samples_stable_across_cache_hits(self):
         grid = list(self.GRID)
         grid[0] = '..........G....'

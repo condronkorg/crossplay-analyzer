@@ -40,7 +40,7 @@ index 19c7d8e..8981ecf 100644
  		move.action = Move::Exchange;
  		move.setTiles(String::alphabetize(thrown));
 diff --git i/sim.cpp w/sim.cpp
-index 6271bcd..657b8f1 100644
+index 6271bcd..66f3114 100644
 --- i/sim.cpp
 +++ w/sim.cpp
 @@ -18,11 +18,17 @@
@@ -61,7 +61,7 @@ index 6271bcd..657b8f1 100644
  #include "move.h"
  #include "sim.h"
  #include "strategyparameters.h"
-@@ -43,6 +49,324 @@ using namespace std;
+@@ -43,6 +49,337 @@ using namespace std;
  
  std::atomic_long SimmedMove::objectIdCounter { 0 };
  
@@ -71,7 +71,7 @@ index 6271bcd..657b8f1 100644
 +// bounded policy-improvement layer. Its inner final-phase screening is also
 +// bounded; actual empty-bag decisions always use the full exact search.
 +// Never choose from a sampled true rack.
-+constexpr size_t crossplayPolicyCacheLimit = 8192;
++constexpr size_t crossplayPolicyCacheLimit = 32768;
 +constexpr int crossplayPolicyCandidates = 4;
 +constexpr int crossplayPolicyWorlds = 2;
 +constexpr int crossplayBaseMoveLimit = 12;
@@ -87,7 +87,7 @@ index 6271bcd..657b8f1 100644
 +string crossplayInformationKey(const GamePosition &position)
 +{
 +    string key;
-+    key.reserve(320);
++    key.reserve(576);
 +    const auto &board = position.board();
 +    for (int row = 0; row < board.height(); ++row)
 +        for (int col = 0; col < board.width(); ++col)
@@ -172,21 +172,28 @@ index 6271bcd..657b8f1 100644
 +    if (cached != crossplayFinalCache.end()) return cached->second;
 +
 +    Move chosen;
-+    if (position.finalTurnsRemaining() == 1)
-+        chosen = position.staticBestMove(); // Crossplay static equity is score.
++    if (position.finalTurnsRemaining() == 1 || boundedScreen)
++        chosen = position.staticBestMove(); // Exact on the last turn; inner screening otherwise.
 +    else
 +    {
 +        const int actor = position.currentPlayer().id();
-+        const MoveList all = crossplayAllMoves(position);
-+        const MoveList moves = boundedScreen ? crossplayShortlist(all) : all;
-+        chosen = moves.front();
-+        double bestWin = 0;
-+        int bestSpread = numeric_limits<int>::min();
++        // Avoid recording/sorting every placement for the common easy cases.
++        const Move greedy = position.staticBestMove();
++        chosen = greedy;
++        const int optimistic = position.spread(actor) + greedy.score;
++        GamePosition greedyNext = crossplayAfterMove(position, greedy);
++        const int greedySpread = optimistic - greedyNext.staticBestMove().score;
++        double bestWin = crossplayWinUtility(greedySpread);
++        int bestSpread = greedySpread;
++        if (bestWin < 1 && optimistic >= 0)
++        {
++        const MoveList moves = crossplayAllMoves(position);
 +        GamePosition opposing(position);
 +        opposing.setCurrentPlayer(position.nextPlayer()->id());
 +        const Move priorReply = opposing.staticBestMove();
 +        for (const auto &move : moves)
 +        {
++            if (move == greedy) continue;
 +            // Passing is always available to the final player. Even that reply
 +            // defeats these moves; the remaining score-sorted moves cannot win.
 +            const int upperSpread = position.spread(actor) + move.score;
@@ -226,8 +233,9 @@ index 6271bcd..657b8f1 100644
 +            // does not claim the chosen winning move maximizes final margin.
 +            if (bestWin == 1) break;
 +        }
++        }
 +    }
-+    if (crossplayFinalCache.size() >= crossplayPolicyCacheLimit) crossplayFinalCache.clear();
++    if (crossplayFinalCache.size() >= crossplayPolicyCacheLimit) crossplayFinalCache.erase(crossplayFinalCache.begin());
 +    crossplayFinalCache.emplace(std::move(key), chosen);
 +    return chosen;
 +}
@@ -282,7 +290,12 @@ index 6271bcd..657b8f1 100644
 +    const auto cached = crossplayPreemptyCache.find(key);
 +    if (cached != crossplayPreemptyCache.end()) return cached->second;
 +
-+    const MoveList all = crossplayAllMoves(position);
++    MoveList all = crossplayAllMoves(position);
++    const bool canPlace = any_of(all.begin(), all.end(), [](const Move &move) { return move.action == Move::Place; });
++    if (canPlace)
++        all.erase(remove_if(all.begin(), all.end(), [](const Move &move) { return move.action != Move::Place; }), all.end());
++    // A future placement always reduces a nonempty bag. Do not let the bounded
++    // model invent pass/swap cycles while a legal placement can finish the game.
 +    const MoveList candidates = crossplayShortlist(all);
 +
 +    const Bag unseenBag = position.unseenBag();
@@ -360,7 +373,7 @@ index 6271bcd..657b8f1 100644
 +        }
 +        if (bestValue >= 1.0 - 1e-12) break;
 +    }
-+    if (crossplayPreemptyCache.size() >= crossplayPolicyCacheLimit) crossplayPreemptyCache.clear();
++    if (crossplayPreemptyCache.size() >= crossplayPolicyCacheLimit) crossplayPreemptyCache.erase(crossplayPreemptyCache.begin());
 +    crossplayPreemptyCache.emplace(key, chosen);
 +    return chosen;
 +}
@@ -386,7 +399,7 @@ index 6271bcd..657b8f1 100644
  Simulator::Simulator()
  	: m_logfileIsOpen(false)
  	, m_hasHeader(false)
-@@ -426,6 +750,7 @@ void Simulator::simulate(int plies, int iterations)
+@@ -426,6 +763,7 @@ void Simulator::simulate(int plies, int iterations)
  	SimmedMoveConstants constants;
  	constants.game = m_originalGame;
  	constants.partialOppoRack = m_partialOppoRack;
@@ -394,7 +407,7 @@ index 6271bcd..657b8f1 100644
  	constants.startPlayerId = m_originalGame.currentPosition().currentPlayer().id();
  	constants.playerCount = int(m_originalGame.currentPosition().players().size());
  	// level one's first move is the zeroth ply (the candidate)
-@@ -434,6 +759,8 @@ void Simulator::simulate(int plies, int iterations)
+@@ -434,6 +772,8 @@ void Simulator::simulate(int plies, int iterations)
  	constants.levelCount = (int)((plies - constants.decimalTurns) / constants.playerCount);
  	constants.ignoreOppos = m_ignoreOppos;
  	constants.isLogging = isLogging();
@@ -403,7 +416,7 @@ index 6271bcd..657b8f1 100644
  
  	if (isLogging() && !m_hasHeader)
  		writeLogHeader();
-@@ -668,10 +995,47 @@ void Simulator::simulateOnePosition(SimmedMoveMessage &message, const SimmedMove
+@@ -668,10 +1008,47 @@ void Simulator::simulateOnePosition(SimmedMoveMessage &message, const SimmedMove
  {
  	Game game = constants.game;
  
@@ -455,7 +468,7 @@ index 6271bcd..657b8f1 100644
  
  	double residual = 0;
  
-@@ -708,7 +1072,7 @@ void Simulator::simulateOnePosition(SimmedMoveMessage &message, const SimmedMove
+@@ -708,7 +1085,7 @@ void Simulator::simulateOnePosition(SimmedMoveMessage &message, const SimmedMove
  			else if (constants.ignoreOppos && playerId != constants.startPlayerId)
  				move = Move::createPassMove();
  			else

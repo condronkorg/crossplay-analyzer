@@ -17,7 +17,7 @@ Artifact SHA-256 values:
 
 ```text
 quackle.js    1b9f62da89666b75b551506c4743bca5411ad56db3c9860a7163acf93024746e
-quackle.wasm  1dce7ab1bdcd58354dcfcd12f0e9a72966c83ed64d9f8b2f321ab7daf164b6f9
+quackle.wasm  6873e3b84f418e5ed17c61c9774bcc47a849eb4b6f2994cb0b579556fc140757
 quackle.data  0f7b4e8cdcf4cb743c5423d6befe23ea77691c588f7c7dfb603bf475c1fbf8f3
 ```
 
@@ -82,21 +82,25 @@ means every sampled continuation won; it is not a proof under hidden tiles.
 
 When the bag is empty, future moves use an exact Crossplay win-utility search:
 all legal first actions, including pass, followed by the opponent's maximum
-score on the last turn. A proved winning action can stop the search. The solver
-does not promise the largest winning margin. Empty-bag root candidate lists
+score on the last turn. A proved winning action can stop the search. The solver first checks the static best move and the bound from an opponent
+pass before it records all legal actions. It does not promise the largest
+winning margin. Empty-bag root candidate lists
 include that winning action even when it falls outside the static shortlist.
 The existing two-final-turn countdown and no-rack-penalty rule are unchanged.
 
 With one or two tiles in the bag, future decisions compare the top four static
-moves, the best static move for each physical tile count, and pass. Each decision
+placements and the best static placement for each physical tile count. If a
+legal placement exists, future policy decisions use placements so the bag count
+falls. Recorded root passes and exchanges remain legal, and the exact empty-bag
+search still includes pass. Each decision
 uses at most two deterministic weighted hidden-tile worlds, drawn from the
 acting player's unseen pool. One action is selected across these worlds. The
 policy key uses the board, physical blank flags, the actor's rack, scores, bag
 count, and final-turn state. It excludes the sampled true opponent rack and bag.
 
 This preempty policy is bounded. Candidate evaluation uses a static continuation
-for at most12 moves. Its internal two-turn screening uses the same bounded
-candidate list and an exact maximum-score last reply; unfinished continuations
+for at most12 moves. Its internal two-turn screening uses one static first
+move and an exact maximum-score last reply; unfinished continuations
 use Bogowin. Actual empty-bag decisions always use the full exact search. Larger
 bags retain the static continuation until they reach this policy. Local chance
 sampling does not consume the outer paired random stream. Separate, bounded
