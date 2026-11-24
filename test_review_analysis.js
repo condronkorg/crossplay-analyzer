@@ -38,7 +38,7 @@ test('a sweep in any candidate is missed even if the best move is not a sweep', 
 test('known passes and swaps can miss sweeps without exchanged tile details', () => {
   const grid = Array(15).fill('.'.repeat(15));
   const sweep = {action: 'place', position: '8G', tiles: 'CuRATES'};
-  for (const action of ['PASS', 'pass 0', 'SWAP', 'swap -- 0', 'EXCHANGE -5']) {
+  for (const action of ['PASS', 'pass 0', 'pass -- 0', 'SWAP', 'swap -- 0', 'EXCHANGE -5']) {
     assert.equal(sweepEvent({action, grid}, [sweep]), 'missed');
     assert.equal(sweepEvent({action, grid}), null);
   }
@@ -129,6 +129,24 @@ test('non-placement notation accepts the same numeric suffixes as the API valida
   }
   for (const action of ['SWAP UV 0', 'SWAP 0 extra', 'EXCHANGE 1.5']) {
     assert.throws(() => playedMove({ action, swapped_tiles: 'UV' }), /recorded move/);
+  }
+});
+
+test('pass position markers preserve the recorded action and have no draw', () => {
+  const { rackDraw } = require('./review-analysis.js');
+  const grid = Array(15).fill('.'.repeat(15));
+  const candidates = [
+    {action: 'place', position: '8G', tiles: 'CAT'},
+    {action: 'pass', position: '', tiles: ''}
+  ];
+  for (const action of ['pass -- 0', ' PASS\t--\t-5 ', 'PASS', 'pass 0']) {
+    const turn = {action, grid, rack: 'CATERS?', bag_count: 86};
+    assert.deepEqual(playedMove(turn), {action: 'pass', position: '', tiles: ''});
+    assert.equal(playedCandidateIndex(turn, candidates), 1);
+    assert.deepEqual(rackDraw(turn), {rackAfter: 'CATERS?', drawCount: 0, drawn: '', retained: 'CATERS?'});
+  }
+  for (const action of ['PASS --', 'PASS -- -- 0', 'PASS -- 0 extra', 'PASS AB 0', 'PASS -- 1.5']) {
+    assert.throws(() => playedMove({action}), /recorded move/);
   }
 });
 
