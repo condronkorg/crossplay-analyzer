@@ -266,7 +266,12 @@
   .win-history-help > summary { cursor: pointer; }
 
   .win-history-annotation { pointer-events: all; }
-  .win-history-phase-button { min-height: 44px; margin-top: 10px; font-size: 11px; }
+  .win-history-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-bottom: 6px; }
+  .win-history-controls button, .win-history-controls select { min-width: 44px; min-height: 44px; margin: 0; padding: 6px 9px; font-size: 12px; }
+  .win-history-controls select { flex: 1 1 76px; width: 76px; max-width: 100%; border: 1px solid var(--line); border-radius: 8px; background: #fff; }
+  .win-history-phases { display: flex; gap: 4px; }
+  .win-history-phase-button[aria-pressed="true"] { background: #e0ede5; border-color: #256b4a; color: #174c38; }
+  .win-history-controls button:disabled { cursor: default; opacity: .55; }
   .win-history svg text { font-size: 12px; }
   .win-history svg .win-history-grade text { font-size: 11px; font-weight: 750; }
   .trend-panel { padding: 14px; }
@@ -286,10 +291,16 @@
     .opening-draw-inspector > h4 { display: none; }
     .opening-draw-inspector > h4 + p { grid-column: 2; margin: 0; text-align: right; }
     .opening-draw-inspector .opening-rack-wpa { margin: 2px 0 0; }
+    .opening-draw-inspector .draw-letters-label { margin-bottom: 0; }
+    .opening-draw-inspector .opening-rack-letters { margin: 1px 0; }
+    .opening-draw-inspector > .win-history-comparison { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+    .opening-draw-inspector .win-history-comparison-row { flex: 1; margin-top: 0; }
     .opening-draw-inspector > .win-history-comparison { grid-row: auto; margin-top: 2px; }
   }
   .win-history-point[data-phase="after-draw"] .win-history-marker,
   .win-history-draw-mark { opacity: .45; }
+  .win-history-point[aria-pressed="true"] .win-history-marker,
+  .win-history-point[aria-pressed="true"] .win-history-draw-mark,
   .win-history-point[data-phase="after-draw"]:hover .win-history-marker,
   .win-history-point[data-phase="after-draw"]:focus .win-history-marker,
   .win-history-point:hover .win-history-draw-mark,
@@ -599,6 +610,7 @@ let currentReview = null;
 let reviewView = 'summary';
 const reviewDisclosureStates = new WeakMap();
 const reviewChartScrollStates = new WeakMap();
+const reviewChartPins = new WeakMap();
 const reviewOpeningSelections = new WeakSet();
 const reviewChartWidths = new WeakMap();
 let historyResizeObserver = null;
@@ -720,7 +732,8 @@ function makeReviewDetails(key, className, label) {
 function preserveReviewControlFocus() {
   const focused = document.activeElement;
   const key = focused?.matches('summary') && focused.parentElement.dataset.reviewDisclosure;
-  const selector = key ? 'details[data-review-disclosure="' + key + '"] > summary'
+  const control = focused?.closest('.win-history-controls') ? focused.dataset.chartControl : null;
+  const selector = control ? '[data-chart-control="' + control + '"]' : key ? 'details[data-review-disclosure="' + key + '"] > summary'
     : ['.review-lesson button', '.preview-best-move', '.return-to-played', '.explore-continuation', '.trend-panel .analysis-button', '.quality-panel .analysis-button', '.win-history-scroll', '.win-history-phase-button']
       .find(value => focused?.matches(value));
   return () => {
@@ -1758,7 +1771,7 @@ function refreshGameOverview() {
     : focused?.matches('.start-review') ? '.start-review'
     : disclosure ? 'details[data-review-disclosure="' + CSS.escape(disclosure) + '"] > summary'
     : focused?.matches('.win-history-scroll') ? '.win-history-scroll'
-    : focused?.matches('.win-history-phase-button') ? '.win-history-phase-button' : null;
+    : focused?.closest('.win-history-controls') ? '[data-chart-control="' + focused.dataset.chartControl + '"]' : null;
   existing.replaceWith(makeGameOverview(currentReview));
   restoreReviewChartScroll();
   if (focusedPoint) restoreWinHistoryFocus(byId('reviewPanel').querySelector(selector));
@@ -1896,6 +1909,8 @@ function renderReview() {
   boardToggle.type = 'button';
   boardToggle.addEventListener('click', () => {
     boardView = boardView === 'after' ? 'before' : 'after';
+    reviewChartPins.delete(currentReview);
+    reviewOpeningSelections.delete(currentReview);
     previewBestMove = false;
     previewCandidate = null;
     stopContinuation();
@@ -1969,9 +1984,10 @@ function renderReview() {
   restoreReviewChartScroll();
 }
 
-function selectTurn(index, focusSelector) {
+function selectTurn(index, focusSelector, keepChartPin = false) {
   if (!currentReview || index < 0 || index >= currentReview.turns.length) return;
   reviewOpeningSelections.delete(currentReview);
+  if (!keepChartPin) reviewChartPins.delete(currentReview);
   const entering = reviewView === 'summary';
   reviewView = 'walkthrough';
   currentTurnIndex = index;
@@ -1979,7 +1995,7 @@ function selectTurn(index, focusSelector) {
   previewCandidate = null;
   stopContinuation();
   renderReview();
-  if (entering) {
+  if (entering && !keepChartPin) {
     byId('reviewPanel').querySelector('.replay-heading')?.scrollIntoView({block: 'start', behavior: 'instant'});
     byId('reviewPanel').querySelector('.turn-controls')?.focus({preventScroll: true});
   }
@@ -2880,7 +2896,10 @@ function drawWinHistory(estimates, review, preview = false, overview = false) {
   const previous = reviewChartScrollStates.get(review);
   const inspected = previous?.selected === String(selected)
     ? points.find(point => String(point.x) === String(previous.inspected) && (point.actual ? 'final' : point.phase) === (previous.phase || 'before-draw')) : null;
-  const inspectedPoint = inspected || points.find(point => point.x === (selected === 'opening' ? 'opening' : Math.max(0, selected)));
+  const pin = reviewChartPins.get(review);
+  const pinnedPoint = pin && (points.find(point => point.x === pin.x && (point.actual ? 'final' : point.phase) === pin.phase)
+    || points.find(point => point.x === pin.x));
+  const inspectedPoint = pinnedPoint || inspected || points.find(point => point.x === (selected === 'opening' ? 'opening' : Math.max(0, selected)));
   const width = Math.max(180, reviewChartWidths.get(review) || 560);
   const facts = new Map();
   const rowEnds = {mine: {grade: [], sweep: []}, opponent: {grade: [], sweep: []}};
@@ -2916,7 +2935,7 @@ function drawWinHistory(estimates, review, preview = false, overview = false) {
   const y = value => margin.top + (1 - Math.max(0, Math.min(100, value)) / 100) * plotHeight;
   const chart = makeElement('div', 'win-history');
   chart.dataset.dense = String(dense);
-  chart.append(makeElement('div', 'win-history-heading', you + ' · Win chance'));
+  chart.setAttribute('aria-label', 'Win chance for ' + you);
   const body = makeElement('div', 'win-history-body');
   const visual = makeElement('div', 'win-history-visual');
   let inspector = makeElement('aside', 'win-history-inspector');
@@ -2959,6 +2978,101 @@ function drawWinHistory(estimates, review, preview = false, overview = false) {
       'stroke-dasharray': previous.provisional || point.provisional ? '5 4' : 'none' }));
   }
   const pointHandlers = [];
+  let openingHandler = null;
+  let activePoint = inspectedPoint;
+  let displayedPoint = null;
+  const controls = makeElement('div', 'win-history-controls');
+  controls.setAttribute('role', 'group');
+  controls.setAttribute('aria-label', 'Chart selection');
+  const controlButton = (key, label, text) => {
+    const button = makeElement('button', '', text);
+    button.type = 'button';
+    button.dataset.chartControl = key;
+    button.setAttribute('aria-label', label);
+    return button;
+  };
+  const previousTurn = controlButton('previous', 'Previous chart turn', '‹');
+  const nextTurn = controlButton('next', 'Next chart turn', '›');
+  const turnSelect = makeElement('select');
+  turnSelect.dataset.chartControl = 'turn';
+  turnSelect.setAttribute('aria-label', 'Chart turn');
+  const turnOptions = [{x: 'opening', label: 'Opening'},
+    ...review.turns.map((turn, x) => ({x, label: 'Turn ' + (x + 1)})),
+    ...(points.some(point => point.actual) ? [{x: totalTurns, label: 'Final'}] : [])];
+  for (const option of turnOptions) {
+    const node = makeElement('option', '', option.label);
+    node.value = option.x === totalTurns ? 'final' : String(option.x);
+    turnSelect.append(node);
+  }
+  const moveButton = controlButton('move', 'Inspect recorded move', 'Move');
+  const drawButton = controlButton('draw', 'Inspect rack draw', 'Draw');
+  moveButton.className = drawButton.className = 'win-history-phase-button';
+  const phases = makeElement('div', 'win-history-phases');
+  phases.append(moveButton, drawButton);
+  controls.append(previousTurn, turnSelect, nextTurn, phases);
+  const updateControls = (point, group, centerX, centerY) => {
+    activePoint = point;
+    if (reviewChartPins.has(review)) {
+      svg.querySelectorAll('[aria-pressed]').forEach(node => node.setAttribute('aria-pressed', 'false'));
+      group.setAttribute('aria-pressed', 'true');
+      svg.querySelectorAll('.win-history-selected-ring').forEach(node => node.remove());
+      group.querySelectorAll('.win-history-selected-ring').forEach(node => node.remove());
+      if (!point.opening) group.insertBefore(svgElement('circle', {class: 'win-history-selected-ring',
+        cx: centerX, cy: centerY, r: Number.isFinite(point.mine) ? 10 : 7,
+        fill: '#fff', stroke: '#174c38', 'stroke-width': 2}), group.querySelector('.win-history-marker'));
+    }
+    turnSelect.value = point.actual ? 'final' : String(point.x);
+    const optionIndex = turnOptions.findIndex(option => option.x === point.x);
+    previousTurn.disabled = optionIndex <= 0;
+    nextTurn.disabled = optionIndex === turnOptions.length - 1;
+    moveButton.disabled = Boolean(point.opening || point.actual);
+    drawButton.disabled = Boolean(point.opening || point.actual || !draws.has(point.x));
+    let drawLabel = 'Draw';
+    if (drawButton.disabled) {
+      drawLabel = 'No draw';
+      if (!point.opening && !point.actual) {
+        try {
+          if (CrossplayReview.rackDraw(review.turns[point.x]).drawCount) {
+            const draw = qualityPointForTurn(point.x)?.draw;
+            drawLabel = draw?.unavailable || draw?.retryable ? 'Draw unavailable' : 'Draw pending';
+          }
+        } catch (_) { drawLabel = 'Draw unavailable'; }
+      }
+    }
+    drawButton.textContent = drawLabel;
+    moveButton.setAttribute('aria-pressed', String(!point.opening && !point.actual && point.phase !== 'after-draw'));
+    drawButton.setAttribute('aria-pressed', String(point.phase === 'after-draw'));
+  };
+  const pinPoint = point => reviewChartPins.set(review, {x: point.x, phase: point.actual ? 'final' : point.phase});
+  const choosePoint = (point, control) => {
+    const handler = point.opening ? openingHandler : pointHandlers.find(item => pointKey(item.point) === pointKey(point));
+    handler?.inspect(false);
+    if (control) {
+      const target = byId('reviewPanel').querySelector('[data-chart-control="' + control + '"]');
+      const fallback = byId('reviewPanel').querySelector('[data-chart-control="turn"]');
+      (target && !target.disabled ? target : fallback)?.focus({preventScroll: true});
+    }
+  };
+  const pointForTurn = value => {
+    const index = value === 'opening' ? 'opening' : value === 'final' ? totalTurns : Number(value);
+    const phase = activePoint?.phase === 'after-draw' && draws.has(index) ? 'after-draw' : 'before-draw';
+    return points.find(point => point.x === index && (point.opening || point.actual || point.phase === phase));
+  };
+  turnSelect.addEventListener('change', () => choosePoint(pointForTurn(turnSelect.value), 'turn'));
+  for (const [button, step] of [[previousTurn, -1], [nextTurn, 1]]) button.addEventListener('click', () => {
+    const index = turnOptions.findIndex(option => option.x === activePoint.x) + step;
+    const option = turnOptions[index];
+    if (option) choosePoint(pointForTurn(option.x === totalTurns ? 'final' : String(option.x)), button.dataset.chartControl);
+  });
+  for (const [button, phase] of [[moveButton, 'before-draw'], [drawButton, 'after-draw']]) button.addEventListener('click', () => {
+    const point = points.find(point => point.x === activePoint.x && point.phase === phase);
+    if (point) choosePoint(point, button.dataset.chartControl);
+  });
+  const hoverDetail = show => { if (!reviewChartPins.has(review)) show(); };
+  const focusDetail = (point, show) => {
+    if (reviewChartPins.has(review)) pinPoint(point);
+    show();
+  };
   const hitLayer = svgElement('g', {class: 'win-history-hit-layer', 'aria-hidden': 'true'});
   svg.append(hitLayer);
   for (const point of points) {
@@ -2977,29 +3091,34 @@ function drawWinHistory(estimates, review, preview = false, overview = false) {
         fill: openingKnown && !opening.provisional ? '#777' : '#fff', stroke: '#777', 'stroke-width': 2,
         'stroke-dasharray': !openingKnown ? '2 2' : 'none'}));
       const showDetail = () => {
+        if (displayedPoint === pointKey(point)) { updateControls(point, group, centerX, centerY); return; }
+        displayedPoint = pointKey(point);
         const next = makeOpeningDrawInspector(opening, review);
         inspector.replaceWith(next);
         inspector = next;
         selection.setAttribute('x', centerX - selectionWidth / 2);
         svg.querySelectorAll('[data-inspected]').forEach(node => delete node.dataset.inspected);
         group.dataset.inspected = 'true';
+        updateControls(point, group, centerX, centerY);
       };
-      const inspect = () => {
+      const inspect = (focus = true) => {
+        pinPoint(point);
         reviewOpeningSelections.add(review);
         viewport.dataset.selected = 'opening';
         svg.querySelectorAll('[aria-pressed]').forEach(node => node.setAttribute('aria-pressed', String(node === group)));
         showDetail();
-        restoreWinHistoryFocus(group);
+        if (focus) restoreWinHistoryFocus(group);
       };
-      group.addEventListener('pointermove', showDetail);
-      group.addEventListener('focus', () => { if (!group.dataset.restoringFocus) showDetail(); });
+      openingHandler = {point, inspect};
+      group.addEventListener('pointermove', () => hoverDetail(showDetail));
+      group.addEventListener('focus', () => { if (!group.dataset.restoringFocus) focusDetail(point, showDetail); });
       group.addEventListener('click', inspect);
       group.addEventListener('keydown', event => {
         if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); inspect(); }
       });
       const hit = svgElement('rect', {class: 'win-history-hit win-history-opening-hit', 'data-hit-phase': 'opening',
         x: centerX - 14, y: margin.top - 10, width: 28, height: plotHeight + 25, fill: 'transparent'});
-      hit.addEventListener('pointermove', showDetail);
+      hit.addEventListener('pointermove', () => hoverDetail(showDetail));
       hit.addEventListener('click', inspect);
       hitLayer.append(hit);
       svg.append(group);
@@ -3032,7 +3151,7 @@ function drawWinHistory(estimates, review, preview = false, overview = false) {
     const group = svgElement('g', { class: 'win-history-point', 'data-turn-index': point.x, 'data-phase': point.actual ? 'final' : point.phase,
       'data-player': playerKey, 'data-sweep': sweep || '', 'data-quality': grade,
       'data-estimate': point.actual ? 'final' : available ? point.provisional ? 'early' : 'full' : 'missing',
-      tabindex: 0, role: 'button', 'aria-label': label, 'aria-pressed': point.x === selected && !afterDraw ? 'true' : 'false' });
+      tabindex: 0, role: 'button', 'aria-label': label, 'aria-pressed': pinnedPoint ? String(pointKey(point) === pointKey(pinnedPoint)) : point.x === selected && !afterDraw ? 'true' : 'false' });
     const description = label.replace(' Select to review.', '') + (turn ? ' ' + (turn.action || 'Pass') : '');
     const title = svgElement('title');
     title.textContent = description;
@@ -3041,7 +3160,7 @@ function drawWinHistory(estimates, review, preview = false, overview = false) {
     const color = player?.color || '#256b4a';
     const hollow = !available || point.provisional;
     const markerRadius = dense ? (afterDraw ? 1.4 : 2.3) : afterDraw ? 3.5 : 5.5;
-    if (point.x === selected && !afterDraw) group.append(svgElement('circle', { cx: centerX, cy: centerY, r: available ? 10 : 7,
+    if (pinnedPoint ? pointKey(point) === pointKey(pinnedPoint) : point.x === selected && !afterDraw) group.append(svgElement('circle', { class: 'win-history-selected-ring', cx: centerX, cy: centerY, r: available ? 10 : 7,
       fill: '#fff', stroke: '#174c38', 'stroke-width': 2 }));
     group.append(svgElement(point.actual ? 'path' : turn.mine ? 'circle' : 'rect', point.actual
       ? { class: 'win-history-marker', d: `M ${centerX} ${centerY - 7} l 7 7 -7 7 -7 -7 Z`, fill: color, stroke: color, 'stroke-width': 2 }
@@ -3081,47 +3200,45 @@ function drawWinHistory(estimates, review, preview = false, overview = false) {
       group.append(badge);
     }
     const showDetail = () => {
+      if (displayedPoint === pointKey(point)) { updateControls(point, group, centerX, centerY); return; }
+      displayedPoint = pointKey(point);
       const next = makeWinHistoryInspector(point, review, sweep);
       inspector.replaceWith(next);
       inspector = next;
       selection.setAttribute('x', centerX - selectionWidth / 2);
       svg.querySelectorAll('[data-inspected]').forEach(node => delete node.dataset.inspected);
       group.dataset.inspected = 'true';
-      const otherPhase = afterDraw ? 'before-draw' : 'after-draw';
-      if (!point.actual && draws.has(point.x)) {
-        const button = makeElement('button', 'win-history-phase-button', afterDraw ? 'Inspect recorded move' : 'Inspect rack draw');
-        button.type = 'button';
-        button.addEventListener('click', () => {
-          svg.querySelector('.win-history-point[data-turn-index="' + point.x + '"][data-phase="' + otherPhase + '"]')?.focus({preventScroll: true});
-        });
-        inspector.append(button);
-      }
+      updateControls(point, group, centerX, centerY);
     };
     // Layout changes during keyboard inspection can emit pointerenter beneath
     // a stationary pointer. Only pointer movement should change that inspection.
-    group.addEventListener('pointermove', showDetail);
-    group.addEventListener('focus', () => { if (!group.dataset.restoringFocus) showDetail(); });
+    group.addEventListener('pointermove', () => hoverDetail(showDetail));
+    group.addEventListener('focus', () => { if (!group.dataset.restoringFocus) focusDetail(point, showDetail); });
     if (pointKey(point) === pointKey(inspectedPoint || {})) showDetail();
-    // Use the full turn column for each phase. Separate vertical bands keep
-    // a rack draw selectable without stealing its recorded move's target.
-    const split = margin.top + plotHeight / 2;
-    const hitWidth = Math.min(40, turnWidth);
-    const hitX = Math.max(margin.left - hitWidth / 2, Math.min(width - margin.right - hitWidth / 2, centerX - hitWidth / 2));
-    const hitY = draws.has(point.x) && afterDraw ? split : margin.top - 10;
-    const hitBottom = draws.has(point.x) && !afterDraw ? split : margin.top + plotHeight + 15;
-    const hit = svgElement('rect', {class: 'win-history-hit', 'data-hit-turn': point.x,
-      'data-hit-phase': point.actual ? 'final' : point.phase, x: hitX, y: hitY,
-      width: hitWidth, height: hitBottom - hitY, fill: 'transparent', rx: 3});
-    hitLayer.append(hit);
-    hit.addEventListener('pointermove', showDetail);
-    const inspect = () => {
+    // The plot chooses a turn. Its vertical position must not silently choose
+    // Move versus Draw; the visible phase controls make that choice explicit.
+    if (!afterDraw) {
+      const hitWidth = Math.min(40, turnWidth);
+      const hitX = Math.max(margin.left - hitWidth / 2, Math.min(width - margin.right - hitWidth / 2, centerX - hitWidth / 2));
+      const hit = svgElement('rect', {class: 'win-history-hit', 'data-hit-turn': point.x,
+        'data-hit-phase': point.actual ? 'final' : 'turn', x: hitX, y: margin.top - 10,
+        width: hitWidth, height: plotHeight + 25, fill: 'transparent', rx: 3});
+      const hitHandler = () => {
+        const phase = activePoint?.phase === 'after-draw' && draws.has(point.x) ? 'after-draw' : 'before-draw';
+        return pointHandlers.find(item => item.point.x === point.x && (item.point.actual || item.point.phase === phase));
+      };
+      hit.addEventListener('pointermove', () => hoverDetail(() => hitHandler()?.showDetail()));
+      hit.addEventListener('click', () => hitHandler()?.inspect());
+      hitLayer.append(hit);
+    }
+    const inspect = (focus = true) => {
+      pinPoint(point);
       boardView = point.actual ? 'after' : 'before';
-      selectTurn(point.actual ? totalTurns - 1 : point.x);
-      byId('reviewPanel').querySelector('.win-history-point[data-turn-index="' + point.x + '"][data-phase="' + (point.actual ? 'final' : point.phase) + '"]')?.focus({preventScroll: true});
+      selectTurn(point.actual ? totalTurns - 1 : point.x, undefined, true);
+      if (focus) restoreWinHistoryFocus(byId('reviewPanel').querySelector('.win-history-point[data-turn-index="' + point.x + '"][data-phase="' + (point.actual ? 'final' : point.phase) + '"]'));
     };
     pointHandlers.push({point, group, centerX, centerY, showDetail, inspect});
     group.addEventListener('click', inspect);
-    hit.addEventListener('click', inspect);
     group.addEventListener('keydown', event => {
       if (event.key !== 'Enter' && event.key !== ' ') return;
       event.preventDefault();
@@ -3134,6 +3251,7 @@ function drawWinHistory(estimates, review, preview = false, overview = false) {
   // nearest center, rather than by whichever SVG group was painted last.
   let pressedMarker = null;
   for (const type of ['pointermove', 'pointerdown', 'click']) svg.addEventListener(type, event => {
+    if (type === 'pointermove' && reviewChartPins.has(review)) return;
     if (type === 'pointerdown') pressedMarker = null;
     const target = event.target.closest('.win-history-point');
     if (!target || event.target.closest('.win-history-annotation')) return;
@@ -3154,7 +3272,7 @@ function drawWinHistory(estimates, review, preview = false, overview = false) {
     if (type === 'pointerdown') event.preventDefault();
     event.stopPropagation();
     if (type === 'click') nearest.inspect();
-    else nearest.showDetail();
+    else if (type === 'pointermove') hoverDetail(nearest.showDetail);
   }, true);
   const playerLegend = makeElement('div', 'win-history-legend win-history-players');
   for (const [key, player] of Object.entries(players)) {
@@ -3189,8 +3307,8 @@ function drawWinHistory(estimates, review, preview = false, overview = false) {
   const help = makeReviewDetails('chart-key', 'win-history-help', 'Chart key');
   help.append(legend, note);
   viewport.append(svg);
-  visual.append(viewport, makeElement('p', 'win-history-note win-history-direction',
-    'Upper half favors ' + you + '; lower half favors ' + (review.opponent || 'Opponent') + '. Hover or focus to inspect; select to review.'),
+  visual.append(controls, viewport, makeElement('p', 'win-history-note win-history-direction',
+    'Upper half favors ' + you + '; lower half favors ' + (review.opponent || 'Opponent') + '. Choose a turn, then Move or Draw. Select to keep the details fixed.'),
     playerLegend, eventLegend, gradeLegend, help);
   body.append(visual, inspector);
   chart.append(body);

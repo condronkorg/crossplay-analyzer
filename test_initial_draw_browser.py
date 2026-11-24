@@ -134,7 +134,7 @@ class InitialDrawBrowserTest(unittest.TestCase):
           const rect = selector => document.querySelector(selector).getBoundingClientRect();
           const opening = rect('.win-history-opening .win-history-marker');
           const hit = rect('[data-hit-phase="opening"]');
-          const turn = rect('[data-hit-turn="0"][data-hit-phase="before-draw"]');
+          const turn = rect('[data-hit-turn="0"][data-hit-phase="turn"]');
           return {marker: opening.width, hit: hit.width, clear: hit.right <= turn.left,
             fits: document.documentElement.scrollWidth <= innerWidth};
         }''')
@@ -144,7 +144,11 @@ class InitialDrawBrowserTest(unittest.TestCase):
         self.assertTrue(geometry['fits'])
         self.page.locator('[data-hit-phase="opening"]').click()
         expect(self.page.locator('.win-history-inspector')).to_have_attribute('data-inspected-phase', 'opening')
-        self.page.locator('[data-hit-turn="0"][data-hit-phase="before-draw"]').click()
+        # Visible curve markers keep their own targets. Use the clear upper
+        # part of the turn column to test its separation from the opening.
+        target = self.page.locator('[data-hit-turn="0"][data-hit-phase="turn"]')
+        bounds = target.bounding_box()
+        target.click(position={'x': bounds['width'] / 2, 'y': 2})
         expect(self.page.get_by_role('combobox', name='Select game turn')).to_have_value('0')
         expect(self.page.locator('.win-history-inspector')).to_have_attribute('data-inspected-phase', 'before-draw')
 
