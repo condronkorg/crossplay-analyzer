@@ -40,7 +40,7 @@ index 19c7d8e..8981ecf 100644
  		move.action = Move::Exchange;
  		move.setTiles(String::alphabetize(thrown));
 diff --git i/sim.cpp w/sim.cpp
-index 6271bcd..fd18cbc 100644
+index 6271bcd..d4f4cf9 100644
 --- i/sim.cpp
 +++ w/sim.cpp
 @@ -426,6 +426,7 @@ void Simulator::simulate(int plies, int iterations)
@@ -60,7 +60,7 @@ index 6271bcd..fd18cbc 100644
  
  	if (isLogging() && !m_hasHeader)
  		writeLogHeader();
-@@ -668,10 +671,47 @@ void Simulator::simulateOnePosition(SimmedMoveMessage &message, const SimmedMove
+@@ -668,10 +671,68 @@ void Simulator::simulateOnePosition(SimmedMoveMessage &message, const SimmedMove
  {
  	Game game = constants.game;
  
@@ -79,7 +79,28 @@ index 6271bcd..fd18cbc 100644
 +		QUACKLE_DATAMANAGER->seedRandomNumbers(seed ^ (seed >> 16));
 +	}
 +	// Other callers retain independent draws for each playahead.
-+	if (constants.firstDraw.empty())
++	if (constants.initialDeal)
++	{
++		GamePosition &position = game.currentPosition();
++		Bag available;
++		Rack first = constants.firstOpeningRack;
++		Rack second = constants.secondOpeningRack;
++		if (!available.removeLetters(first.tiles()) || !available.removeLetters(second.tiles()))
++			throw std::invalid_argument("The opening racks contain unavailable tiles");
++		// Reserve both known racks first, including the second player's rack
++		// when the first player's rack is unknown.
++		available.refill(first);
++		available.refill(second);
++		if (first.size() != 7 || second.size() != 7 || available.size() != 86)
++			throw std::invalid_argument("The opening deal must conserve 7/7/86 physical tiles");
++		position.setPlayerRack(constants.startPlayerId, first, false);
++		for (const auto &player : position.players())
++			if (player.id() != constants.startPlayerId)
++				position.setPlayerRack(player.id(), second, false);
++		position.setBag(available);
++		randomizeDrawingOrder(position);
++	}
++	else if (constants.firstDraw.empty())
 +	{
 +		randomizeOppoRacks(game.currentPosition(), constants.partialOppoRack);
 +		randomizeDrawingOrder(game.currentPosition());
@@ -112,11 +133,30 @@ index 6271bcd..fd18cbc 100644
  
  	double residual = 0;
  
+@@ -703,7 +764,17 @@ void Simulator::simulateOnePosition(SimmedMoveMessage &message, const SimmedMove
+ 
+ 			Move move = Move::createNonmove();
+ 
+-			if (playerId == constants.startPlayerId && levelNumber == 1)
++			if (constants.initialDeal && playerId == constants.startPlayerId && levelNumber == 1)
++			{
++				// Opening selection can use only the mover's rack, the empty
++				// board, and the bag count. Hide the opponent's physical rack.
++				GamePosition policyPosition = game.currentPosition();
++				for (const auto &player : policyPosition.players())
++					if (player.id() != playerId)
++						policyPosition.setPlayerRack(player.id(), Rack(), false);
++				move = policyPosition.staticBestMove();
++			}
++			else if (playerId == constants.startPlayerId && levelNumber == 1)
+ 				move = message.move;
+ 			else if (constants.ignoreOppos && playerId != constants.startPlayerId)
+ 				move = Move::createPassMove();
 diff --git i/sim.h w/sim.h
-index b236a24..661b063 100644
+index b236a24..0ae3865 100644
 --- i/sim.h
 +++ w/sim.h
-@@ -228,12 +228,15 @@ class SimmedMoveConstants
+@@ -228,12 +228,19 @@ class SimmedMoveConstants
  public:
  	Game game;
  	Rack partialOppoRack;
@@ -129,10 +169,14 @@ index b236a24..661b063 100644
  	bool isLogging;
 +	bool pairedSamples = false;
 +	unsigned int sampleSeed = 0;
++	// Initial-deal trials reserve known racks before sampling unknown racks.
++	bool initialDeal = false;
++	Rack firstOpeningRack;
++	Rack secondOpeningRack;
  };
  
  class SimmedMoveMessageQueue
-@@ -309,6 +312,13 @@ public:
+@@ -309,6 +316,13 @@ public:
  	// to front of simmed move list and level values zeroed.
  	void setIncludedMoves(const MoveList &moves);
  
@@ -146,7 +190,7 @@ index b236a24..661b063 100644
  	void makeSureConsideredMovesAreIncluded();
  	void moveConsideredMovesToBeginning(MoveList &moves) const;
  
-@@ -441,6 +451,9 @@ protected:
+@@ -441,6 +455,9 @@ protected:
  
  	int m_iterations;
  	bool m_ignoreOppos;
@@ -169,7 +213,7 @@ index c87b8ad..075eeee 100755
      --bind \
      --preload-file "$DATA_DIR/alphabets/crossplay.quackle_alphabet@/data/alphabets/crossplay.quackle_alphabet" \
 diff --git i/wasm/quackle_wasm.cpp w/wasm/quackle_wasm.cpp
-index 6de2970..b25ca11 100644
+index 6de2970..ec9d300 100644
 --- i/wasm/quackle_wasm.cpp
 +++ w/wasm/quackle_wasm.cpp
 @@ -14,6 +14,8 @@
@@ -181,7 +225,7 @@ index 6de2970..b25ca11 100644
  
  #include "alphabetparameters.h"
  #include "boardparameters.h"
-@@ -549,6 +551,292 @@ emscripten::val simulateKibitz(std::string gridJson, std::string rackStr, int pl
+@@ -549,6 +551,390 @@ emscripten::val simulateKibitz(std::string gridJson, std::string rackStr, int pl
      return result;
  }
  
@@ -471,15 +515,114 @@ index 6de2970..b25ca11 100644
 +    return result;
 +}
 +
++// Four conditional opening estimates from the first mover's perspective.
++emscripten::val simulateInitialDeal(std::string firstRack, std::string secondRack,
++                                    double iterationsValue, double seedValue)
++{
++    emscripten::val result = emscripten::val::object();
++    result.set("simulated", false);
++    result.set("samplingVersion", std::string("initial-deal-v1"));
++    result.set("policy", std::string("static-best-v1"));
++    try
++    {
++        if (!s_dm || !s_dm->isGood()) throw std::invalid_argument("Engine not initialized");
++        if (!std::isfinite(iterationsValue) || iterationsValue < 1 || iterationsValue > 277 ||
++            std::floor(iterationsValue) != iterationsValue)
++            throw std::invalid_argument("Simulation iterations must be between 1 and 277");
++        if (!std::isfinite(seedValue) || seedValue < 0 || seedValue > 4294967295.0 || std::floor(seedValue) != seedValue)
++            throw std::invalid_argument("Opening seed must be an unsigned 32-bit integer");
++        const int iterations = static_cast<int>(iterationsValue);
++        const unsigned int seed = static_cast<unsigned int>(seedValue);
++        auto physicalRack = [](std::string &text) {
++            if (text.size() != 7 || !std::all_of(text.begin(), text.end(),
++                [](char c) { return c == '?' || (c >= 'A' && c <= 'Z'); }))
++                throw std::invalid_argument("Each opening rack must contain seven uppercase physical tiles");
++            std::sort(text.begin(), text.end());
++            Quackle::LetterString letters;
++            for (char c : text)
++                letters.push_back(c == '?' ? QUACKLE_BLANK_MARK : charToLetter(c));
++            return Quackle::Rack(letters);
++        };
++        const Quackle::Rack first = physicalRack(firstRack);
++        const Quackle::Rack second = physicalRack(secondRack);
++        Quackle::Bag available;
++        if (!available.removeLetters(first.tiles()) || !available.removeLetters(second.tiles()) || available.size() != 86)
++            throw std::invalid_argument("The opening racks exceed the Crossplay physical tile distribution");
++
++        // addPosition deals temporary racks; each seeded trial replaces the
++        // complete deal before move generation or evaluation.
++        Quackle::Game game;
++        Quackle::PlayerList players;
++        players.push_back(Quackle::Player(MARK_UV("First"), Quackle::Player::HumanPlayerType, 0));
++        players.push_back(Quackle::Player(MARK_UV("Second"), Quackle::Player::HumanPlayerType, 1));
++        game.setPlayers(players);
++        game.addPosition();
++        game.currentPosition().underlyingBoardReference().prepareEmptyBoard();
++        game.currentPosition().setCurrentPlayer(0);
++        Quackle::SimmedMoveConstants constants;
++        constants.game = game;
++        constants.startPlayerId = 0;
++        constants.playerCount = 2;
++        // simulate(2) plays a candidate and two future moves: three total.
++        constants.decimalTurns = 1;
++        constants.levelCount = 1;
++        constants.ignoreOppos = false;
++        constants.isLogging = false;
++        constants.pairedSamples = true;
++        constants.sampleSeed = seed;
++        constants.initialDeal = true;
++        auto estimate = [&](bool fixFirst, bool fixSecond) {
++            constants.firstOpeningRack = fixFirst ? first : Quackle::Rack();
++            constants.secondOpeningRack = fixSecond ? second : Quackle::Rack();
++            double sum = 0;
++            for (int trial = 1; trial <= iterations; ++trial)
++            {
++                Quackle::SimmedMoveMessage message;
++                message.iteration = trial;
++                message.levels.setNumberLevels(constants.levelCount + 1);
++                Quackle::Simulator::simulateOnePosition(message, constants);
++                if (!message.bogowin || !std::isfinite(message.wins) || message.wins < 0 || message.wins > 1)
++                    throw std::invalid_argument("The opening trial did not return a horizon win estimate");
++                sum += message.wins;
++            }
++            return sum / iterations;
++        };
++        const double baseline = estimate(false, false);
++        const double firstOnly = estimate(true, false);
++        const double secondOnly = estimate(false, true);
++        const double joint = estimate(true, true);
++        result.set("firstRack", firstRack);
++        result.set("secondRack", secondRack);
++        result.set("seed", seed);
++        result.set("baselineWin", baseline);
++        result.set("firstOnlyWin", firstOnly);
++        result.set("secondOnlyWin", secondOnly);
++        result.set("afterWin", joint);
++        result.set("firstWpa", 100 * ((firstOnly - baseline) + (joint - secondOnly)) / 2);
++        result.set("secondWpa", -100 * ((secondOnly - baseline) + (joint - firstOnly)) / 2);
++        result.set("iterationsRequested", iterations);
++        result.set("iterationsCompleted", iterations);
++        result.set("plies", 2);
++        result.set("playToEnd", false);
++        result.set("simulationMode", std::string("2-ply"));
++        result.set("winModel", std::string("bogowin"));
++        result.set("simulated", true);
++        result.set("error", std::string(""));
++    }
++    catch (const std::exception &error) { result.set("error", std::string(error.what())); }
++    return result;
++}
++
  bool isWordValid(std::string word)
  {
      if (!s_dm || !s_dm->isGood())
-@@ -587,6 +875,8 @@ EMSCRIPTEN_BINDINGS(quackle)
+@@ -587,6 +973,9 @@ EMSCRIPTEN_BINDINGS(quackle)
      emscripten::function("initEngine", &initEngine);
      emscripten::function("kibitz", &kibitz);
      emscripten::function("simulateKibitz", &simulateKibitz);
 +    emscripten::function("simulateReviewMove", &simulateReviewMove);
 +    emscripten::function("simulateReviewDraw", &simulateReviewDraw);
++    emscripten::function("simulateInitialDeal", &simulateInitialDeal);
      emscripten::function("isWordValid", &isWordValid);
      emscripten::function("getEngineInfo", &getEngineInfo);
  }

@@ -42,7 +42,8 @@ class LowBagBrowserTest(unittest.TestCase):
             swapped_tiles:swapped, rack_after:retained+unseen.slice(0,4).join(''),
             grid:board, grid_after:board, bag_count:6, final_turns_remaining:0};
           currentReview.turns=[turn];
-          const context=contextFor(currentReview);
+          const context=makeReviewContext(currentReview,analysisOwner());
+          reviewQueue.contexts.set(currentReview.id,context);
           context.states=['pending-preview']; context.quality=null; context.trend=null;
           await analyzeReviewTurn(context,0,'preview');
           const early=structuredClone(context.quality.points[0]);

@@ -46,6 +46,24 @@ def draw_analysis_entry(kind='draw'):
     return key, result
 
 
+def opening_analysis_entry(iterations=277):
+    identity = ['quackle-opening-draw-v1', '?AENRST', 'DGILOOU', iterations, 2,
+                'static-best-v1', 'initial-deal-v1']
+    result = {'simulated': True, 'samplingVersion': 'initial-deal-v1', 'policy': 'static-best-v1',
+              'firstRack': '?AENRST', 'secondRack': 'DGILOOU', 'seed': 806877465,
+              'baselineWin': .55, 'firstOnlyWin': .65, 'secondOnlyWin': .45, 'afterWin': .6,
+              'firstWpa': 12.5, 'secondWpa': 7.5, 'iterationsRequested': iterations,
+              'iterationsCompleted': iterations, 'plies': 2, 'playToEnd': False,
+              'simulationMode': '2-ply', 'winModel': 'bogowin'}
+    return json.dumps(identity, separators=(',', ':')), result
+
+
+def opening_quality_point():
+    return {'firstMine': False, 'firstRack': '?AENRST', 'secondRack': 'DGILOOU',
+            'beforeWin': .55, 'firstOnlyWin': .65, 'secondOnlyWin': .45, 'afterWin': .6,
+            'firstWpa': 12.5, 'secondWpa': 7.5, 'samples': 277, 'provisional': False}
+
+
 class BackgroundAnalysisTest(unittest.TestCase):
     def setUp(self):
         self.handler = object.__new__(Handler)
@@ -57,6 +75,76 @@ class BackgroundAnalysisTest(unittest.TestCase):
         self.client.me.return_value = {'user_id': 'synthetic-nyt-user'}
         self.client.recent_games.return_value = []
         self.handler.current_session = Mock(return_value=('account-a', self.client))
+
+    def test_opening_profiles_round_trip_without_replacing_existing_move_and_draw_entries(self):
+        review_key, review_result = review_analysis_entry()
+        draw_key, draw_result = draw_analysis_entry()
+        combined = {review_key: review_result, draw_key: draw_result}
+        for samples in (64, 277):
+            key, result = opening_analysis_entry(samples)
+            body = {'analysis_version': ANALYSIS_VERSION, 'turn_analyses': {key: result}}
+            self.handler.save_game_analysis('account-a', 'game0001', body)
+            snapshot = self.handler.supabase_data_request.call_args.kwargs['payload']['snapshot']
+            self.assertEqual(snapshot, {'turn_analyses': {key: result}})
+            self.assertNotIn('move_quality', snapshot)
+            combined.update(snapshot['turn_analyses'])
+        self.handler.validate_game_analysis({'analysis_version': ANALYSIS_VERSION, 'turn_analyses': combined})
+        self.handler.supabase_data_request.return_value = [{'analysis_version': ANALYSIS_VERSION,
+                                                            'turn_analyses': combined}]
+        self.assertEqual(self.handler.saved_game_analysis('account-a', 'game0001')['turn_analyses'], combined)
+
+    def test_opening_cache_rejects_malformed_identity_metadata_probability_and_attribution(self):
+        key, original = opening_analysis_entry()
+        for change in ({'simulated': 1}, {'samplingVersion': 'rack-draw-v1'}, {'policy': 'best'},
+                       {'seed': 123}, {'seed': True}, {'firstRack': 'AEINRST'}, {'secondRack': 'ABCDEFG'},
+                       {'iterationsRequested': 64}, {'iterationsCompleted': 64}, {'plies': -1},
+                       {'playToEnd': True}, {'simulationMode': 'play-to-end'}, {'winModel': 'terminal'},
+                       {'baselineWin': -.01}, {'afterWin': 1.01}, {'firstOnlyWin': float('nan')},
+                       {'secondOnlyWin': True}, {'firstWpa': 5}, {'secondWpa': -7.5}):
+            with self.subTest(change=change), self.assertRaises(CrossplayError):
+                self.handler.validate_game_analysis({'analysis_version': ANALYSIS_VERSION,
+                    'turn_analyses': {key: {**original, **change}}})
+        for index, value in ((0, 'quackle-opening-draw-v2'), (1, 'TSRNEA?'), (2, '???????'),
+                             (3, 99), (3, True), (4, True), (4, 3), (5, 'best'), (6, 'initial-deal-v2')):
+            identity = json.loads(key)
+            identity[index] = value
+            with self.subTest(index=index, value=value), self.assertRaises(CrossplayError):
+                self.handler.validate_game_analysis({'analysis_version': ANALYSIS_VERSION,
+                    'turn_analyses': {json.dumps(identity): original}})
+        identity = json.loads(key)
+        identity[1:3] = ['??ABCDE', '??FGHIL']
+        invalid_racks = {**original, 'firstRack': '??ABCDE', 'secondRack': '??FGHIL'}
+        with self.assertRaises(CrossplayError):
+            self.handler.validate_game_analysis({'analysis_version': ANALYSIS_VERSION,
+                'turn_analyses': {json.dumps(identity): invalid_racks}})
+
+    def test_completed_opening_quality_round_trips_both_orientation_and_unavailable_states(self):
+        for first_mine in (False, True):
+            opening = {**opening_quality_point(), 'firstMine': first_mine}
+            quality = {'state': 'done', 'evaluation': 'win-probability-v1', 'points': [], 'opening': opening}
+            body = {'analysis_version': ANALYSIS_VERSION, 'move_quality': quality}
+            self.assertEqual(self.handler.validate_game_analysis(body)['move_quality'], quality)
+        for opening in ({'unavailable': True, 'reason': 'Opening rack missing.'},
+                        {'unavailable': True, 'reason': 'Engine failed.', 'retryable': True}):
+            quality = {'state': 'done', 'points': [], 'opening': opening}
+            body = {'analysis_version': ANALYSIS_VERSION, 'move_quality': quality}
+            self.assertEqual(self.handler.validate_game_analysis(body)['move_quality'], quality)
+
+    def test_completed_opening_quality_rejects_preview_malformed_and_guessed_zero_values(self):
+        changes = ({'provisional': True}, {'samples': 64}, {'samples': True}, {'firstMine': 1},
+                   {'beforeWin': True}, {'firstOnlyWin': float('inf')}, {'secondOnlyWin': -1},
+                   {'afterWin': 1.01}, {'firstWpa': 5}, {'secondWpa': -7.5},
+                   {'firstRack': '???????'}, {'firstRack': 'TSRNEA?'})
+        for change in changes:
+            quality = {'state': 'done', 'points': [], 'opening': {**opening_quality_point(), **change}}
+            with self.subTest(change=change), self.assertRaises(CrossplayError):
+                self.handler.validate_game_analysis({'analysis_version': ANALYSIS_VERSION, 'move_quality': quality})
+        for opening in (None, {}, {'unavailable': True}, {'unavailable': True, 'reason': ''},
+                        {'unavailable': True, 'reason': 'Missing.', 'retryable': 1},
+                        {'unavailable': True, 'reason': 'Missing.', 'firstWpa': 0}):
+            quality = {'state': 'done', 'points': [], 'opening': opening}
+            with self.subTest(opening=opening), self.assertRaises(CrossplayError):
+                self.handler.validate_game_analysis({'analysis_version': ANALYSIS_VERSION, 'move_quality': quality})
 
     def test_recorded_pass_markers_round_trip_review_and_zero_draw_results(self):
         for action in ('pass -- 0', ' PASS\t--\t-5 ', 'PASS', 'pass 0'):
