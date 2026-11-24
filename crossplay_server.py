@@ -59,7 +59,7 @@ SESSION_COOKIE = 'crossplay_session'
 SESSION_TTL_SECONDS = 14 * 24 * 60 * 60
 MAX_SESSIONS = 256
 LIST_CACHE_SECONDS = 15
-ANALYSIS_VERSION = 'quackle-equity-v1'
+ANALYSIS_VERSION = 'quackle-crossplay-v2'
 DAILY_REFRESH_SECONDS = 24 * 60 * 60
 TOTAL_TILES = 100
 # The bundled Quackle Crossplay alphabet, including three physical blanks.
@@ -839,6 +839,10 @@ class Handler(SimpleHTTPRequestHandler):
                     or not 0 <= move['win'] <= 1 or type(move.get('samples')) is not int or move['samples'] != iterations
                     or (play_to_end and (type(move.get('terminalSamples')) is not int or move['terminalSamples'] != iterations))):
                 invalid()
+            if move['action'] == 'exchange' and (
+                    move['position'] or not re.fullmatch(r'[A-Z?]{1,7}', move['tiles'])
+                    or len(move['tiles']) > bag or Counter(move['tiles']) - Counter(rack)):
+                invalid()
         if (result.get('selected') not in moves or result.get('best') not in moves
                 or result['best']['win'] != max(move['win'] for move in moves)):
             invalid()
@@ -907,7 +911,8 @@ class Handler(SimpleHTTPRequestHandler):
                 invalid()
             used = ''
         elif action == 'exchange':
-            if bag < 7 or selected['position'] or not re.fullmatch(r'[A-Z?]{1,7}', selected['tiles']):
+            if (bag < 1 or selected['position'] or not re.fullmatch(r'[A-Z?]{1,7}', selected['tiles'])
+                    or len(selected['tiles']) > bag):
                 invalid()
             used = selected['tiles']
         else:

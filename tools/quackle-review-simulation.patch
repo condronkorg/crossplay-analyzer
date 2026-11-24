@@ -1,3 +1,44 @@
+diff --git i/game.cpp w/game.cpp
+index 73817a9..1d142bb 100644
+--- i/game.cpp
++++ w/game.cpp
+@@ -380,7 +380,7 @@ int GamePosition::validateMove(const Move &move) const
+ 		else
+ 		{
+ 			// Exchange action -- ensure there are enough tiles in bag
+-			if (!exchangeAllowed())
++			if (!exchangeAllowed() || move.usedTiles().size() > m_bag.size())
+ 				ret |= TooLateExchange;
+ 		}
+ 		break;
+diff --git i/gameparameters.cpp w/gameparameters.cpp
+index 15bc035..f77ebf9 100644
+--- i/gameparameters.cpp
++++ w/gameparameters.cpp
+@@ -39,7 +39,8 @@ EnglishParameters::EnglishParameters()
+ 
+ CrossplayParameters::CrossplayParameters()
+ {
+-	m_minimumTilesForExchange = 7;
++	// A swap draws replacement tiles before returning discarded tiles.
++	m_minimumTilesForExchange = 1;
+ 	// Crossplay ends after both players take one final turn following bag
+ 	// depletion. It does not use Scrabble's six-scoreless-turn finish.
+ 	m_numberOfScorelessTurnsThatEndsGame = -1;
+diff --git i/generator.cpp w/generator.cpp
+index 19c7d8e..8981ecf 100644
+--- i/generator.cpp
++++ w/generator.cpp
+@@ -1872,6 +1872,9 @@ Move Generator::exchange()
+ 			if (i & (1 << j))
+ 				thrown += rack().tiles()[j];
+ 
++		if (thrown.size() > position().bag().size())
++			continue;
++
+ 		Move move;
+ 		move.action = Move::Exchange;
+ 		move.setTiles(String::alphabetize(thrown));
 diff --git i/sim.cpp w/sim.cpp
 index 6271bcd..fd18cbc 100644
 --- i/sim.cpp
@@ -128,7 +169,7 @@ index c87b8ad..075eeee 100755
      --bind \
      --preload-file "$DATA_DIR/alphabets/crossplay.quackle_alphabet@/data/alphabets/crossplay.quackle_alphabet" \
 diff --git i/wasm/quackle_wasm.cpp w/wasm/quackle_wasm.cpp
-index 6de2970..20cb85f 100644
+index 6de2970..b25ca11 100644
 --- i/wasm/quackle_wasm.cpp
 +++ w/wasm/quackle_wasm.cpp
 @@ -14,6 +14,8 @@
@@ -140,7 +181,7 @@ index 6de2970..20cb85f 100644
  
  #include "alphabetparameters.h"
  #include "boardparameters.h"
-@@ -549,6 +551,284 @@ emscripten::val simulateKibitz(std::string gridJson, std::string rackStr, int pl
+@@ -549,6 +551,292 @@ emscripten::val simulateKibitz(std::string gridJson, std::string rackStr, int pl
      return result;
  }
  
@@ -250,7 +291,15 @@ index 6de2970..20cb85f 100644
 +    else throw std::invalid_argument("Recorded move must be a placement, pass, or exchange");
 +
 +    pos.ensureMovePrettiness(move);
-+    if (pos.validateMove(move) != Quackle::GamePosition::ValidMove)
++    const int validation = pos.validateMove(move);
++    if (move.action == Quackle::Move::Exchange)
++    {
++        if (validation & Quackle::GamePosition::InvalidTiles)
++            throw std::invalid_argument("Recorded swap tiles are missing from the rack");
++        if (validation & Quackle::GamePosition::TooLateExchange)
++            throw std::invalid_argument("Recorded swap needs at least one bag tile per exchanged tile");
++    }
++    if (validation != Quackle::GamePosition::ValidMove)
 +        throw std::invalid_argument("Recorded move is not legal in Quackle's dictionary at this position");
 +    pos.scoreMove(move);
 +    return move;
@@ -425,7 +474,7 @@ index 6de2970..20cb85f 100644
  bool isWordValid(std::string word)
  {
      if (!s_dm || !s_dm->isGood())
-@@ -587,6 +867,8 @@ EMSCRIPTEN_BINDINGS(quackle)
+@@ -587,6 +875,8 @@ EMSCRIPTEN_BINDINGS(quackle)
      emscripten::function("initEngine", &initEngine);
      emscripten::function("kibitz", &kibitz);
      emscripten::function("simulateKibitz", &simulateKibitz);

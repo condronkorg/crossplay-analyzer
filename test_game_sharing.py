@@ -68,7 +68,7 @@ class PersistentHandler(QuietHandler):
     def supabase_data_request(self, method, table, params=None, payload=None, prefer=None):
         self.calls.append((method, table, copy.deepcopy(params)))
         if table == 'game_analyses':
-            return [{'analysis_version': 'quackle-equity-v1', 'win_trend': {'state': 'done', 'points': []},
+            return [{'analysis_version': 'quackle-crossplay-v2', 'win_trend': {'state': 'done', 'points': []},
                      'move_quality': None}]
         if table != 'crossplay_games':
             raise AssertionError('Sharing must not access credentials')

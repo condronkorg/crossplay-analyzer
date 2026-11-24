@@ -17,7 +17,7 @@ Artifact SHA-256 values:
 
 ```text
 quackle.js    1b9f62da89666b75b551506c4743bca5411ad56db3c9860a7163acf93024746e
-quackle.wasm  570ffcff3e68e3bb8778cb27c0e9eb4826a2dc88a9e914c78ce6a02ef9f9a4c5
+quackle.wasm  b4e676f8d49ab5d5c8a4f82532aeb51b71d93d0f4ac53a4862206098ddc8f621
 quackle.data  0f7b4e8cdcf4cb743c5423d6befe23ea77691c588f7c7dfb603bf475c1fbf8f3
 ```
 
@@ -60,3 +60,16 @@ behavior. Run `python3 -m unittest -v test_review_simulation` for real browser/W
 checks of candidate inclusion, determinism, blanks, exchanges, and final turns.
 Run `python3 -m unittest -v test_rack_draw_simulation` for real WASM checks of
 draw conditioning, retained tiles, partial bags, and exact zero-draw deltas.
+
+## Low-bag swaps
+
+Crossplay exchanges require one available bag tile for each tile returned. A
+recorded game accepted a four-tile swap with six tiles left in the bag; the
+previous seven-tile minimum came from Scrabble. Crossplay's minimum is now one,
+and both move validation and move generation reject exchanges larger than the
+current bag. Scrabble parameters retain their seven-tile minimum.
+
+The patch includes these changes in `gameparameters.cpp`, `game.cpp`, and
+`generator.cpp`. Recorded swap failures now distinguish unavailable rack tiles
+from insufficient bag tiles instead of reporting a dictionary error. The data
+and JavaScript loader files remain byte-identical to the prior build.

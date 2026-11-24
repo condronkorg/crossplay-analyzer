@@ -296,7 +296,7 @@ class ReviewBrowserTest(unittest.TestCase):
         expect(self.page.locator('.luck-stat').nth(1).locator('strong')).to_have_text('—')
 
     def test_saved_word_opportunities_weight_only_eligible_personal_turns(self):
-        analysis = {'version': 'quackle-equity-v1', 'move_quality': {
+        analysis = {'version': 'quackle-crossplay-v2', 'move_quality': {
             'state': 'stopped', 'points': [
                 {'turnIndex': 0, 'category': 'mistake', 'loss': 10, 'playedEquity': 20,
                  'opportunity': {'version': 1, 'accessibleEquity': 26, 'bestWord': 'QAT',
@@ -319,7 +319,7 @@ class ReviewBrowserTest(unittest.TestCase):
         expect(panel.locator('tbody tr').nth(1)).to_contain_text('Unrated')
 
     def test_incomplete_and_unrated_analysis_never_implies_perfect_play(self):
-        analysis = {'version': 'quackle-equity-v1', 'move_quality': {
+        analysis = {'version': 'quackle-crossplay-v2', 'move_quality': {
             'state': 'stopped', 'points': [
                 {'turnIndex': 0, 'category': 'unrated', 'loss': None, 'reason': 'Outside candidates'},
                 {'turnIndex': 1, 'category': 'best', 'loss': 0.0}]}}
@@ -450,7 +450,7 @@ class ReviewBrowserTest(unittest.TestCase):
         expect(self.page.locator('.board .last-play')).to_have_count(1)
         # Old saved analyses and sparse, out-of-order results map by turnIndex.
         self.page.unroute('**/api/crossplay/games/mockgame01/review')
-        self.use_saved_analysis({'version': 'quackle-equity-v1', 'move_quality': {
+        self.use_saved_analysis({'version': 'quackle-crossplay-v2', 'move_quality': {
             'state': 'stopped', 'points': [
                 {'turnIndex': 2, 'category': 'blunder', 'loss': 10.5},
                 {'turnIndex': 0, 'category': 'inaccuracy', 'loss': 2.0}]}})
@@ -903,7 +903,7 @@ class ReviewBrowserTest(unittest.TestCase):
         worker = "self.onmessage = ({data: {id, type}}) => self.postMessage(type === 'init' ? {id, result: {}} : {id, error: 'This move is not legal in Quackle’s dictionary at this position.'});"
         self.page.route('**/quackle-worker.js', lambda route: route.fulfill(
             content_type='application/javascript', body=worker))
-        self.use_saved_analysis({'version': 'quackle-equity-v1', 'move_quality': {
+        self.use_saved_analysis({'version': 'quackle-crossplay-v2', 'move_quality': {
             'state': 'done', 'evaluation': 'static-equity-v1', 'points': [{
                 'turnIndex': 0, 'turn': 1, 'mine': True, 'action': 'CAT 8G 5', 'category': 'unrated', 'loss': None,
                 'reason': 'Played move was outside Quackle’s returned top 15 candidates.'}]}})
@@ -924,7 +924,7 @@ class ReviewBrowserTest(unittest.TestCase):
             'my_score': 12, 'opponent_score': 10, 'turn_count': 1,
         }
         self.use_saved_analysis({
-            'version': 'quackle-equity-v1',
+            'version': 'quackle-crossplay-v2',
             'move_quality': {
                 'state': 'done', 'evaluation': 'win-probability-v1',
                 'points': [{'turnIndex': 0, 'turn': 1, 'mine': True, 'action': 'SWAP 0',
@@ -1006,7 +1006,7 @@ class ReviewBrowserTest(unittest.TestCase):
             'my_score': 12, 'opponent_score': 10, 'turn_count': 1,
         }
         self.use_saved_analysis({
-            'version': 'quackle-equity-v1',
+            'version': 'quackle-crossplay-v2',
             'move_quality': {'state': 'done', 'evaluation': 'win-probability-v1', 'points': [{
                 'turnIndex': 0, 'turn': 1, 'mine': True, 'action': 'swap -- 0',
                 'category': 'unrated', 'loss': None, 'retryable': True, 'provisional': False,
@@ -1105,7 +1105,7 @@ class ReviewBrowserTest(unittest.TestCase):
     def test_legacy_swap_parse_error_without_tiles_recovers_to_explicit_unrated_state(self):
         grid = ['.' * 15 for _ in range(15)]
         self.use_saved_analysis({
-            'version': 'quackle-equity-v1',
+            'version': 'quackle-crossplay-v2',
             'move_quality': {'state': 'done', 'evaluation': 'win-probability-v1', 'points': [{
                 'turnIndex': 0, 'turn': 1, 'mine': True, 'action': 'swap -- 0',
                 'category': 'unrated', 'loss': None, 'provisional': False, 'retryable': False,
@@ -1615,7 +1615,39 @@ class ReviewBrowserTest(unittest.TestCase):
         expect(self.page.locator('.custom-move-result')).to_contain_text(
             f'WP loss: {loss:.1f} pp versus the best WP move.')
 
-    def test_custom_swap_rejects_low_bag_before_engine_evaluation(self):
+    def test_custom_swap_with_six_bag_tiles_has_static_and_simulated_results(self):
+        self.open_game()
+        self.page.evaluate("""() => {
+          const rack = 'WEAFTUO';
+          // Reuse the existing conserved engine regression board, with six
+          // board tiles removed so the bag has six tiles.
+          const grid = [
+            '...............', '...........UN.Y', '.......L...TAME',
+            '......YEAH...E.', '.........ab.yA.', '......LOB.OWED.',
+            '..PROG..I.TEN.F', '....D..JOGS...I', '...LASSI.O..RUN',
+            '.......V.R.MI..', '...C...E..HIPS.', '...A.BASE.A.E..',
+            '...R.O..D.V....', '..RENT.LITER...', '.....H..T......'];
+          customMoveController.getPosition = () => ({gridJson:JSON.stringify(grid), rack,
+            playerScore:30, opponentScore:25, bagCount:6, finalTurnsRemaining:0});
+        }""")
+        self.page.get_by_role('combobox', name='Custom move action', exact=True).select_option('exchange')
+        self.page.get_by_role('textbox', name='Tiles to swap', exact=True).fill('WEAF')
+        self.page.get_by_role('button', name='Evaluate move', exact=True).click()
+        expect(self.page.locator('.custom-move-status')).to_have_text('Move evaluated.', timeout=30_000)
+        row = self.page.locator('.custom-move-result tbody tr').first
+        expect(row).to_contain_text('Your move: Swap AEFW')
+        expect(row.locator('td').nth(2)).to_have_text('TUO')
+        self.page.get_by_role('button', name='Estimate win% (slower)', exact=True).click()
+        self.page.wait_for_function("""() => {
+          const status = document.querySelector('.custom-move-status');
+          return status.textContent === 'Win simulation complete.' || status.classList.contains('custom-move-error');
+        }""", timeout=120_000)
+        expect(self.page.locator('.custom-move-status')).to_have_text('Win simulation complete.')
+        expect(row).to_contain_text('Your move: Swap AEFW')
+        self.assertRegex(row.locator('td').last.inner_text(), r'^\d+\.\d%$')
+        expect(self.page.locator('.custom-move-result')).to_contain_text('277 samples each')
+
+    def test_custom_swap_rejects_empty_bag_before_engine_evaluation(self):
         self.open_game()
         response = self.page.evaluate("""async () => {
           const grid = [
@@ -1634,7 +1666,7 @@ class ReviewBrowserTest(unittest.TestCase):
             }});
           });
         }""")
-        self.assertIn('at least seven', response.get('error', ''))
+        self.assertIn('bag', response.get('error', ''))
 
     def test_frequency_failure_preserves_move_quality_and_can_be_retried(self):
         self.page.route('**/wordfreq-en-25000-log.json',

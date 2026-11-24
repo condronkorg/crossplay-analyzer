@@ -85,7 +85,7 @@
       action = word + ' ' + move.position + ' ' + move.score;
     } else if (move.action === 'exchange') {
       used = String(move.tiles || '');
-      if (next.bag.length < 7 || !/^[A-Z?]{1,7}$/.test(used)) throw new Error('Exchanging requires at least seven tiles in the bag.');
+      if (!/^[A-Z?]{1,7}$/.test(used) || used.length > next.bag.length) throw new Error('The bag must contain at least as many tiles as the exchange.');
       action = 'EXCHANGE ' + used;
     } else if (move.action === 'pass') {
       action = 'PASS';

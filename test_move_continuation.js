@@ -76,7 +76,7 @@ test('emptying the bag starts two final turns, then ends the line', () => {
   assert.equal(drained.bag.length, 0);
   assert.equal(drained.finalTurns, 2);
   assert.equal(drained.finished, false);
-  assert.throws(() => play(drained, { action: 'exchange', tiles: 'B', score: 0 }), /seven/);
+  assert.throws(() => play(drained, { action: 'exchange', tiles: 'B', score: 0 }), /bag/);
   const final = play(drained, { action: 'pass', tiles: '', score: 0 });
   assert.equal(final.finalTurns, 1);
   const done = play(final, { action: 'pass', tiles: '', score: 0 });
@@ -172,4 +172,19 @@ test('empty racks force a pass, preserving win perspective and terminal ties', a
     });
     assert.equal(terminal.moves[0].win, win);
   }
+});
+
+test('low-bag continuation swaps preserve all tiles and reject overdraws', () => {
+  const racks = ['AAEIRT?', 'EINORST'], bag = 'BCDEFG';
+  const pool = Object.entries(TILE_COUNTS).flatMap(([tile,count])=>Array(count).fill(tile));
+  for (const tile of racks.join('') + bag) pool.splice(pool.indexOf(tile),1);
+  const board = pool.map(tile=>tile === '?' ? 'a' : tile).join('').padEnd(225,'.');
+  const grid = Array.from({length:15},(_,i)=>board.slice(i*15,i*15+15));
+  const initial = start({...turn,grid,rack:racks[0],bag_count:6},racks[1],1);
+  const next = play(initial,{action:'exchange',tiles:'AA?',score:0});
+  assert.equal(next.bag.length,6);
+  assert.equal(next.racks[0].length,7);
+  assert.equal(inventory(next),inventory(initial));
+  assert.deepEqual(next.grid,initial.grid);
+  assert.throws(()=>play(initial,{action:'exchange',tiles:'AAEIRT?',score:0}),/bag/);
 });

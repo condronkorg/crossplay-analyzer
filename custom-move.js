@@ -45,7 +45,7 @@ window.CustomMove = class CustomMove {
         input.required = visible && name !== 'direction';
       }
       this.root.querySelector('.custom-move-help').textContent = swapping
-        ? 'Enter the tiles to return to the bag. Use ? for a blank. Swaps require at least seven tiles in the bag.'
+        ? 'Enter the tiles to return to the bag. Use ? for a blank. The bag must contain at least as many tiles as you swap.'
         : 'Include existing letters, or use . for them. Use uppercase for regular tiles and lowercase for blanks (e.g. CAt).';
     });
     this.cancelButton.addEventListener('click', () => {

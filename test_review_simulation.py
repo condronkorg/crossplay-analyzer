@@ -141,7 +141,31 @@ class ReviewSimulationTests(unittest.TestCase):
         self.assertEqual(result["winModel"], "terminal")
         self.assertTrue(all(move["terminalSamples"] == payload["iterations"] for move in result["moves"]))
         payload["played"] = {"action": "exchange", "position": "", "tiles": "W"}
-        self.assertIn("not legal", self.request(payload)["error"])
+        self.assertIn("bag tile", self.request(payload)["error"])
+
+    def test_low_bag_swaps_respect_the_number_of_available_tiles(self):
+        grid = [
+            "CD........G....", ".......A.NOUN.Y", ".......L...TAME",
+            "......YEAH...E.", ".........ab.yA.", "......LOB.OWED.",
+            "..PROG..I.TEN.F", "....D..JOGS...I", "...LASSI.O..RUN",
+            ".......V.R.MI..", "...C...E..HIPS.", "...A.BASE.A.E..",
+            "...R.O..D.V....", "..RENT.LITER...", ".....H..T......",
+        ]
+        cells = [(r, c) for r, row in enumerate(grid) for c, tile in enumerate(row) if tile != '.']
+        for bag in [1, 6]:
+            board = [list(row) for row in grid]
+            for r, c in cells[:bag]:
+                board[r][c] = '.'
+            payload = self.payload(gridJson=json.dumps([''.join(row) for row in board]),
+                rack="WEAFTUO", bagCount=bag, numMoves=1, iterations=1,
+                played={"action": "exchange", "position": "", "tiles": "W" if bag == 1 else "WEAF"})
+            with self.subTest(bag=bag):
+                result = self.result(payload)
+                self.assertEqual(result['selected']['action'], 'exchange')
+                self.assertEqual(sorted(result['selected']['tiles']), sorted(payload['played']['tiles']))
+                self.assertTrue(all(move['action'] != 'exchange' or len(move['tiles']) <= bag for move in result['moves']))
+                payload['played']['tiles'] = 'WE' if bag == 1 else 'WEAFTUO'
+                self.assertTrue(self.request(payload).get('error'))
 
     def test_rejects_invalid_recorded_actions_and_parameters(self):
         for payload in [

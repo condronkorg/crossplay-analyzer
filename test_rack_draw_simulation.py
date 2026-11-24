@@ -125,6 +125,31 @@ class RackDrawSimulationTests(unittest.TestCase):
         self.assertEqual(partial["drawCount"], 2)
         self.assertEqual(partial["winModel"], "terminal")
 
+    def test_low_bag_exchange_draw_and_candidates_are_legal(self):
+        grid = [
+            "..........G....", ".........NOUN.Y", ".......L...TAME",
+            "......YEAH...E.", ".........ab.yA.", "......LOB.OWED.",
+            "..PROG..I.TEN.F", "....D..JOGS...I", "...LASSI.O..RUN",
+            ".......V.R.MI..", "...C...E..HIPS.", "...A.BASE.A.E..",
+            "...R.O..D.V....", "..RENT.LITER...", ".....H..T......",
+        ]
+        # Start from the conserved endgame fixture and remove six board tiles.
+        grid[0] = '...............'
+        grid[1] = '...........UN.Y'
+        payload = self.payload(gridJson=json.dumps(grid), rack='WEAFTUO', bagCount=6,
+            iterations=3, played={'action':'exchange', 'position':'', 'tiles':'WEAF'},
+            rackAfter='TUOCDGA')
+        result = self.result(payload)
+        self.assertEqual(result['drawCount'], 4)
+        review = self.request(payload, 'simulateReviewMove')
+        self.assertEqual(result['beforeWin'], review['selected']['win'])
+        moves = self.page.evaluate("""p => testEngine.kibitz(p.gridJson, p.rack, p.playerScore, p.opponentScore, 100000).moves""", payload)
+        exchanges = [move for move in moves if move['action'] == 'exchange']
+        self.assertTrue(exchanges)
+        self.assertTrue(all(1 <= len(move['tiles']) <= 6 for move in exchanges))
+        payload.update(played={'action':'exchange', 'position':'', 'tiles':'WEAFTUO'}, rackAfter='TUOCDGA')
+        self.assertIn('bag tile', self.request(payload).get('error', ''))
+
     def test_rejects_missing_retained_tiles_impossible_draws_and_bad_input(self):
         for payload in [
             self.payload(rackAfter="AEIRST"),

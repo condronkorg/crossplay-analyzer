@@ -53,7 +53,7 @@
     if (opponentCount < 0 || opponentCount > 7) throw new Error('The board, racks, and bag tiles do not add up.');
     let used = '';
     if (move.action === 'exchange') {
-      if (turn.bag_count < 7) throw new Error('Exchanging requires at least seven bag tiles.');
+      if (move.tiles.length > turn.bag_count) throw new Error('The bag does not contain enough tiles for this exchange.');
       used = move.tiles;
     } else if (move.action === 'place') {
       const across = move.position.match(/^(1[0-5]|[1-9])([A-O])$/);
