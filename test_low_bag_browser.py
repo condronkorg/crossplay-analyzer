@@ -86,7 +86,7 @@ class LowBagBrowserTest(unittest.TestCase):
         self.assertEqual(result['opening']['samples'], 277)
         self.assertEqual(result['opening']['firstWpa'], 12.5)
 
-    def test_current_policy_summary_is_restored_only_with_matching_raw_result(self):
+    def test_current_policy_raw_result_repairs_stale_summary_and_rejects_old_raw(self):
         self.open_game()
         result = self.page.evaluate("""() => {
           const grid = ['CD........G....','.......A.NOUN.Y','.......L...TAME',
@@ -128,10 +128,12 @@ class LowBagBrowserTest(unittest.TestCase):
         self.assertEqual(len(result['restored']['quality']['points']), 1)
         self.assertEqual(result['restored']['quality']['state'], 'done')
         self.assertEqual(result['restored']['states'], ['done'])
-        self.assertEqual(result['mismatched']['points'], [])
-        self.assertEqual(result['mismatched']['state'], 'running')
-        self.assertEqual(result['unmarked']['points'], [])
-        self.assertEqual(result['unmarked']['state'], 'running')
+        for repaired in (result['mismatched'], result['unmarked']):
+            self.assertEqual(repaired['state'], 'done')
+            self.assertEqual(len(repaired['points']), 1)
+            self.assertEqual(repaired['points'][0]['playedWin'], 1)
+            self.assertEqual(repaired['points'][0]['bestWin'], 1)
+            self.assertEqual(repaired['points'][0]['endgamePolicy'], 'crossplay-endgame-v1')
         self.assertEqual(result['oldPolicy']['points'], [])
         self.assertEqual(result['oldPolicy']['state'], 'running')
 
