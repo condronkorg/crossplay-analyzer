@@ -1,5 +1,5 @@
 importScripts('quackle.js');
-importScripts('luck-analysis.js', 'review-analysis.js');
+importScripts('luck-analysis.js', 'review-analysis.js', 'opening-draw.js');
 
 let modulePromise = null;
 
@@ -263,6 +263,30 @@ function simulateRackDraw(module, payload) {
   return result;
 }
 
+function simulateOpeningDeal(module, payload) {
+  if (!Number.isInteger(payload.seed) || payload.seed < 0 || payload.seed > 0xffffffff ||
+      ![64, 277].includes(payload.iterations) ||
+      typeof payload.firstRack !== 'string' || !/^[A-Z?]{7}$/.test(payload.firstRack) ||
+      typeof payload.secondRack !== 'string' || !/^[A-Z?]{7}$/.test(payload.secondRack)) {
+    throw new Error('Opening simulation requires two seven-tile racks, a seed, and samples.');
+  }
+  const counts = [9, 2, 2, 4, 12, 2, 3, 3, 8, 1, 1, 4, 2, 5, 8, 2, 1, 6, 5, 6, 3, 2, 2, 1, 2, 1, 3];
+  for (const tile of payload.firstRack + payload.secondRack) {
+    if (--counts[tile === '?' ? 26 : tile.charCodeAt(0) - 65] < 0) {
+      throw new Error('The opening racks exceed the Crossplay physical tile distribution.');
+    }
+  }
+  const input = {firstRack: [...payload.firstRack].sort().join(''),
+    secondRack: [...payload.secondRack].sort().join('')};
+  const result = module.simulateInitialDeal(payload.firstRack, payload.secondRack, payload.iterations, payload.seed);
+  if (result.error) throw new Error(result.error);
+  // The worker accepts an explicit seed. The page uses the shared fixed seed.
+  if (result.seed !== payload.seed || !CrossplayOpening.validResult(result, input, payload.iterations, payload.seed)) {
+    throw new Error('Quackle returned incomplete opening simulation results.');
+  }
+  return result;
+}
+
 self.addEventListener('message', async event => {
   const { id, type, payload = {} } = event.data || {};
   try {
@@ -277,6 +301,8 @@ self.addEventListener('message', async event => {
       result = simulateRecordedMove(module, payload);
     } else if (type === 'simulateDraw') {
       result = simulateRackDraw(module, payload);
+    } else if (type === 'simulateOpening') {
+      result = simulateOpeningDeal(module, payload);
     } else if (type === 'kibitz') {
       result = module.kibitz(
         payload.gridJson,

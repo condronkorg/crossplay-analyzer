@@ -273,7 +273,11 @@
   .trend-panel .trend-status { margin: 6px 0 0; }
   .trend-settings { margin-top: 8px; color: var(--muted); font-size: 11px; }
   .trend-settings .trend-controls { margin-top: 10px; }
-  .win-history-point { cursor: pointer; }
+  .win-history-point, .win-history-opening { cursor: pointer; }
+  .win-history-opening:focus { outline: none; }
+  .win-history-opening:focus .win-history-marker { stroke-width: 4; }
+  .opening-rack-letters { margin: 4px 0; font: 700 15px monospace; letter-spacing: 2px; overflow-wrap: anywhere; }
+  .opening-rack-wpa { margin: 4px 0 12px; font-size: 12px; }
   .win-history-point[data-phase="after-draw"] .win-history-marker,
   .win-history-draw-mark { opacity: .45; }
   .win-history-point[data-phase="after-draw"]:hover .win-history-marker,
@@ -551,6 +555,7 @@
 <script src="analysis-cache.js"></script>
 <script src="quackle-pool.js"></script>
 <script src="review-analysis.js?v=played-candidate-index"></script>
+<script src="opening-draw.js"></script>
 <script>
 const PREMIUM_COORDS = {
   '3L': 'A1 O1 G2 I2 F5 J5 E6 K6 B7 N7 B9 N9 E10 K10 F11 J11 G14 I14 A15 O15',
@@ -584,6 +589,7 @@ let currentReview = null;
 let reviewView = 'summary';
 const reviewDisclosureStates = new WeakMap();
 const reviewChartScrollStates = new WeakMap();
+const reviewOpeningSelections = new WeakSet();
 const reviewChartWidths = new WeakMap();
 let historyResizeObserver = null;
 let observedHistoryVisual = null;
@@ -648,7 +654,7 @@ function rememberReviewDetails() {
   const chart = byId('reviewPanel').querySelector('.win-history-scroll');
   if (chart) reviewChartScrollStates.set(currentReview, {
     left: chart.scrollLeft, selected: chart.dataset.selected,
-    inspected: Number(chart.closest('.win-history').querySelector('.win-history-inspector')?.dataset.inspectedTurn),
+    inspected: chart.closest('.win-history').querySelector('.win-history-inspector')?.dataset.inspectedTurn,
     phase: chart.closest('.win-history').querySelector('.win-history-inspector')?.dataset.inspectedPhase || 'before-draw'
   });
 }
@@ -678,7 +684,7 @@ function restoreReviewChartScroll() {
   const previous = reviewChartScrollStates.get(currentReview);
   chart.scrollLeft = previous?.left || 0;
   if (chart.dataset.selected === previous?.selected) return;
-  const selected = chart.querySelector('.win-history-point[aria-pressed="true"]');
+  const selected = chart.querySelector(':is(.win-history-point,.win-history-opening)[aria-pressed="true"]');
   if (!selected) return;
   const point = selected.getBoundingClientRect(), viewport = chart.getBoundingClientRect();
   if (point.left < viewport.left) chart.scrollLeft -= viewport.left - point.left;
@@ -1053,6 +1059,14 @@ function drawWorkComplete(context, index) {
     return Boolean(context.cache.get(context.review.turns[index], 'draw'));
   } catch (_) { return true; }
 }
+function cachedOpeningPoint(input, cache) {
+  if (input.unavailable) return {...input};
+  for (const iterations of [SIMULATION_ITERATIONS, PREVIEW_ITERATIONS]) {
+    const result = cache.results[CrossplayOpening.key(input, iterations)];
+    if (CrossplayOpening.validResult(result, input, iterations)) return CrossplayOpening.point(result, input);
+  }
+  return null;
+}
 function makeReviewContext(review, owner, shared = false) {
   const stored = review.stored_analysis?.version === ANALYSIS_VERSION ? review.stored_analysis : {};
   const cache = new AnalysisCache({}, POSITION_PARAMETERS);
@@ -1077,6 +1091,14 @@ function makeReviewContext(review, owner, shared = false) {
         kind === 'draw-preview' ? PREVIEW_ITERATIONS : SIMULATION_ITERATIONS)) cache.results[key] = result;
     }
   }
+  const openingInput = CrossplayOpening.describe(review);
+  if (!openingInput.unavailable) for (const iterations of [PREVIEW_ITERATIONS, SIMULATION_ITERATIONS]) {
+    const key = CrossplayOpening.key(openingInput, iterations), result = stored.turn_analyses?.[key];
+    if (CrossplayOpening.validResult(result, openingInput, iterations)) cache.results[key] = result;
+  }
+  const opening = cachedOpeningPoint(openingInput, cache);
+  const openingState = openingInput.unavailable ? 'unavailable' : opening && !opening.provisional ? 'done' :
+    opening ? 'pending' : 'pending-preview';
   cache.owner = owner;
   cache.shared = shared;
   const savedQuality = stored.move_quality;
@@ -1091,13 +1113,20 @@ function makeReviewContext(review, owner, shared = false) {
     quality = { ...quality, points, current: points.length, state: 'running',
       message: 'Refreshing saved swap analysis.' };
   }
-  if (quality) quality = {...quality, points: quality.points.map(point => restoreDrawPoint(cache, review.turns[point.turnIndex], point))};
+  if (quality) {
+    quality = {...quality, points: quality.points.map(point => restoreDrawPoint(cache, review.turns[point.turnIndex], point))};
+    delete quality.opening;
+    if (opening) quality.opening = opening;
+  } else if (opening && !opening.unavailable) quality = {
+    state: 'running', evaluation: MOVE_QUALITY_EVALUATION, points: [], opening
+  };
   const trend = quality ? deriveWinTrend({ review, quality }, quality.state === 'done') : null;
   const complete = quality?.state === 'done' && trend?.state === 'done' && quality.points.length === review.turns.length &&
     new Set(quality.points.map(point => point.turnIndex)).size === review.turns.length && !quality.points.some(point => point.retryable) && quality.points.every(point => point.category === 'unrated' ||
       (cache.get(review.turns[point.turnIndex], 'review')?.selected.win === point.playedWin &&
         drawWorkComplete({review, cache}, point.turnIndex)));
-  return { review, cache, owner, shared, quality, trend, states: review.turns.map(() => complete ? 'done' : 'pending-preview') };
+  return { review, cache, owner, shared, quality, trend, openingInput, openingState,
+    states: review.turns.map(() => complete ? 'done' : 'pending-preview') };
 }
 function getReviewQueue() {
   if (reviewQueue) return reviewQueue;
@@ -1108,6 +1137,7 @@ function getReviewQueue() {
     load: async id => makeReviewContext(await api('games/' + encodeURIComponent(id) + '/review',
       { expectedOwner: owner, signal: queue.controller.signal }), owner),
     run: analyzeReviewTurn,
+    runOpening: analyzeOpeningDraw,
     complete: finishReviewAnalysis,
     change: updateBackgroundStatus
   });
@@ -1127,6 +1157,8 @@ function suspendAnalysisForRefresh() {
       context.cancelled = true;
       snapshot.contexts.set(id, {...context, cancelled: false,
         quality: estimate(context.quality), trend: estimate(context.trend),
+        openingState: ['running', 'running-preview', 'error'].includes(context.openingState)
+          ? 'pending-preview' : context.openingState,
         states: context.states.map(state => ['running', 'running-preview', 'error'].includes(state)
           ? 'pending-preview' : state)});
     }
@@ -1192,7 +1224,11 @@ function updateBackgroundStatus() {
     early += points.filter(point => point.provisional && Number.isFinite(point.playedWin)).length;
     total += context.states.length;
     unrated += points.filter(point => point.category === 'unrated').length;
-    if (context.states.every(state => state === 'done')) done++;
+    if (context.states.every(state => state === 'done') && !queue.openingPending(context)) done++;
+    if (context.openingError || context.quality?.opening?.retryable) {
+      failures.add(id);
+      details.push({id, label: 'Initial rack draw failed', reason: context.openingError || context.quality.opening.reason});
+    }
     if (context.cache.saveError) details.push({id, label: 'Save failed', reason: context.cache.saveError});
     if (context.error) {
       const turns = context.states.flatMap((state, index) => state === 'error' ? [index + 1] : []);
@@ -1211,9 +1247,9 @@ function updateBackgroundStatus() {
   const ids = queue.orderedIds();
   const inProgress = queue.loading.size > 0 || ids.some(id => !queue.contexts.has(id) && !queue.errors.has(id)) ||
     [...queue.contexts.values()].some(context => !context.paused &&
-      context.states.some(state => ['pending', 'pending-preview', 'running', 'running-preview'].includes(state)));
+      (queue.openingPending(context) || context.states.some(state => ['pending', 'pending-preview', 'running', 'running-preview'].includes(state))));
   const pausedWork = [...queue.contexts.values()].some(context => context.paused &&
-    context.states.some(state => ['pending', 'pending-preview', 'running', 'running-preview'].includes(state)));
+    (queue.openingPending(context) || context.states.some(state => ['pending', 'pending-preview', 'running', 'running-preview'].includes(state))));
   const note = ids.length ? 'Background analysis: ' + done + '/' + ids.length + ' games · ' + moves + '/' + total + ' loaded moves checked' +
     (early ? ' · ' + early + ' early estimates awaiting full analysis' : '') + (unrated ? ' · ' + unrated + ' unrated' : '') +
     (inProgress ? '. Keep this page open to continue.' : pausedWork ? '. Analysis paused.' : '. Analysis pass finished.') : '';
@@ -1510,6 +1546,22 @@ function currentMovePreview(turn, point) {
   return board ? { ...board, move, win, provisional } : null;
 }
 
+function openingDrawForReview(review) {
+  const result = moveQualityResults?.opening;
+  if (result) return result;
+  if (typeof CrossplayOpening !== 'undefined') return CrossplayOpening.describe(review);
+  return {firstMine: Boolean(review.turns[0]?.mine)};
+}
+
+function openingDrawKnown(opening) {
+  return !opening.unavailable && !opening.retryable && Number.isFinite(opening.afterWin) &&
+    opening.afterWin >= 0 && opening.afterWin <= 1;
+}
+
+function signedWpa(value) {
+  return Number.isFinite(value) ? (Math.abs(value) < .05 ? '0.0' : (value > 0 ? '+' : '−') + Math.abs(value).toFixed(1)) : '—';
+}
+
 function makeGameOverview(review) {
   const panel = makeElement('section', 'game-overview');
   panel.setAttribute('aria-label', 'Game summary');
@@ -1541,7 +1593,14 @@ function makeGameOverview(review) {
     const checked = turns.map(item => item.point).filter(point => point && !(point.provisional && point.category === 'unrated'));
     const rated = checked.filter(point => Number.isFinite(point.loss) && categories.includes(point.category));
     const draws = [];
-    let drawTotal = 0, drawPending = 0, drawUnavailable = 0;
+    // The initial seven tiles are one draw event per player. Refills remain separate.
+    const opening = openingDrawForReview(review);
+    const openingWpa = (opening.firstMine ?? Boolean(review.turns[0]?.mine)) === mine ? opening.firstWpa : opening.secondWpa;
+    const openingMeasured = openingDrawKnown(opening) && Number.isFinite(openingWpa);
+    let drawTotal = 1, drawPending = 0, drawUnavailable = 0;
+    if (openingMeasured) draws.push({wpa: openingWpa, provisional: opening.provisional});
+    else if (opening.unavailable) drawUnavailable++;
+    else drawPending++;
     for (const {turn, point} of turns) {
       if (point?.draw && Number.isFinite(point.draw.beforeWin) && Number.isFinite(point.draw.afterWin) && point.draw.drawCount > 0) {
         draws.push(point.draw);
@@ -1562,7 +1621,7 @@ function makeGameOverview(review) {
         }
       }
     }
-    const drawSum = draws.reduce((sum, draw) => sum + (draw.afterWin - draw.beforeWin) * 100, 0);
+    const drawSum = draws.reduce((sum, draw) => sum + (Number.isFinite(draw.wpa) ? draw.wpa : (draw.afterWin - draw.beforeWin) * 100), 0);
     const gameplaySum = -rated.reduce((sum, point) => sum + point.loss, 0);
     return { mine, total: turns.length, checked, rated, draws, drawTotal, drawPending, drawUnavailable,
       drawEarly: draws.filter(draw => draw.provisional).length,
@@ -1656,7 +1715,7 @@ function makeGameOverview(review) {
   start.addEventListener('click', () => { boardView = 'after'; selectTurn(0, '.turn-controls'); });
   metrics.append(start);
   const method = makeReviewDetails('overview-method', 'overview-method', 'About these estimates');
-  method.append(makeElement('p', '', 'Gameplay WPA is the recorded move’s win estimate minus the best sampled alternative from the same position. Best: under 2 percentage points; Inaccuracy: 2–under 5; Mistake: 5–under 10; Blunder: 10 or more. Rack Draws WPA compares the same recorded move before and after its actual refill. Each row shows the average signed change with the total in parentheses; passes and empty-bag turns have no draw. Partial totals include only measured refills. Missing estimates stay blank in the chart. These are engine estimates, not a measure of human accuracy.'));
+  method.append(makeElement('p', '', 'Gameplay WPA is the recorded move’s win estimate minus the best sampled alternative from the same position. Best: under 2 percentage points; Inaccuracy: 2–under 5; Mistake: 5–under 10; Blunder: 10 or more. Rack Draws WPA compares the same recorded move before and after its actual refill. Each row shows the average signed change with the total in parentheses; passes and empty-bag turns have no draw. Each player’s initial seven tiles count as one draw, with later refills counted separately. Partial totals and averages include only measured draws. The gray triangle shows the joint estimate after both initial racks, before Turn 1. The opening estimate uses a fixed static-best move policy, conditioned on both racks. Opening WPA averages both rack reveal orders. It removes the normal first-move advantage from draw luck. These values do not exactly divide the whole chart into move and draw effects. Missing estimates stay blank. These are engine estimates, not a measure of human accuracy.'));
   metrics.append(method);
   return panel;
 }
@@ -1668,16 +1727,16 @@ function refreshGameOverview() {
   const focused = existing.contains(document.activeElement) ? document.activeElement : null;
   const disclosure = focused?.matches('details[data-review-disclosure] > summary')
     ? focused.parentElement.dataset.reviewDisclosure : null;
-  const focusedPoint = focused?.closest('.win-history-point');
+  const focusedPoint = focused?.closest('.win-history-point, .win-history-opening');
   const turn = focusedPoint?.dataset.turnIndex;
-  const selector = turn !== undefined ? '.win-history-point[data-turn-index="' + turn + '"][data-phase="' + focusedPoint.dataset.phase + '"]'
+  const selector = focusedPoint?.classList.contains('win-history-opening') ? '.win-history-opening' : turn !== undefined ? '.win-history-point[data-turn-index="' + turn + '"][data-phase="' + focusedPoint.dataset.phase + '"]'
     : focused?.matches('.start-review') ? '.start-review'
     : disclosure ? 'details[data-review-disclosure="' + CSS.escape(disclosure) + '"] > summary'
     : focused?.matches('.win-history-scroll') ? '.win-history-scroll'
     : focused?.matches('.win-history-phase-button') ? '.win-history-phase-button' : null;
   existing.replaceWith(makeGameOverview(currentReview));
   restoreReviewChartScroll();
-  if (turn !== undefined) restoreWinHistoryFocus(byId('reviewPanel').querySelector(selector));
+  if (focusedPoint) restoreWinHistoryFocus(byId('reviewPanel').querySelector(selector));
   else if (selector) byId('reviewPanel').querySelector(selector)?.focus({preventScroll: true});
 }
 
@@ -1887,6 +1946,7 @@ function renderReview() {
 
 function selectTurn(index, focusSelector) {
   if (!currentReview || index < 0 || index >= currentReview.turns.length) return;
+  reviewOpeningSelections.delete(currentReview);
   const entering = reviewView === 'summary';
   reviewView = 'walkthrough';
   currentTurnIndex = index;
@@ -2634,7 +2694,50 @@ function makeRackDrawTiles(turn) {
   return section;
 }
 
+function makeOpeningDrawInspector(opening, review) {
+  const inspector = makeElement('aside', 'win-history-inspector win-history-detail');
+  inspector.setAttribute('aria-label', 'Initial rack draw details');
+  inspector.dataset.inspectedTurn = 'opening';
+  inspector.dataset.inspectedPhase = 'opening';
+  const known = openingDrawKnown(opening);
+  const you = viewingSharedGame ? review.my_name || 'Player' : 'You';
+  const firstMine = opening.firstMine ?? Boolean(review.turns[0]?.mine);
+  const names = firstMine ? [you, review.opponent || 'Opponent'] : [review.opponent || 'Opponent', you];
+  const state = known ? opening.provisional ? 'Early estimate' : 'Full estimate'
+    : opening.unavailable ? 'Estimate unavailable' : opening.retryable ? 'Estimate needs a retry' : 'Waiting for estimate';
+  inspector.append(makeElement('p', 'eyebrow', 'Initial rack draw · Before Turn 1'),
+    makeElement('h4', '', 'Both initial racks'),
+    makeElement('p', known && opening.provisional ? 'win-history-inspector-early' : 'win-history-inspector-note', state));
+  for (const [index, rack] of [opening.firstRack, opening.secondRack].entries()) {
+    const row = makeElement('div', 'opening-rack');
+    row.append(makeElement('p', 'draw-letters-label', names[index] + (index === 0 ? ' · Moves first' : '')),
+      makeElement('p', 'opening-rack-letters', rack || 'Rack unavailable'));
+    const wpa = index === 0 ? opening.firstWpa : opening.secondWpa;
+    row.append(makeElement('p', 'opening-rack-wpa', 'Opening Rack Draws WPA: ' +
+      (known && Number.isFinite(wpa) ? signedWpa(wpa) + ' pp' : '—')));
+    inspector.append(row);
+  }
+  const comparison = makeElement('div', 'win-history-comparison');
+  comparison.append(makeElement('p', 'eyebrow', 'Win chance for ' + you));
+  const row = makeElement('div', 'win-history-comparison-row');
+  row.dataset.move = 'after-opening';
+  row.append(makeElement('span', '', 'After initial draw'), makeElement('strong', '', known
+    ? ((firstMine ? opening.afterWin : 1 - opening.afterWin) * 100).toFixed(1) + '%' : '—'));
+  comparison.append(row);
+  if (opening.reason) comparison.append(makeElement('p', 'win-history-inspector-note', opening.reason));
+  if (known) comparison.append(makeElement('p', 'win-history-inspector-note',
+    opening.samples + ' samples. ' + (opening.provisional ? 'Early estimates can change.' : 'Full estimate.')));
+  inspector.append(comparison);
+  const method = makeReviewDetails('opening-method', 'opening-method', 'Opening estimate method');
+  method.append(makeElement('p', 'win-history-inspector-note', 'Fixed static-best move policy, conditioned on both initial racks. The policy does not see the other rack. Opening WPA averages both rack reveal orders and removes normal first-move advantage from draw luck. These values do not exactly divide the whole chart into move and draw effects.'));
+  if (known && Number.isFinite(opening.beforeWin)) method.append(makeElement('p', 'win-history-inspector-note',
+    'Both racks random: ' + ((firstMine ? opening.beforeWin : 1 - opening.beforeWin) * 100).toFixed(1) + '% for ' + you + '.'));
+  inspector.append(method);
+  return inspector;
+}
+
 function makeWinHistoryInspector(point, review, sweep) {
+  if (point.opening) return makeOpeningDrawInspector(point.draw, review);
   const inspector = makeElement('aside', 'win-history-inspector win-history-detail');
   inspector.setAttribute('aria-label', 'Move details');
   inspector.dataset.inspectedTurn = String(point.x);
@@ -2737,23 +2840,30 @@ function drawWinHistory(estimates, review, preview = false, overview = false) {
     { ...known.get(index), x: index, phase: 'before-draw' },
     ...(draws.has(index) ? [{ ...draws.get(index), x: index, phase: 'after-draw' }] : [])
   ]);
+  const opening = openingDrawForReview(review);
+  const openingKnown = openingDrawKnown(opening);
+  const firstMine = opening.firstMine ?? Boolean(review.turns[0]?.mine);
+  points.unshift({opening: true, x: 'opening', phase: 'opening', draw: opening,
+    mine: openingKnown ? (firstMine ? opening.afterWin : 1 - opening.afterWin) * 100 : null,
+    provisional: opening.provisional});
   const pointKey = point => point.x + ':' + (point.actual ? 'final' : point.phase);
-  const plotIndex = point => point.x + (point.phase === 'after-draw' ? .45 : 0);
+  const plotIndex = point => point.opening ? 'opening' : point.x + (point.phase === 'after-draw' ? .45 : 0);
   const result = gameResult(review);
   if (result.kind !== 'complete') points.push({ x: totalTurns, actual: true,
     mine: result.kind === 'draw' ? 50 : result.kind === 'win' ? 100 : 0 });
-  const selected = overview ? -1 : !preview && currentTurnIndex === totalTurns - 1 && boardView === 'after' && result.kind !== 'complete'
+  const selected = reviewOpeningSelections.has(review) ? 'opening' : overview ? -1 : !preview && currentTurnIndex === totalTurns - 1 && boardView === 'after' && result.kind !== 'complete'
     ? totalTurns : currentTurnIndex;
   const previous = reviewChartScrollStates.get(review);
   const inspected = previous?.selected === String(selected)
-    ? points.find(point => point.x === previous.inspected && (point.actual ? 'final' : point.phase) === (previous.phase || 'before-draw')) : null;
-  const inspectedPoint = inspected || points.find(point => point.x === Math.max(0, selected));
+    ? points.find(point => String(point.x) === String(previous.inspected) && (point.actual ? 'final' : point.phase) === (previous.phase || 'before-draw')) : null;
+  const inspectedPoint = inspected || points.find(point => point.x === (selected === 'opening' ? 'opening' : Math.max(0, selected)));
   const width = Math.max(180, reviewChartWidths.get(review) || 560);
   const facts = new Map();
   const rowEnds = {mine: {grade: [], sweep: []}, opponent: {grade: [], sweep: []}};
-  const annotationX = index => 48 + index / Math.max(1, totalTurns) * (width - 72);
+  const openingSlot = 38;
+  const annotationX = index => 48 + openingSlot + index / Math.max(1, totalTurns) * (width - 72 - openingSlot);
   for (const point of points) {
-    if (point.actual || point.phase === 'after-draw') continue;
+    if (point.opening || point.actual || point.phase === 'after-draw') continue;
     const turn = review.turns[point.x], quality = qualityPointForTurn(point.x);
     const grade = ['mistake', 'blunder'].includes(quality?.category) && Number.isFinite(quality.loss) ? quality.category : '';
     const candidates = ['review', 'preview', 'candidates'].flatMap(kind => positionCache.get(turn, kind)?.moves || []);
@@ -2776,9 +2886,9 @@ function drawWinHistory(estimates, review, preview = false, overview = false) {
     bottom: Math.max(28, rowCount('opponent') * 18 + 20), left: 48};
   const height = Math.max(160, margin.top + 68 + margin.bottom);
   const plotWidth = width - margin.left - margin.right, plotHeight = height - margin.top - margin.bottom;
-  const turnWidth = plotWidth / Math.max(1, totalTurns);
+  const turnWidth = (plotWidth - openingSlot) / Math.max(1, totalTurns);
   const dense = turnWidth < 28;
-  const x = index => margin.left + index / Math.max(1, totalTurns) * plotWidth;
+  const x = index => index === 'opening' ? margin.left : margin.left + openingSlot + index / Math.max(1, totalTurns) * (plotWidth - openingSlot);
   const y = value => margin.top + (1 - Math.max(0, Math.min(100, value)) / 100) * plotHeight;
   const chart = makeElement('div', 'win-history');
   chart.dataset.dense = String(dense);
@@ -2796,7 +2906,7 @@ function drawWinHistory(estimates, review, preview = false, overview = false) {
   const viewport = makeElement('div', 'win-history-scroll');
   viewport.tabIndex = 0;
   viewport.setAttribute('role', 'region');
-  viewport.setAttribute('aria-label', 'Full game win chance chart. Hover or focus a point to inspect a turn.');
+  viewport.setAttribute('aria-label', 'Full game win chance chart. Hover or focus a point to inspect the initial draw or a turn.');
   viewport.dataset.selected = String(selected);
   const svg = svgElement('svg', { viewBox: `0 0 ${width} ${height}`, role: 'group',
     'aria-label': 'Win chance for ' + you + ' by game turn. Select a point to review.' });
@@ -2828,6 +2938,50 @@ function drawWinHistory(estimates, review, preview = false, overview = false) {
   const hitLayer = svgElement('g', {class: 'win-history-hit-layer', 'aria-hidden': 'true'});
   svg.append(hitLayer);
   for (const point of points) {
+    if (point.opening) {
+      const centerX = x('opening'), centerY = openingKnown ? y(point.mine) : y(0) + 6;
+      const state = openingKnown ? opening.provisional ? 'Early estimate' : 'Full estimate'
+        : opening.unavailable || opening.retryable ? 'Estimate unavailable' : 'Waiting for estimate';
+      const label = 'Initial rack draw. ' + (openingKnown ? you + ': ' + point.mine.toFixed(1) + '%. ' : '') + state + '. Select to inspect.';
+      const group = svgElement('g', {class: 'win-history-opening', 'data-phase': 'opening',
+        'data-estimate': openingKnown ? opening.provisional ? 'early' : 'full' : 'missing',
+        tabindex: 0, role: 'button', 'aria-label': label, 'aria-pressed': String(selected === 'opening')});
+      const title = svgElement('title');
+      title.textContent = label;
+      group.append(title, svgElement('path', {class: 'win-history-marker',
+        d: `M ${centerX} ${centerY - 9} L ${centerX + 8} ${centerY + 7} L ${centerX - 8} ${centerY + 7} Z`,
+        fill: openingKnown && !opening.provisional ? '#777' : '#fff', stroke: '#777', 'stroke-width': 2,
+        'stroke-dasharray': !openingKnown ? '2 2' : 'none'}));
+      const showDetail = () => {
+        const next = makeOpeningDrawInspector(opening, review);
+        inspector.replaceWith(next);
+        inspector = next;
+        selection.setAttribute('x', centerX - selectionWidth / 2);
+        svg.querySelectorAll('[data-inspected]').forEach(node => delete node.dataset.inspected);
+        group.dataset.inspected = 'true';
+      };
+      const inspect = () => {
+        reviewOpeningSelections.add(review);
+        viewport.dataset.selected = 'opening';
+        svg.querySelectorAll('[aria-pressed]').forEach(node => node.setAttribute('aria-pressed', String(node === group)));
+        showDetail();
+        restoreWinHistoryFocus(group);
+      };
+      group.addEventListener('pointermove', showDetail);
+      group.addEventListener('focus', () => { if (!group.dataset.restoringFocus) showDetail(); });
+      group.addEventListener('click', inspect);
+      group.addEventListener('keydown', event => {
+        if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); inspect(); }
+      });
+      const hit = svgElement('rect', {class: 'win-history-hit win-history-opening-hit', 'data-hit-phase': 'opening',
+        x: centerX - 14, y: margin.top - 10, width: 28, height: plotHeight + 25, fill: 'transparent'});
+      hit.addEventListener('pointermove', showDetail);
+      hit.addEventListener('click', inspect);
+      hitLayer.append(hit);
+      svg.append(group);
+      if (inspectedPoint?.opening) showDetail();
+      continue;
+    }
     const available = Number.isFinite(point.mine);
     const afterDraw = point.phase === 'after-draw';
     const quality = point.actual || afterDraw ? null : qualityPointForTurn(point.x);
@@ -3006,7 +3160,7 @@ function drawWinHistory(estimates, review, preview = false, overview = false) {
   }
   gradeLegend.append(makeElement('span', '', 'Dashed badge: early grade'));
   const legend = makeElement('div', 'win-history-legend');
-  for (const label of ['Dot in marker: after rack draw', 'Filled: full estimate', 'Hollow: early (dashed line)', '◆ Final result', 'Below line: missing estimate']) legend.append(makeElement('span', '', label));
+  for (const label of ['Gray triangle: initial racks, before Turn 1', 'Dot in marker: after rack draw', 'Filled: full estimate', 'Hollow: early (dashed line)', '◆ Final result', 'Below line: missing estimate']) legend.append(makeElement('span', '', label));
   const note = makeElement('p', 'win-history-note', (viewingSharedGame ? you + '’s icons' : 'Your icons') + ' are above the plot; opponent icons are below. All key turns remain visible. Sweep: all 7 tiles played. Missed sweep: analysis found a 7-tile alternative; it may not be the best move.');
   const help = makeReviewDetails('chart-key', 'win-history-help', 'Chart key');
   help.append(legend, note);
@@ -3091,7 +3245,9 @@ function startMoveQuality(review) {
   const queue = getReviewQueue();
   const context = contextFor(review);
   if (!context) return Promise.resolve();
-  context.quality = { state: 'running', evaluation: MOVE_QUALITY_EVALUATION, points: [], current: 0, message: 'Preparing win estimates…' };
+  context.quality = { state: 'running', evaluation: MOVE_QUALITY_EVALUATION, points: [], current: 0,
+    opening: cachedOpeningPoint(context.openingInput || CrossplayOpening.describe(review), context.cache) || undefined,
+    message: 'Preparing win estimates…' };
   context.trend = null;
   syncVisibleContext(context);
   queue.retry(review.id);
@@ -3229,7 +3385,8 @@ function deriveWinTrend(context, done = false) {
 }
 async function finishReviewAnalysis(context) {
   if (context.cancelled || context.owner !== analysisOwner()) return;
-  if (context.quality?.points.some(point => point.provisional || point.draw?.provisional)) return;
+  if (reviewQueue?.openingPending(context) || context.quality?.opening?.provisional ||
+      context.quality?.points.some(point => point.provisional || point.draw?.provisional)) return;
   if (!context.quality) context.quality = { evaluation: MOVE_QUALITY_EVALUATION, points: [] };
   context.quality.state = 'done';
   context.quality.message = 'Move-quality analysis complete · ' + context.quality.points.filter(point => Number.isFinite(point.loss)).length + ' of ' + context.review.turns.length + ' moves rated.';
@@ -3275,6 +3432,58 @@ function workerRequest(type, payload = {}, options = {}) {
 function stopWorker(reason) {
   if (quacklePool) quacklePool.stop(reason);
   viewedTurnRequest = null;
+}
+
+async function analyzeOpeningDraw(context, phase = 'review') {
+  const {review, cache, owner} = context;
+  if (context.cancelled || owner !== analysisOwner()) throw accountChanged();
+  const input = context.openingInput || (context.openingInput = CrossplayOpening.describe(review));
+  context.quality ||= {state: 'running', evaluation: MOVE_QUALITY_EVALUATION, points: []};
+  if (input.unavailable) {
+    context.quality.opening = {...input};
+    context.openingState = 'unavailable';
+    syncVisibleContext(context);
+    return {complete: true};
+  }
+  const fullKey = CrossplayOpening.key(input, SIMULATION_ITERATIONS);
+  const iterations = phase === 'preview' ? PREVIEW_ITERATIONS : SIMULATION_ITERATIONS;
+  const key = CrossplayOpening.key(input, iterations);
+  const taskKey = owner + ':' + review.id + ':' + key;
+  const priority = currentReview === review ? 5 : 1;
+  const signal = reviewQueue?.controller.signal;
+  if (phase === 'preview' && !cache.results[fullKey]) cache.errors.delete(fullKey);
+  try {
+    const result = cache.results[fullKey] || await cache.requestKey(key, async onStart => {
+      const payload = {firstRack: input.firstRack, secondRack: input.secondRack,
+        iterations, seed: CrossplayOpening.seed(input)};
+      const value = await workerRequest('simulateOpening', payload, {priority, signal, taskKey, onStart});
+      if (context.cancelled || owner !== analysisOwner()) throw accountChanged();
+      if (!CrossplayOpening.validResult(value, input, iterations)) throw new Error('Quackle returned incomplete opening draw results.');
+      recordEngineResult(review, cache, key, value);
+      return value;
+    }, signal, {priority, onPromote: value => quacklePool?.promote(taskKey, value)});
+    if (context.cancelled || owner !== analysisOwner()) throw accountChanged();
+    // A late preview must not cover a completed full result or a full failure.
+    if (phase === 'preview' && cache.errors.has(fullKey) && !cache.results[fullKey]) return {complete: true};
+    const chosen = cache.results[fullKey] || result;
+    context.quality.opening = CrossplayOpening.point(chosen, input);
+    context.openingError = null;
+    context.openingState = context.quality.opening.provisional ? 'pending' : 'done';
+    context.quality.state = context.paused ? 'stopped' : 'running';
+    context.trend = deriveWinTrend(context);
+    syncVisibleContext(context);
+    return {complete: !context.quality.opening.provisional};
+  } catch (error) {
+    if (error.name === 'AbortError' || context.cancelled || owner !== analysisOwner()) throw error;
+    if (phase === 'preview' && cache.results[fullKey]) return {complete: true};
+    if (phase !== 'preview' || !cache.errors.has(fullKey)) {
+      context.quality.opening = {unavailable: true, retryable: true, reason: error.message};
+      context.openingError = error.message;
+      context.openingState = 'error';
+      syncVisibleContext(context);
+    }
+    throw error;
+  }
 }
 
 async function ensureRackDrawAnalysis(context, turn, phase, options = {}) {

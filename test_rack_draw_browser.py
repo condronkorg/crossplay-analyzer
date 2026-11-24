@@ -145,6 +145,7 @@ class RackDrawBrowserTest(unittest.TestCase):
         self.prepare_draw()
         result=self.page.evaluate('''async () => {
           const context=contextFor(currentReview),request=workerRequest;
+          await analyzeOpeningDraw(context,'review');
           await ensurePositionAnalysis(currentReview,currentReview.turns[0],'review');
           let release;
           workerRequest=(type,payload,options)=>type!=='simulateDraw'?request(type,payload,options)

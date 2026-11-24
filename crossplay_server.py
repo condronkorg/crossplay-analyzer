@@ -746,6 +746,8 @@ class Handler(SimpleHTTPRequestHandler):
         quality = body.get('move_quality')
         if quality and quality.get('evaluation') == 'win-probability-v1':
             Handler.validate_win_quality(quality)
+        if quality and 'opening' in quality:
+            Handler.validate_opening_quality(quality['opening'])
         entries = body.get('turn_analyses', {})
         if not isinstance(entries, dict) or len(entries) > 512:
             raise CrossplayError('Invalid turn analysis cache.', 400)
@@ -756,6 +758,10 @@ class Handler(SimpleHTTPRequestHandler):
                 identity = json.loads(key)
             except ValueError:
                 identity = None
+            is_opening = isinstance(identity, list) and bool(identity) and identity[0] == 'quackle-opening-draw-v1'
+            if is_opening or result.get('samplingVersion') == 'initial-deal-v1':
+                Handler.validate_opening_result(identity, result)
+                continue
             is_draw = (isinstance(identity, list) and len(identity) > 1
                        and (identity[0] == 'quackle-rack-draw-v1' or identity[1] in ('draw', 'draw-preview')))
             if is_draw or result.get('samplingVersion') == 'rack-draw-v1':
@@ -977,6 +983,72 @@ class Handler(SimpleHTTPRequestHandler):
         # Exchanged tiles go back only after this refill, so they are not added.
         available.subtract(draws)
         if any(count < 0 for count in available.values()):
+            invalid()
+
+    @staticmethod
+    def valid_opening_racks(first, second):
+        if not all(isinstance(rack, str) and re.fullmatch(r'[A-Z?]{7}', rack)
+                   and rack == ''.join(sorted(rack)) for rack in (first, second)):
+            return False
+        remaining = Counter(TILE_COUNTS)
+        remaining.subtract(first + second)
+        return all(count >= 0 for count in remaining.values())
+
+    @staticmethod
+    def valid_opening_values(values, baseline='baselineWin'):
+        if (not all(Handler.finite_number(values.get(field)) and 0 <= values[field] <= 1
+                    for field in (baseline, 'firstOnlyWin', 'secondOnlyWin', 'afterWin'))
+                or not all(Handler.finite_number(values.get(field)) for field in ('firstWpa', 'secondWpa'))):
+            return False
+        b, a, c, j = (values[baseline], values['firstOnlyWin'], values['secondOnlyWin'], values['afterWin'])
+        return (abs(values['firstWpa'] - 100 * ((a - b) + (j - c)) / 2) <= 1e-8
+                and abs(values['secondWpa'] + 100 * ((c - b) + (j - a)) / 2) <= 1e-8)
+
+    @staticmethod
+    def validate_opening_result(identity, result):
+        def invalid():
+            raise CrossplayError('Invalid opening rack analysis result.', 400)
+
+        if (not isinstance(identity, list) or len(identity) != 7
+                or identity[0] != 'quackle-opening-draw-v1'
+                or type(identity[3]) is not int or identity[3] not in (64, 277)
+                or type(identity[4]) is not int or identity[4] != 2
+                or identity[5:] != ['static-best-v1', 'initial-deal-v1']
+                or not Handler.valid_opening_racks(identity[1], identity[2])):
+            invalid()
+        # FNV-1a of the shared, rack-independent opening policy identity.
+        seed = 2166136261
+        for byte in b'["quackle-opening-draw-v1",2,"static-best-v1","initial-deal-v1"]':
+            seed = ((seed ^ byte) * 16777619) & 0xffffffff
+        if (result.get('simulated') is not True or result.get('samplingVersion') != 'initial-deal-v1'
+                or result.get('policy') != 'static-best-v1'
+                or result.get('firstRack') != identity[1] or result.get('secondRack') != identity[2]
+                or not all(type(result.get(field)) is int
+                           for field in ('seed', 'iterationsRequested', 'iterationsCompleted', 'plies'))
+                or result['seed'] != seed or result['iterationsRequested'] != identity[3]
+                or result['iterationsCompleted'] != identity[3] or result['plies'] != 2
+                or result.get('playToEnd') is not False or result.get('simulationMode') != '2-ply'
+                or result.get('winModel') != 'bogowin' or not Handler.valid_opening_values(result)):
+            invalid()
+
+    @staticmethod
+    def validate_opening_quality(opening):
+        def invalid():
+            raise CrossplayError('Invalid opening rack quality.', 400)
+
+        if not isinstance(opening, dict):
+            invalid()
+        if opening.get('unavailable') is True:
+            if (not isinstance(opening.get('reason'), str) or not opening['reason'].strip()
+                    or ('retryable' in opening and type(opening['retryable']) is not bool)
+                    or any(field in opening for field in ('beforeWin', 'firstOnlyWin', 'secondOnlyWin',
+                                                          'afterWin', 'firstWpa', 'secondWpa', 'samples'))):
+                invalid()
+            return
+        if (type(opening.get('firstMine')) is not bool or opening.get('provisional') is not False
+                or type(opening.get('samples')) is not int or opening['samples'] != 277
+                or not Handler.valid_opening_racks(opening.get('firstRack'), opening.get('secondRack'))
+                or not Handler.valid_opening_values(opening, 'beforeWin')):
             invalid()
 
     @staticmethod

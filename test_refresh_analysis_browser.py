@@ -33,6 +33,8 @@ class RefreshAnalysisBrowserTest(unittest.TestCase):
             savePayload = JSON.parse(options.body);
             return Promise.resolve({});
           };
+          // Opening work is already complete; this regression interrupts a move.
+          old.openingState = 'done';
           old.states = old.states.map(() => 'done');
           old.states[1] = 'pending-preview';
           oldQueue.run = () => new Promise(resolve => {window.finishOld = resolve;});
