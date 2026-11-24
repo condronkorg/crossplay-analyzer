@@ -32,10 +32,7 @@
   .site-nav a { color: var(--muted); text-decoration: none; }
   .site-nav span { color: var(--green); font-weight: 650; }
   .site-nav a:hover { text-decoration: underline; }
-  .page-intro { margin-bottom: 19px; }
   .eyebrow { color: var(--muted); font-size: 10px; font-weight: 750; letter-spacing: 1.6px; text-transform: uppercase; }
-  .page-intro .eyebrow { margin-bottom: 7px; }
-  .subtitle { margin-top: 7px; color: var(--muted); font-size: 13px; }
   .panel { border: 1px solid var(--line); border-radius: 12px; background: #fff; padding: 20px; }
   .account { margin-bottom: 24px; padding: 13px 17px; }
   .account-top, .section-heading, .review-heading, .turn-controls { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
@@ -52,6 +49,7 @@
   .remember-cookie input { flex: 0 0 auto; min-width: 0; margin: 0; accent-color: var(--green); }
   .account-help, .muted { color: var(--muted); font-size: 12px; line-height: 1.6; }
   .account-help { margin-top: 10px; }
+  .account-help ol { margin: 6px 0 10px; padding-left: 21px; }
   .danger-button { color: #975547; }
   .workspace { display: grid; grid-template-columns: 235px minmax(0, 1fr); gap: 26px; align-items: start; }
   .games-panel { padding: 17px 0; background: transparent; border: 0; }
@@ -76,7 +74,6 @@
   .empty-state { padding: 20px 8px; color: var(--muted); font-size: 12px; }
   .review { min-width: 0; padding: 0; border: 0; background: transparent; }
   .review-placeholder { min-height: 300px; display: grid; place-items: center; padding: 30px; border: 1px dashed #bacabb; border-radius: 14px; text-align: center; color: var(--muted); }
-  .game-open .page-intro { display: none; }
   .game-overview { container-type: inline-size; max-width: 1120px; margin: 0 auto 20px; padding: 16px 20px; border-radius: 18px; background: #262522; color: #f7f6f2; color-scheme: dark; }
   .overview-heading { text-align: center; margin-bottom: 20px; }
   .overview-heading h2 { font-size: 30px; letter-spacing: -.7px; }
@@ -492,12 +489,6 @@
     <div class="brand"><span class="brand-mark" aria-hidden="true">C</span> crossplay <span class="brand-tag">the game review</span></div>
     <nav class="site-nav" aria-label="Main navigation"><span aria-current="page">Game review</span><a href="screenshot.html">Screenshot analyzer</a><a href="manual.html">Manual board</a></nav>
   </header>
-  <div class="page-intro">
-    <p class="eyebrow">A little reflection. A better next game.</p>
-    <h1>Your game, in focus.</h1>
-    <p class="subtitle">See what went well, find your missed opportunities, and make your next move count.</p>
-  </div>
-
   <section class="panel account" aria-label="NYT account connection">
     <div class="account-top">
       <div id="connectionState" class="account-state">Checking local connection…</div>
@@ -510,14 +501,23 @@
     </div>
     <form id="cookieForm" class="account-form" data-dd-privacy="hidden">
       <input id="cookieInput" type="password" autocomplete="off" autocapitalize="off" spellcheck="false"
-        aria-label="NYT-S cookie" placeholder="Paste your NYT-S session cookie">
+        aria-label="NYT-S cookie" aria-describedby="accountHelp" placeholder="Paste your NYT-S session cookie">
       <button id="saveCookieButton" type="submit">Connect</button>
       <label id="rememberCookieRow" class="remember-cookie hidden">
         <input id="rememberNytCookie" type="checkbox" checked>
         Remember this NYT cookie encrypted on my account
       </label>
     </form>
-    <p id="accountHelp" class="account-help">Google sign-in identifies your account here and does not connect other Google services; you still connect your NYT account separately. On Vercel, a remembered NYT-S value is encrypted before saving and can be removed with Forget cookie. Locally, the server keeps it in memory. Use the value of the NYT-S cookie from a signed-in NYTimes browser session. See our <a href="privacy.html">Privacy Policy</a>.</p>
+    <div id="accountHelp" class="account-help">
+      <p><strong>How to get your NYT-S token in Chrome</strong></p>
+      <ol>
+        <li>Open <a href="https://www.nytimes.com/" target="_blank" rel="noopener noreferrer">nytimes.com</a> and sign in to the NYT account you use for Crossplay.</li>
+        <li>Right-click the page and select <strong>Inspect</strong>.</li>
+        <li>Open <strong>Application → Storage → Cookies</strong>, select the NYTimes site, and find <strong>NYT-S</strong>.</li>
+        <li>Copy its <strong>Value</strong>, paste it in the box above, and select <strong>Connect</strong>.</li>
+      </ol>
+      <p>With Google sign-in, leave <strong>Remember this NYT cookie encrypted on my account</strong> checked to reuse the token on later visits. NYT can expire a token. <strong>Forget cookie</strong> removes the saved copy. Google sign-in does not connect your NYT account. See our <a href="privacy.html">Privacy Policy</a>.</p>
+    </div>
   </section>
 
   <div id="sharedBanner" class="shared-banner hidden">Shared game · No sign-in needed. <a href="./">View your games</a></div>
@@ -841,18 +841,12 @@ function clearAccountUi(message) {
 }
 
 async function refreshGames() {
-  if (!nytConfigured) {
-    const message = persistenceEnabled && !signedInUser
-      ? 'Sign in with Google, then connect your NYT cookie to refresh games.'
-      : 'Connect your NYT cookie to refresh games.';
-    setConnection(message, 'error');
-    updateAuthUi();
-    byId('cookieInput').focus();
-    return;
-  }
   const state = {owner: analysisOwner(), snapshot: manualRefreshState?.snapshot || suspendAnalysisForRefresh()};
   manualRefreshState = state;
-  try { await loadGames({refresh: true, manual: true}); }
+  try {
+    await loadGames({refresh: true, manual: true,
+      recoverConnection: !nytConfigured || (!persistenceEnabled && Boolean(signedInUser))});
+  }
   finally {
     if (manualRefreshState === state && state.owner === analysisOwner()) {
       manualRefreshState = null;
@@ -861,11 +855,11 @@ async function refreshGames() {
   }
 }
 
-async function loadGames({ refresh = false, background = false, manual = false } = {}) {
+async function loadGames({ refresh = false, background = false, manual = false, recoverConnection = false } = {}) {
   if (manualRefreshState && !manual) return false;
   const account = signedInUser;
-  const owner = analysisOwner();
-  const wasConfigured = nytConfigured;
+  let owner = analysisOwner();
+  let wasConfigured = nytConfigured;
   gameListRequest?.controller.abort();
   const request = {controller: new AbortController(), timedOut: false};
   gameListRequest = request;
@@ -880,7 +874,49 @@ async function loadGames({ refresh = false, background = false, manual = false }
     gameRefreshResult = 'Checking NYT for recent games…';
     byId('refreshStatus').textContent = gameRefreshResult;
   }
+  let checkingConnection = recoverConnection;
   try {
+    if (recoverConnection) {
+      const connection = await api('status', {expectedOwner: owner, signal: request.controller.signal});
+      if (!current() || request.controller.signal.aborted) return false;
+      if (connection?.auth_required === true && connection.authenticated === false) {
+        throw Object.assign(new Error('Sign in with Google to restore your saved NYT connection.'), {status: 401});
+      }
+      if (typeof connection?.configured !== 'boolean' ||
+          (connection.auth_required !== undefined && typeof connection.auth_required !== 'boolean') ||
+          ((persistenceEnabled || connection.auth_required) &&
+            (connection.auth_required !== true || typeof connection.authenticated !== 'boolean'))) {
+        throw new Error('The server did not return the NYT connection status. Press Refresh to try again.');
+      }
+      const persistent = Boolean(connection.auth_required);
+      if (persistent !== persistenceEnabled) {
+        // A failed startup status check can leave the account in local mode.
+        // Preserve its cards, but never restore analysis under the wrong owner.
+        const retainedGames = games, retainedCookie = activeNytCookie, manualState = manualRefreshState;
+        gameListRequest = null;
+        clearAccountUi();
+        persistenceEnabled = persistent;
+        owner = analysisOwner();
+        wasConfigured = nytConfigured;
+        games = retainedGames;
+        activeNytCookie = retainedCookie;
+        if (manualState) {
+          manualState.owner = owner;
+          manualState.snapshot = suspendAnalysisForRefresh();
+          manualRefreshState = manualState;
+        }
+        gameListRequest = request;
+        gameRefreshResult = 'Checking NYT for recent games…';
+        updateAuthUi();
+        renderGames();
+      }
+      checkingConnection = false;
+      if (!connection.configured) {
+        throw Object.assign(new Error(persistent
+          ? 'No saved NYT cookie is available. Connect your NYT cookie to refresh games.'
+          : 'Connect your NYT cookie to refresh games.'), {status: 409});
+      }
+    }
     const useLiveRefresh = persistenceEnabled && refresh;
     const data = await api(useLiveRefresh ? 'games/refresh' : 'games', useLiveRefresh ? {
       expectedOwner: owner, signal: request.controller.signal,
@@ -893,6 +929,12 @@ async function loadGames({ refresh = false, background = false, manual = false }
     gameRefreshError = "";
     if (refresh) gameRefreshResult = refreshResultText(data.refresh);
     renderGames();
+    const connected = byId('connectionState').classList.contains('connected');
+    if (recoverConnection || (manual && !connected)) {
+      if (connected) nytConfigured = true;
+      else updateAccountUi();
+      updateAuthUi();
+    }
     if (!manualRefreshState) startBackgroundAnalysis();
     return true;
   } catch (error) {
@@ -901,7 +943,13 @@ async function loadGames({ refresh = false, background = false, manual = false }
     gameRefreshResult = '';
     gameRefreshError = 'Refresh failed: ' + message;
     renderGames();
-    if (/cookie|session|logged in/i.test(message)) setConnection(message, 'error');
+    if (checkingConnection && error.status === 401) {
+      setConnection('Sign in with Google to restore your saved NYT connection.', 'error');
+      byId('googleSignInButton').classList.remove('hidden');
+    } else if (/cookie|session|logged in/i.test(message)) {
+      setConnection(message, 'error');
+      if ([401, 409].includes(error.status)) byId('cookieInput').focus();
+    }
     return false;
   } finally {
     clearTimeout(timer);
@@ -3565,11 +3613,13 @@ byId('cookieForm').addEventListener('submit', async event => {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ nyt_s: token, remember: byId('rememberNytCookie').checked })
     });
+    const refreshInProgress = Boolean(manualRefreshState);
     if (!persistenceEnabled) clearAccountUi();
     activeNytCookie = data.remembered ? '' : token.replace(/^NYT-S=/, '').trim().replace(/^"|"$/g, '');
     input.value = '';
     updateAccountUi(data.username || '');
-    await loadGames({ refresh: true });
+    if (refreshInProgress || (!persistenceEnabled && signedInUser)) await refreshGames();
+    else await loadGames({ refresh: true });
   } catch (error) {
     input.value = '';
     setConnection(error.message, 'error');

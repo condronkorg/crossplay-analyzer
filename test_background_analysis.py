@@ -58,6 +58,34 @@ class BackgroundAnalysisTest(unittest.TestCase):
         self.client.recent_games.return_value = []
         self.handler.current_session = Mock(return_value=('account-a', self.client))
 
+    def test_recorded_pass_markers_round_trip_review_and_zero_draw_results(self):
+        for action in ('pass -- 0', ' PASS\t--\t-5 ', 'PASS', 'pass 0'):
+            for kind in ('preview', 'review'):
+                key, result = review_analysis_entry(kind)
+                identity = json.loads(key)
+                identity[12] = action
+                for moves in (result['moves'], result['staticMoves']):
+                    moves[0].update(action='pass', position='', tiles='', score=0)
+                body = {'analysis_version': ANALYSIS_VERSION,
+                        'turn_analyses': {json.dumps(identity): result}}
+                with self.subTest(action=action, kind=kind):
+                    self.assertEqual(self.handler.validate_game_analysis(body)['turn_analyses'], body['turn_analyses'])
+            for kind in ('draw-preview', 'draw'):
+                key, result = draw_analysis_entry(kind)
+                identity = json.loads(key)
+                identity[11] = action
+                identity[13] = identity[3]
+                result.update(rackAfter=identity[3], drawCount=0, afterWin=result['beforeWin'],
+                              selected={'action': 'pass', 'position': '', 'tiles': ''})
+                body = {'analysis_version': ANALYSIS_VERSION,
+                        'turn_analyses': {json.dumps(identity): result}}
+                with self.subTest(action=action, kind=kind):
+                    self.assertEqual(self.handler.validate_game_analysis(body)['turn_analyses'], body['turn_analyses'])
+        for action in ('PASS --', 'PASS -- -- 0', 'PASS -- 0 extra', 'PASS AB 0', 'PASS -- 1.5'):
+            with self.subTest(action=action):
+                self.assertFalse(Handler.recorded_move_matches(['.' * 15] * 15, action, '',
+                    {'action': 'pass', 'position': '', 'tiles': ''}))
+
     def test_draw_estimates_round_trip_both_profiles_without_replacing_moves(self):
         review_key, review_result = review_analysis_entry()
         for kind in ('draw', 'draw-preview'):

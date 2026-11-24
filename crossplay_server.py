@@ -778,7 +778,7 @@ class Handler(SimpleHTTPRequestHandler):
     @staticmethod
     def recorded_move_matches(grid, action, swapped_tiles, move):
         if move['action'] == 'pass':
-            return re.fullmatch(r'PASS(?:\s+-?\d+)?', action.strip(), re.IGNORECASE) is not None
+            return re.fullmatch(r'PASS(?:\s+(?:--\s+)?-?\d+)?', action.strip(), re.IGNORECASE) is not None
         if move['action'] == 'exchange':
             return (re.fullmatch(r'(?:SWAP|EXCHANGE)(?:\s+(?:--\s+)?-?\d+)?', action.strip(), re.IGNORECASE) is not None
                     and bool(re.fullmatch(r'[A-Za-z?*_ ]{1,7}', swapped_tiles))
