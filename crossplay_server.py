@@ -330,9 +330,31 @@ class CrossplayClient:
             fetched_at, games = self._games
             if games is None or time.time() - fetched_at > LIST_CACHE_SECONDS:
                 data = self.get('/svc/games/mp/subscribe/fallback')
-                games = [g for msg in data.get('msgs', [])
-                         for g in msg.get('recent-games', {}).get('games', [])
-                         if g.get('game') == 'crossplay']
+                def incomplete():
+                    raise CrossplayError('NYT did not return a complete recent games list. Your saved games are unchanged. Try Refresh again.', 502)
+
+                if not isinstance(data, dict) or not isinstance(data.get('msgs'), list):
+                    incomplete()
+                games, found_snapshot = [], False
+                for message in data['msgs']:
+                    if not isinstance(message, dict):
+                        incomplete()
+                    if 'recent-games' not in message:
+                        continue
+                    snapshot = message['recent-games']
+                    if not isinstance(snapshot, dict) or not isinstance(snapshot.get('games'), list):
+                        incomplete()
+                    found_snapshot = True
+                    for game in snapshot['games']:
+                        if (not isinstance(game, dict) or not isinstance(game.get('game'), str)
+                                or not game['game']):
+                            incomplete()
+                        if game['game'] == 'crossplay':
+                            if not isinstance(game.get('id'), str) or not GAME_ID_RE.fullmatch(game['id']):
+                                incomplete()
+                            games.append(game)
+                if not found_snapshot:
+                    incomplete()
                 self._games = (time.time(), games)
             return games
 
@@ -1008,7 +1030,7 @@ class Handler(SimpleHTTPRequestHandler):
             'version': ANALYSIS_VERSION, 'snapshot': snapshot,
         })
 
-    def refresh_persistent_games(self, user_id, if_stale=False):
+    def refresh_persistent_games(self, user_id, if_stale=False, report=None):
         if if_stale:
             rows = self.supabase_data_request('GET', 'crossplay_refresh_state', {
                 'select': 'refreshed_at', 'user_id': 'eq.' + user_id, 'limit': '1',
@@ -1016,16 +1038,28 @@ class Handler(SimpleHTTPRequestHandler):
             if rows:
                 refreshed = datetime.fromisoformat(rows[0]['refreshed_at'].replace('Z', '+00:00'))
                 if time.time() - refreshed.timestamp() < DAILY_REFRESH_SECONDS:
+                    if report is not None:
+                        report.update(status='skipped', checked_at=rows[0]['refreshed_at'])
                     return self.persistent_games(user_id)
         _, client = self.current_session()
         if client is None:
             raise CrossplayError('Connect your NYT cookie before importing recent games.', 409)
         me = client.me()
         summaries = [summarize_game(game, me['user_id']) for game in client.recent_games()]
+        previous = {str(game['id']): game for game in self.persistent_games(user_id)} if report is not None else {}
+        current = {str(game['id']): game for game in summaries}
         self.upsert_game_summaries(user_id, summaries)
+        checked_at = datetime.now(timezone.utc).isoformat()
         self.supabase_data_request('POST', 'crossplay_refresh_state', {'on_conflict': 'user_id'}, {
-            'user_id': user_id, 'refreshed_at': datetime.now(timezone.utc).isoformat(),
+            'user_id': user_id, 'refreshed_at': checked_at,
         }, 'resolution=merge-duplicates,return=minimal')
+        if report is not None:
+            timestamps = [game['timestamp'] for game in current.values()
+                          if self.finite_number(game.get('timestamp'))]
+            report.update(status='refreshed', checked_at=checked_at, fetched=len(current),
+                          added=sum(key not in previous for key in current),
+                          updated=sum(key in previous and previous[key] != game for key, game in current.items()),
+                          newest_timestamp=max(timestamps, default=None))
         return self.persistent_games(user_id)
 
     def current_session(self):
@@ -1221,7 +1255,9 @@ class Handler(SimpleHTTPRequestHandler):
             return self.send_json(200, {'games': self.persistent_games(user_id)})
         if route == 'games/refresh' and method == 'POST':
             body = self.read_json_body() if int(self.headers.get('Content-Length') or 0) else {}
-            return self.send_json(200, {'games': self.refresh_persistent_games(user_id, body.get('if_stale') is True)})
+            report = {}
+            games = self.refresh_persistent_games(user_id, body.get('if_stale') is True, report=report)
+            return self.send_json(200, {'games': games, 'refresh': report})
         match = re.match(r'^games/([^/]+)/review$', route)
         if match and method == 'GET':
             game_id = match.group(1).lower()

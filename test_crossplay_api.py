@@ -81,6 +81,39 @@ class CrossplayAPITest(unittest.TestCase):
         self.assertEqual(self.request('GET', 'status')[:2], (200, {'configured': True}))
         self.assertEqual(self.request('GET', 'me')[1]['username'], 'Demo Player')
 
+    def test_authenticated_http_refresh_reports_import_changes(self):
+        rows = {}
+        writes = []
+
+        def database(method, table, params=None, payload=None, prefer=None):
+            if table == 'crossplay_games' and method == 'GET':
+                return [{'summary': summary} for summary in rows.values()]
+            if table == 'crossplay_games' and method == 'POST':
+                for row in payload:
+                    rows[row['nyt_game_id']] = row['summary']
+            elif table == 'crossplay_refresh_state' and method == 'POST':
+                writes.append(payload)
+            else:
+                self.fail(f'Unexpected database call: {method} {table}')
+
+        with patch.dict(os.environ, {'VERCEL': '1'}), patch.object(
+                Handler, 'current_supabase_user', return_value={'id': 'synthetic-account'}), patch.object(
+                Handler, 'supabase_data_request', side_effect=database):
+            status, payload, headers = self.request('POST', 'games/refresh', {'if_stale': False},
+                                                    {'X-NYT-S': MOCK_COOKIE})
+            self.assertEqual(status, 200, payload)
+            self.assertEqual(headers['Cache-Control'], 'no-store')
+            self.assertEqual(len(payload['games']), 3)
+            self.assertEqual(payload['refresh'], {'status': 'refreshed', 'fetched': 3, 'added': 3,
+                'updated': 0, 'newest_timestamp': 1792238400, 'checked_at': writes[-1]['refreshed_at']})
+            rows['mockactive01']['my_score'] = -1
+            status, payload, _ = self.request('POST', 'games/refresh', {'if_stale': False},
+                                              {'X-NYT-S': MOCK_COOKIE})
+            self.assertEqual(status, 200, payload)
+            self.assertEqual(payload['refresh']['added'], 0)
+            self.assertEqual(payload['refresh']['updated'], 1)
+            self.assertNotIn(MOCK_COOKIE, json.dumps(payload))
+
     def test_recent_games_filter_and_summaries(self):
         self.connect()
         status, payload, _ = self.request('GET', 'games')
@@ -314,6 +347,37 @@ class CrossplayAPITest(unittest.TestCase):
 
 
 class NYTTransportTest(unittest.TestCase):
+    def test_recent_games_ignores_other_game_id_formats(self):
+        crossplay = {'game': 'crossplay', 'id': 'syntheticgame01'}
+        client = CrossplayClient(MOCK_COOKIE)
+        with patch.object(client, 'get', return_value={'msgs': [{'recent-games': {
+                'games': [{'game': 'other-game', 'id': 123}, crossplay]}}]}):
+            self.assertEqual(client.recent_games(), [crossplay])
+
+    def test_recent_games_requires_an_explicit_valid_snapshot(self):
+        invalid = [None, [], {}, {'msgs': None}, {'msgs': {}}, {'msgs': []},
+                   {'msgs': [{'unrelated-message': {}}]}, {'msgs': [None]},
+                   {'msgs': [{'recent-games': None}]},
+                   {'msgs': [{'recent-games': {}}]},
+                   {'msgs': [{'recent-games': {'games': None}}]},
+                   {'msgs': [{'recent-games': {'games': [None]}}]},
+                   {'msgs': [{'recent-games': {'games': [{'game': 'crossplay'}]}}]},
+                   {'msgs': [{'recent-games': {'games': [{'game': 'crossplay', 'id': 'bad!'}]}}]}]
+        for body in invalid:
+            with self.subTest(body=body):
+                client = CrossplayClient(MOCK_COOKIE)
+                with patch.object(client, 'get', return_value=body):
+                    with self.assertRaisesRegex(CrossplayError, 'complete recent games list'):
+                        client.recent_games()
+                self.assertIsNone(client._games[1])
+
+    def test_explicit_empty_snapshot_and_more_than_64_games_are_valid(self):
+        for count in (0, 65):
+            games = [{'game': 'crossplay', 'id': f'game{i:06d}'} for i in range(count)]
+            client = CrossplayClient(MOCK_COOKIE)
+            with patch.object(client, 'get', return_value={'msgs': [{'recent-games': {'games': games}}]}):
+                self.assertEqual(client.recent_games(), games)
+
     def test_gzip_response_and_request_headers(self):
         response = io.BytesIO(gzip.compress(b'{"player":{"user_id":1001}}'))
         response.headers = {'Content-Encoding': 'gzip'}

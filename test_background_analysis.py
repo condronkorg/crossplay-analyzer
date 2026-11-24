@@ -7,7 +7,7 @@ from collections import Counter
 from datetime import datetime, timezone
 from unittest.mock import Mock
 
-from crossplay_server import ANALYSIS_VERSION, TILE_COUNTS, CrossplayError, Handler
+from crossplay_server import ANALYSIS_VERSION, TILE_COUNTS, CrossplayClient, CrossplayError, Handler
 
 
 def review_analysis_entry(kind='review'):
@@ -636,6 +636,61 @@ class BackgroundAnalysisTest(unittest.TestCase):
         self.assertEqual(games[0]['id'], 'oldergame')
         self.assertEqual(self.handler.supabase_data_request.call_args.args[:2], ('POST', 'crossplay_refresh_state'))
         self.assertEqual(self.handler.supabase_data_request.call_args.args[3]['user_id'], 'account-a')
+
+    def test_refresh_report_counts_added_changed_and_unchanged_games(self):
+        games = [{'id': f'game000{i}', 'game': 'crossplay', 'game_status': 'completed',
+                  'players': [{'id': 'synthetic-nyt-user', 'score': i}, {'id': 'opponent', 'score': 10}],
+                  'timestamp': 100 + i} for i in range(3)]
+        self.client.recent_games.return_value = games
+        from crossplay_server import summarize_game
+        unchanged = summarize_game(games[0], 'synthetic-nyt-user')
+        changed = {**summarize_game(games[1], 'synthetic-nyt-user'), 'my_score': -1}
+        before = [unchanged, changed, {'id': 'oldergame'}]
+        after = [unchanged, summarize_game(games[1], 'synthetic-nyt-user'),
+                 summarize_game(games[2], 'synthetic-nyt-user'), {'id': 'oldergame'}]
+        self.handler.persistent_games.side_effect = [before, after]
+        report = {}
+        result = self.handler.refresh_persistent_games('account-a', report=report)
+        self.assertEqual(result, after)
+        self.assertEqual({k: v for k, v in report.items() if k != 'checked_at'}, {
+            'status': 'refreshed', 'fetched': 3, 'added': 1, 'updated': 1, 'newest_timestamp': 102})
+        datetime.fromisoformat(report['checked_at'])
+        self.assertEqual(report['checked_at'], self.handler.supabase_data_request.call_args.args[3]['refreshed_at'])
+
+    def test_empty_refresh_report_has_no_newest_timestamp(self):
+        report = {}
+        self.handler.refresh_persistent_games('account-a', report=report)
+        self.assertEqual(report['fetched'], 0)
+        self.assertIsNone(report['newest_timestamp'])
+
+    def test_daily_skip_report_has_previous_check_time(self):
+        checked_at = datetime.now(timezone.utc).isoformat()
+        self.handler.supabase_data_request.return_value = [{'refreshed_at': checked_at}]
+        report = {}
+        self.handler.refresh_persistent_games('account-a', True, report=report)
+        self.assertEqual(report, {'status': 'skipped', 'checked_at': checked_at})
+        self.handler.current_session.assert_not_called()
+
+    def test_incomplete_snapshot_never_writes_import_or_success(self):
+        client = CrossplayClient('synthetic-cookie')
+        client.get = Mock(return_value={'msgs': []})
+        client.me = Mock(return_value={'user_id': 'synthetic-nyt-user'})
+        self.handler.current_session.return_value = ('account-a', client)
+        with self.assertRaises(CrossplayError):
+            self.handler.refresh_persistent_games('account-a')
+        self.handler.upsert_game_summaries.assert_not_called()
+        self.handler.supabase_data_request.assert_not_called()
+
+    def test_authenticated_refresh_route_returns_report(self):
+        self.handler.current_supabase_user = Mock(return_value={'id': 'account-a'})
+        self.handler.headers = {'Content-Length': '1'}
+        self.handler.read_json_body = Mock(return_value={'if_stale': False})
+        self.handler.send_json = Mock(side_effect=lambda status, body: (status, body))
+        status, body = self.handler.handle_persistent_api('POST', 'games/refresh')
+        self.assertEqual(status, 200)
+        self.assertEqual(body['games'], self.handler.persistent_games.return_value)
+        self.assertEqual(body['refresh']['status'], 'refreshed')
+        self.assertEqual(body['refresh']['fetched'], 0)
 
     def test_manual_refresh_bypasses_daily_check_and_failure_does_not_mark_success(self):
         self.client.recent_games.side_effect = CrossplayError('Synthetic upstream failure')

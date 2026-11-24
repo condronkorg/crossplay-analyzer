@@ -285,9 +285,18 @@
         this.errors.delete(gameId);
         const context = this.contexts.get(gameId);
         if (context) {
+          const retryable = new Set((context.quality?.points || [])
+            .filter(point => point.retryable || point.draw?.retryable).map(point => point.turnIndex));
+          if (!id && !context.states.some((state, index) => state === 'error' || retryable.has(index))) continue;
           context.paused = false;
           context.error = null;
-          context.states = context.states.map(state => ['running', 'running-preview'].includes(state) ? state : this.preview ? 'pending-preview' : 'pending');
+          context.states = context.states.map((state, index) => {
+            if (['running', 'running-preview'].includes(state)) return state;
+            // An explicit game ID requests full reanalysis. Background retry
+            // keeps successful and permanently unrated turns complete.
+            if (!id && state !== 'error' && !retryable.has(index)) return state;
+            return this.preview ? 'pending-preview' : 'pending';
+          });
         }
       }
       this.pump();

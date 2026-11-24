@@ -83,6 +83,26 @@ class RefreshResumeBrowserTest(unittest.TestCase):
         self.assertEqual(self.page.evaluate('currentReview.id'), self.page.evaluate('activeGameId'))
         self.assertNotIn('Account changed.', self.page.locator('#reviewPanel').inner_text())
 
+    def test_saved_catalog_cannot_hide_a_freshly_finished_game(self):
+        self.connect()
+        self.page.wait_for_selector('.game-card')
+        result = self.page.evaluate("""async () => {
+          resetBackgroundAnalysis();
+          persistenceEnabled = true; signedInUser = {id:'synthetic-catalog-owner'};
+          const fresh = {...games[0],status:'completed',timestamp:99};
+          const older = {...fresh,status:'active',timestamp:1};
+          const historic = {...fresh,id:'historic-game',timestamp:0};
+          games = [fresh]; renderGames();
+          const queue = getReviewQueue(); queue.concurrency=0;
+          api = async () => ({games:[older,historic],next_cursor:null});
+          await loadAnalysisCatalog(queue);
+          return games.map(game => ({id:game.id,status:game.status,timestamp:game.timestamp}));
+        }""")
+        self.assertEqual(result[0]['status'], 'completed')
+        self.assertEqual(result[0]['timestamp'], 99)
+        self.assertEqual(result[1]['id'], 'historic-game')
+        self.assertIn('2 finished', self.page.locator('#gameCount').inner_text())
+
 
 if __name__ == '__main__':
     unittest.main()
