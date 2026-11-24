@@ -119,8 +119,7 @@
       }
     }
 
-    stop() {
-      const error = new Error('Quackle worker stopped');
+    stop(error = new Error('Quackle worker stopped')) {
       for (const slot of this.slots) {
         slot.worker.terminate();
         if (slot.task) {

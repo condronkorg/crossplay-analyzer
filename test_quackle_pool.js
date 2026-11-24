@@ -110,3 +110,19 @@ test('foreground promotion selects the same queued task ahead of other games', a
   reply(log, log.requests[0], 'old');
   assert.deepEqual(await Promise.all([busy, old, viewed]), ['busy', 'old', 'viewed']);
 });
+
+test('refresh cancellation stops workers without turning it into an engine failure', async () => {
+  const {pool, log} = makePool(1);
+  const running = pool.run('simulateReview');
+  const queued = pool.run('simulateDraw');
+  await settle();
+  const cancellation = Object.assign(new Error('Analysis interrupted by refresh.'), {name: 'AbortError'});
+  pool.stop(cancellation);
+  await assert.rejects(running, {name: 'AbortError'});
+  await assert.rejects(queued, {name: 'AbortError'});
+  assert.ok(log.workers.every(worker => worker.terminated));
+  const replacement = pool.run('kibitz');
+  await settle();
+  reply(log, log.requests.at(-1), 'fresh');
+  assert.equal(await replacement, 'fresh');
+});

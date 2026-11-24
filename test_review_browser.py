@@ -178,13 +178,13 @@ class ReviewBrowserTest(unittest.TestCase):
     def test_rejected_cookie(self):
         self.connect(EXPIRED_COOKIE)
         expect(self.page.locator('#connectionState')).to_contain_text('NYT rejected')
-        expect(self.page.get_by_role('button', name='Refresh', exact=True)).to_be_disabled()
+        expect(self.page.get_by_role('button', name='Refresh', exact=True)).to_be_enabled()
         expect(self.page.get_by_role('button', name='Forget cookie')).to_be_hidden()
 
     def test_upstream_failure(self):
         self.connect(OUTAGE_COOKIE)
-        expect(self.page.locator('#gameList')).to_contain_text('NYT returned HTTP 503')
-        expect(self.page.locator('#gameCount')).to_have_text('Could not load games')
+        expect(self.page.locator('#gameCount')).to_contain_text('NYT returned HTTP 503')
+        expect(self.page.get_by_role('button', name='Refresh', exact=True)).to_be_enabled()
 
     def use_saved_analysis(self, analysis=None, **review_changes):
         """Exercise the saved-analysis API contract with explicitly synthetic data."""

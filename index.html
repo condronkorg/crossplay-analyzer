@@ -529,7 +529,7 @@
           <h2>Finished games</h2>
           <div id="gameCount" class="game-count">Connect to load your games</div>
         </div>
-        <button id="refreshButton" type="button" disabled>Refresh</button>
+        <button id="refreshButton" type="button">Refresh</button>
       </div>
       <div id="backgroundStatus" class="analysis-note" role="status"></div>
           <button id="retryBackground" class="analysis-button hidden" type="button">Retry background analysis</button>
@@ -620,6 +620,9 @@ let analysisEpoch = 0;
 let catalogRequest = 0;
 let catalogError = null;
 let dailyRefreshRunning = false;
+let gameListRequest = null;
+let gameRefreshError = "";
+let manualRefreshState = null;
 let lastDailyRefreshCheck = 0;
 const ANALYSIS_VERSION = 'quackle-equity-v1';
 
@@ -715,11 +718,22 @@ function setConnection(message, state = '') {
   byId('accountSettingsButton').classList.toggle('hidden', state !== 'connected');
 }
 
+function abortableRequest(promise, signal) {
+  if (!signal) return promise;
+  return new Promise((resolve, reject) => {
+    const abort = () => reject(signal.reason || accountChanged());
+    if (signal.aborted) { Promise.resolve(promise).catch(() => {}); abort(); return; }
+    signal.addEventListener('abort', abort, {once: true});
+    Promise.resolve(promise).then(resolve, reject).finally(() => signal.removeEventListener('abort', abort));
+  });
+}
+
 async function api(path, options = {}) {
   const { publicRequest = false, expectedOwner, ...requestOptions } = options;
   if (expectedOwner !== undefined && expectedOwner !== analysisOwner()) throw accountChanged();
   const headers = { ...(requestOptions.headers || {}) };
-  const accessToken = publicRequest ? null : await window.CrossplayAuth.accessToken();
+  const accessToken = publicRequest ? null : await abortableRequest(window.CrossplayAuth.accessToken(), requestOptions.signal);
+  if (requestOptions.signal?.aborted) throw requestOptions.signal.reason || accountChanged();
   if (expectedOwner !== undefined && expectedOwner !== analysisOwner()) throw accountChanged();
   if (expectedOwner !== undefined && persistenceEnabled) {
     const sessionUser = window.CrossplayAuth.getSession()?.user;
@@ -727,14 +741,14 @@ async function api(path, options = {}) {
   }
   if (accessToken) headers.Authorization = 'Bearer ' + accessToken;
   if (!publicRequest && activeNytCookie) headers['X-NYT-S'] = activeNytCookie;
-  const response = await fetch('/api/crossplay/' + path, {
+  const response = await abortableRequest(fetch('/api/crossplay/' + path, {
     cache: 'no-store',
     ...requestOptions,
     ...(publicRequest ? { credentials: 'omit' } : {}),
     headers
-  });
+  }), requestOptions.signal);
   let data = {};
-  try { data = await response.json(); } catch (_) {}
+  try { data = await abortableRequest(response.json(), requestOptions.signal); } catch (_) {}
   if (!response.ok) {
     const error = new Error(data.error || ('Request failed (' + response.status + ')'));
     error.status = response.status;
@@ -773,7 +787,7 @@ function updateAuthUi() {
   byId('cookieForm').classList.toggle('hidden', persistenceEnabled && !signedIn);
   byId('rememberCookieRow').classList.toggle('hidden', !persistenceEnabled || !signedIn);
   if (!nytConfigured) byId('forgetButton').classList.add('hidden');
-  byId('refreshButton').disabled = !nytConfigured;
+  byId('refreshButton').disabled = false;
 }
 
 function showNytDisconnected(message, state = '') {
@@ -782,11 +796,15 @@ function showNytDisconnected(message, state = '') {
   setConnection(message, state);
   byId('forgetButton').classList.add('hidden');
   byId('saveCookieButton').textContent = 'Connect';
-  byId('refreshButton').disabled = true;
+  byId('refreshButton').disabled = false;
   updateAuthUi();
 }
 
 function clearAccountUi(message) {
+  gameListRequest?.controller.abort();
+  gameListRequest = null;
+  manualRefreshState = null;
+  gameRefreshError = "";
   resetBackgroundAnalysis();
   stopContinuation();
   previewBestMove = false;
@@ -806,7 +824,7 @@ function clearAccountUi(message) {
   nytConfigured = false;
   setConnection(message || 'Not connected', message && /could not|expired|error/i.test(message) ? 'error' : '');
   byId('forgetButton').classList.add('hidden');
-  byId('refreshButton').disabled = true;
+  byId('refreshButton').disabled = false;
   byId('saveCookieButton').textContent = 'Connect';
   byId('gameCount').textContent = 'Connect to load your games';
   games = [];
@@ -818,37 +836,65 @@ function clearAccountUi(message) {
   updateAuthUi();
 }
 
-async function loadGames({ refresh = false, background = false } = {}) {
+async function refreshGames() {
+  if (!nytConfigured) {
+    const message = persistenceEnabled && !signedInUser
+      ? 'Sign in with Google, then connect your NYT cookie to refresh games.'
+      : 'Connect your NYT cookie to refresh games.';
+    setConnection(message, 'error');
+    updateAuthUi();
+    byId('cookieInput').focus();
+    return;
+  }
+  const state = {owner: analysisOwner(), snapshot: manualRefreshState?.snapshot || suspendAnalysisForRefresh()};
+  manualRefreshState = state;
+  try { await loadGames({refresh: true, manual: true}); }
+  finally {
+    if (manualRefreshState === state && state.owner === analysisOwner()) {
+      manualRefreshState = null;
+      resumeAnalysisAfterRefresh(state.snapshot);
+    }
+  }
+}
+
+async function loadGames({ refresh = false, background = false, manual = false } = {}) {
+  if (manualRefreshState && !manual) return false;
   const account = signedInUser;
   const owner = analysisOwner();
   const wasConfigured = nytConfigured;
-  byId('refreshButton').disabled = true;
-  if (!background) {
-    byId('gameCount').textContent = 'Loading…';
-    setGameMessage('Loading recent games…');
-  }
+  gameListRequest?.controller.abort();
+  const request = {controller: new AbortController(), timedOut: false};
+  gameListRequest = request;
+  const current = () => gameListRequest === request && owner === analysisOwner() &&
+    account === signedInUser && wasConfigured === nytConfigured;
+  const timer = setTimeout(() => {
+    request.timedOut = true;
+    request.controller.abort();
+  }, 30000);
+  if (!background) byId('gameCount').textContent = 'Updating games…';
   try {
     const useLiveRefresh = persistenceEnabled && refresh;
     const data = await api(useLiveRefresh ? 'games/refresh' : 'games', useLiveRefresh ? {
-      expectedOwner: owner,
+      expectedOwner: owner, signal: request.controller.signal,
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ if_stale: background })
-    } : { expectedOwner: owner });
-    if (owner !== analysisOwner() || account !== signedInUser || wasConfigured !== nytConfigured) return;
+    } : { expectedOwner: owner, signal: request.controller.signal });
+    if (!current() || request.controller.signal.aborted) return false;
     games = Array.isArray(data.games) ? data.games : [];
+    gameRefreshError = "";
     renderGames();
-    startBackgroundAnalysis();
+    if (!manualRefreshState) startBackgroundAnalysis();
+    return true;
   } catch (error) {
-    if (owner !== analysisOwner()) return;
-    if (background) {
-      byId('gameCount').textContent = 'Auto-refresh failed · ' + error.message;
-      return;
-    }
-    byId('gameCount').textContent = 'Could not load games';
-    setGameMessage(error.message);
-    if (/cookie|session|logged in/i.test(error.message)) setConnection(error.message, 'error');
+    if (!current() || (!request.timedOut && request.controller.signal.aborted)) return false;
+    const message = request.timedOut ? 'The game request timed out. Press Refresh to try again.' : error.message;
+    gameRefreshError = 'Refresh failed: ' + message;
+    renderGames();
+    if (/cookie|session|logged in/i.test(message)) setConnection(message, 'error');
+    return false;
   } finally {
-    if (owner === analysisOwner()) byId('refreshButton').disabled = !nytConfigured;
+    clearTimeout(timer);
+    if (gameListRequest === request) gameListRequest = null;
   }
 }
 
@@ -857,7 +903,7 @@ function renderGames() {
     .sort((a, b) => Number(b.timestamp || 0) - Number(a.timestamp || 0));
   const ongoing = games.length - completed.length;
   byId('gameCount').textContent = completed.length + ' finished' +
-    (ongoing ? ' · ' + ongoing + ' in progress hidden' : '');
+    (ongoing ? ' · ' + ongoing + ' in progress hidden' : '') + (gameRefreshError ? ' · ' + gameRefreshError : '');
   const list = byId('gameList');
   list.replaceChildren();
   if (!completed.length) {
@@ -996,12 +1042,63 @@ function getReviewQueue() {
   reviewQueue = queue;
   return queue;
 }
+
+function suspendAnalysisForRefresh() {
+  const queue = reviewQueue;
+  const snapshot = {owner: analysisOwner(), queue, games: [...games], ids: queue?.orderedIds() || [],
+    activeId: queue?.activeId, contexts: new Map()};
+  const estimate = value => value ? {...value, points: [...(value.points || [])]} : value;
+  catalogRequest++;
+  catalogError = null;
+  if (queue) {
+    for (const [id, context] of queue.contexts) {
+      context.cancelled = true;
+      snapshot.contexts.set(id, {...context, cancelled: false,
+        quality: estimate(context.quality), trend: estimate(context.trend),
+        states: context.states.map(state => ['running', 'running-preview', 'error'].includes(state)
+          ? 'pending-preview' : state)});
+    }
+    queue.close();
+  }
+  stopWorker(Object.assign(new Error('Analysis interrupted by refresh.'), {name: 'AbortError'}));
+  // Interrupted requests must not be shared with the replacement queue. Their
+  // finally handlers remove an entry only if it is still the same request.
+  for (const context of snapshot.contexts.values()) context.cache.pending.clear();
+  byId('backgroundStatus').textContent = 'Analysis paused while games refresh.';
+  return snapshot;
+}
+
+function resumeAnalysisAfterRefresh(snapshot) {
+  if (!snapshot || snapshot.owner !== analysisOwner()) return;
+  if (reviewQueue !== snapshot.queue) return;
+  reviewQueue = null;
+  const queue = getReviewQueue();
+  queue.ids = snapshot.ids;
+  queue.activeId = activeGameId || snapshot.activeId;
+  for (const [id, context] of snapshot.contexts) queue.contexts.set(id, context);
+  const knownGames = new Map((snapshot.games || []).map(game => [game.id, game]));
+  for (const game of games) knownGames.set(game.id, game);
+  games = [...knownGames.values()];
+  renderGames();
+  const visible = currentReview && contextFor(currentReview);
+  if (visible) syncVisibleContext(visible);
+  queue.add(games);
+  void loadAnalysisCatalog(queue);
+  if (!currentReview && activeGameId) void openGame(activeGameId);
+  for (const context of snapshot.contexts.values()) {
+    if (Object.keys(context.cache.unsaved || {}).length || Object.keys(context.cache.completed || {}).length) {
+      flushAnalysisSave(context.review, context.cache);
+    }
+  }
+  return queue;
+}
+
 function contextFor(review) {
   const context = reviewQueue?.contexts.get(review.id);
   return context?.review === review ? context : null;
 }
 function syncVisibleContext(context) {
-  if (currentReview !== context.review || context.owner !== analysisOwner()) return;
+  if (context.cancelled || currentReview !== context.review || context.owner !== analysisOwner()) return;
   positionCache = context.cache;
   moveQualityResults = context.quality;
   trendResults = context.trend;
@@ -1102,6 +1199,7 @@ async function openGame(gameId, { shareToken = null } = {}) {
     startBackgroundAnalysis(currentReview);
   } catch (error) {
     if (requestToken !== reviewRequestToken) return;
+    if (error.name === 'AbortError' && manualRefreshState) return;
     byId('reviewPanel').replaceChildren(makeElement('div', 'review-placeholder', error.message));
   }
 }
@@ -1155,11 +1253,10 @@ function startBackgroundAnalysis(review = null) {
 }
 
 async function refreshGamesIfDue() {
-  if (viewingSharedGame || !nytConfigured || dailyRefreshRunning ||
+  if (viewingSharedGame || !nytConfigured || manualRefreshState || dailyRefreshRunning ||
       Date.now() - lastDailyRefreshCheck < (persistenceEnabled ? 1 : 24) * 60 * 60 * 1000) return;
   dailyRefreshRunning = true;
-  lastDailyRefreshCheck = Date.now();
-  try { await loadGames({ refresh: true, background: true }); }
+  try { if (await loadGames({ refresh: true, background: true })) lastDailyRefreshCheck = Date.now(); }
   finally { dailyRefreshRunning = false; }
 }
 
@@ -2881,7 +2978,7 @@ function startMoveQuality(review) {
 
 async function analyzeReviewTurn(context, index, phase = 'review', options = {}) {
   const { review, cache, owner } = context;
-  if (owner !== analysisOwner()) throw accountChanged();
+  if (context.cancelled || owner !== analysisOwner()) throw accountChanged();
   const turn = review.turns[index];
   const fullPointReady = () => phase === 'preview' && cache.get(turn, 'review') &&
     context.quality?.points.some(value => value.turnIndex === index && !value.provisional &&
@@ -2907,7 +3004,7 @@ async function analyzeReviewTurn(context, index, phase = 'review', options = {})
   else {
     try {
       const requested = await ensurePositionAnalysis(review, turn, phase, { priority: currentReview === review ? 5 : 1, ...options });
-      if (owner !== analysisOwner()) throw accountChanged();
+      if (context.cancelled || owner !== analysisOwner()) throw accountChanged();
       if (fullPointReady()) return { complete: true };
       // A full result can arrive while a visible-turn preview is still running.
       const result = cache.get(turn, 'review') || requested;
@@ -2930,7 +3027,7 @@ async function analyzeReviewTurn(context, index, phase = 'review', options = {})
         } else if (!frequencies) context.quality.frequencyWarning = 'Word commonness could not load. Move quality is still available; re-analyze moves to retry adjusted performance.';
       }
     } catch (error) {
-      if (error.name === 'AbortError' || owner !== analysisOwner()) throw error;
+      if (error.name === 'AbortError' || context.cancelled || owner !== analysisOwner()) throw error;
       const missingExchangeTiles = error.code === 'MISSING_EXCHANGE_TILES';
       if (missingExchangeTiles) {
         // The board and rack can still be analyzed without guessing the swap.
@@ -2943,7 +3040,7 @@ async function analyzeReviewTurn(context, index, phase = 'review', options = {})
       point.provisional = !missingExchangeTiles && phase === 'preview';
     }
   }
-  if (owner !== analysisOwner()) throw accountChanged();
+  if (context.cancelled || owner !== analysisOwner()) throw accountChanged();
   if (fullPointReady()) return { complete: true };
   if (Number.isFinite(point.playedWin)) {
     point = restoreDrawPoint(cache, turn, point);
@@ -2952,18 +3049,18 @@ async function analyzeReviewTurn(context, index, phase = 'review', options = {})
         const draw = CrossplayReview.rackDraw(turn);
         if (draw.drawCount) {
           const result = await ensureRackDrawAnalysis(context, turn, phase, options);
-          if (owner !== analysisOwner()) throw accountChanged();
+          if (context.cancelled || owner !== analysisOwner()) throw accountChanged();
           if (fullPointReady()) return { complete: true };
           point.draw = drawPoint(cache.get(turn, 'draw') || result);
         }
       } catch (error) {
-        if (error.name === 'AbortError' || owner !== analysisOwner()) throw error;
+        if (error.name === 'AbortError' || context.cancelled || owner !== analysisOwner()) throw error;
         point.draw = {retryable: true, provisional: phase === 'preview',
           reason: 'Rack draw analysis failed: ' + error.message};
       }
     }
   }
-  if (owner !== analysisOwner()) throw accountChanged();
+  if (context.cancelled || owner !== analysisOwner()) throw accountChanged();
   if (fullPointReady()) return { complete: true };
   const existing = context.quality.points.find(value => value.turnIndex === index);
   // A cached full move can still have an early draw in flight. Preserve a
@@ -3009,7 +3106,7 @@ function deriveWinTrend(context, done = false) {
     message: done ? 'Win trend complete. Estimates separate moves and recorded rack draws.' : 'Win trend adds rack draws as their estimates finish.' };
 }
 async function finishReviewAnalysis(context) {
-  if (context.owner !== analysisOwner()) return;
+  if (context.cancelled || context.owner !== analysisOwner()) return;
   if (context.quality?.points.some(point => point.provisional || point.draw?.provisional)) return;
   if (!context.quality) context.quality = { evaluation: MOVE_QUALITY_EVALUATION, points: [] };
   context.quality.state = 'done';
@@ -3019,6 +3116,7 @@ async function finishReviewAnalysis(context) {
   markAnalysisComplete('win_trend', context.trend, context.cache);
   syncVisibleContext(context);
   const saveError = await flushAnalysisSave(context.review, context.cache);
+  if (context.cancelled || context.owner !== analysisOwner()) return;
   if (saveError) context.quality.message += ' Save failed: ' + saveError;
   syncVisibleContext(context);
 }
@@ -3052,14 +3150,14 @@ function workerRequest(type, payload = {}, options = {}) {
   return quacklePool.run(type, payload, options);
 }
 
-function stopWorker() {
-  if (quacklePool) quacklePool.stop();
+function stopWorker(reason) {
+  if (quacklePool) quacklePool.stop(reason);
   viewedTurnRequest = null;
 }
 
 async function ensureRackDrawAnalysis(context, turn, phase, options = {}) {
   const {review, cache, owner} = context;
-  if (owner !== analysisOwner()) throw accountChanged();
+  if (context.cancelled || owner !== analysisOwner()) throw accountChanged();
   if (cache.get(turn, 'draw')) return cache.get(turn, 'draw');
   const kind = phase === 'preview' ? 'draw-preview' : 'draw';
   const iterations = kind === 'draw-preview' ? PREVIEW_ITERATIONS : SIMULATION_ITERATIONS;
@@ -3072,7 +3170,7 @@ async function ensureRackDrawAnalysis(context, turn, phase, options = {}) {
       bagCount: turn.bag_count, finalTurnsRemaining: turn.bag_count === 0 ? turn.final_turns_remaining : 0,
       played: CrossplayReview.playedMove(turn), seed: cache.seed(turn), iterations};
     const result = await workerRequest('simulateDraw', payload, {priority, signal, taskKey, onStart});
-    if (owner !== analysisOwner()) throw accountChanged();
+    if (context.cancelled || owner !== analysisOwner()) throw accountChanged();
     if (!CrossplayReview.validDrawResult(result, turn, payload.seed, iterations)) throw new Error('Quackle returned incomplete rack draw results.');
     recordEngineResult(review, cache, key, result);
     return result;
@@ -3081,7 +3179,7 @@ async function ensureRackDrawAnalysis(context, turn, phase, options = {}) {
 
 async function ensurePositionAnalysis(review, turn, kind, options = {}) {
   const context = contextFor(review);
-  if (!context || context.owner !== analysisOwner()) throw accountChanged();
+  if (!context || context.cancelled || context.owner !== analysisOwner()) throw accountChanged();
   const cache = context.cache;
   const signal = reviewQueue.controller.signal;
   kind = ['candidates', 'preview'].includes(kind) ? kind : 'review';
@@ -3102,7 +3200,7 @@ async function ensurePositionAnalysis(review, turn, kind, options = {}) {
     if (kind !== 'candidates') Object.assign(payload, { played: CrossplayReview.playedMove(turn), seed: cache.seed(turn) });
     const result = await workerRequest(kind === 'candidates' ? 'kibitz' : 'simulateReview', payload,
       { priority, signal, taskKey, onStart });
-    if (context.owner !== analysisOwner()) throw accountChanged();
+    if (context.cancelled || context.owner !== analysisOwner()) throw accountChanged();
     if (!result || result.error || !Array.isArray(result.moves) || !result.moves.length) throw new Error(result?.error || 'Quackle did not return move candidates.');
     if (kind !== 'candidates') {
       if (!CrossplayReview.validResult(result, turn, payload.seed, iterations, moveCount)) throw new Error('Quackle returned incomplete simulation results.');
@@ -3446,7 +3544,7 @@ byId('signOutButton').addEventListener('click', async () => {
   }
 });
 
-byId('refreshButton').addEventListener('click', () => loadGames({ refresh: true }));
+byId('refreshButton').addEventListener('click', refreshGames);
 
 async function start() {
   const url = new URL(location.href);
