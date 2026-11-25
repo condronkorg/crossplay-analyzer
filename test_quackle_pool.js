@@ -7,7 +7,7 @@ class FakeWorker {
   constructor(log, { failInit = false } = {}) {
     this.log = log;
     this.failInit = failInit;
-    this.listeners = { message: [], error: [] };
+    this.listeners = { message: [], error: [], messageerror: [] };
     this.terminated = false;
     log.workers.push(this);
   }
@@ -81,6 +81,23 @@ test('engine startup failure rejects queued work instead of retrying forever', a
   for (const request of requests) await assert.rejects(request, /no engine/);
   assert.equal(log.workers.length, 2);
   assert.ok(log.workers.every(worker => worker.terminated));
+});
+
+test('an unreadable worker response rejects the request and allows a retry', async () => {
+  const {pool, log} = makePool(1);
+  pool.timeout = 50;
+  const first = pool.run('kibitz');
+  await settle();
+  for (const listener of log.workers[0].listeners.messageerror) listener({});
+  await assert.rejects(first, /unreadable response/);
+  assert.equal(log.workers[0].terminated, true);
+
+  const retry = pool.run('kibitz');
+  await settle();
+  const request = log.requests.at(-1);
+  assert.notEqual(request.worker, log.workers[0]);
+  reply(log, request, 'recovered');
+  assert.equal(await retry, 'recovered');
 });
 
 test('stop rejects queued and running work and terminates workers', async () => {
@@ -393,4 +410,327 @@ test('stopping shared parallel lanes cannot retain or restart obsolete work', as
   assert.equal(pool.slots.length, 0);
   assert.equal(log.workers.length, 3);
   assert.ok(log.workers.every(worker => worker.terminated));
+});
+
+const pass = {action: 'pass', position: '', tiles: '', equity: -999, score: 0, leave: 'AEIRSTT', win: null, samples: 0, terminalSamples: 0};
+
+function terminalPlan(payload, count = 1) {
+  const moves = count === 1 ? [pass] : expandedPlan(count).moves;
+  return {moves, equityMoves: moves, actualIndex: 0, bagEmptyingIndices: [],
+    tieOrder: moves.map((_, index) => index),
+    seed: payload.seed, bagCount: payload.bagCount, finalTurnsRemaining: payload.finalTurnsRemaining};
+}
+
+function terminalBatch(request, completed = request.payload.count) {
+  const {offset, candidates} = request.payload;
+  return {offset, completed, moves: candidates.map(move => ({...move, win: .5, winSum: completed / 2,
+    equity: 35, equityStatistics: [[0, 0, 35 * completed, completed]], residualSum: 0,
+    samples: completed, terminalSamples: completed}))};
+}
+
+test('terminal previews and generic full reviews keep all planned candidates', async () => {
+  for (const [bagCount, iterations, type] of [[0, 277, 'simulateReview'], [1, 64, 'simulateKibitz'],
+    [7, 64, 'simulateMove'], [8, 277, 'simulateReview'], [21, 277, 'simulateKibitz']]) {
+    const {pool, log} = makePool(3);
+    const payload = {bagCount, iterations, seed: 35, finalTurnsRemaining: bagCount ? 0 : 2};
+    const job = pool.run(type, payload);
+    job.catch(() => {});
+    try {
+      await settle();
+      const plan = log.requests[0];
+      assert.equal(plan.type, 'planReviewSimulation');
+      assert.equal(plan.payload.requestType, type);
+      const data = terminalPlan(payload, 15);
+      if (type === 'simulateKibitz') data.actualIndex = -1;
+      if (type === 'simulateMove') data.evaluation = {staticRank: 187, legalMoveCount: 987};
+      reply(log, plan, data);
+      await settle();
+      assert.equal(log.workers.length, 3);
+      assert.deepEqual(log.requests.map(request => request.payload.candidates.length), [5, 5, 5]);
+      const offsets = new Map();
+      while (log.requests.length) {
+        for (const request of [...log.requests].reverse()) {
+          assert.equal(request.type, 'simulateReviewBatch');
+          const {candidates, offset, count} = request.payload;
+          assert.ok(count <= 16 && offset + count <= iterations);
+          // Exercise an early budget yield on the first request of every lane.
+          const completed = offset === 0 ? 3 : count;
+          for (const move of candidates) {
+            assert.equal(offset, offsets.get(move.tiles) || 0);
+            offsets.set(move.tiles, offset + completed);
+          }
+          reply(log, request, terminalBatch(request, completed));
+        }
+        await settle();
+      }
+      const result = await job;
+      assert.equal(result.candidatePolicy, undefined);
+      assert.equal(result.moves.length, 15);
+      assert.equal(result.totalPlayaheads, iterations * 15);
+      assert.equal(result.iterationsCompleted, iterations);
+      assert.equal(result.moves.every(move => move.samples === iterations &&
+        move.terminalSamples === iterations && move.win === .5 && move.equity === 35), true);
+      assert.equal(result.staticMoves[0].equity, 15);
+      assert.equal(result.selected?.tiles, type === 'simulateKibitz' ? undefined : 'M0');
+      assert.equal(result.staticRank, type === 'simulateMove' ? 187 : undefined);
+      assert.equal(result.legalMoveCount, type === 'simulateMove' ? 987 : undefined);
+    } finally {
+      pool.stop();
+      await job.catch(() => {});
+    }
+  }
+});
+
+const drawPayload = {gridJson: JSON.stringify(['AAAAAAAABBCCDDD', 'DEEEEEEEEEEEFFG', 'GGHHHIIIIIIIJKL', 'LLLMMNNNNNOOOOO', 'OOOPP..........', '...............', '...............', '...............', '...............', '...............', '...............', '...............', '...............', '...............', '...............']),
+  rack: 'AEIRSTT', rackAfter: 'AEIRSTT', playerScore: 0, opponentScore: 0,
+  bagCount: 21, finalTurnsRemaining: 0, seed: 33, iterations: 64,
+  played: {action: 'pass', position: '', tiles: ''}};
+
+function drawBatch(request, completed = request.payload.count, win = .75) {
+  return {offset: request.payload.offset, completed, iterationsRequested: request.payload.count,
+    iterationsCompleted: completed, simulated: true, samplingVersion: 'rack-draw-v1',
+    beforeWin: win, afterWin: win, beforeWinSum: win * completed, afterWinSum: win * completed,
+    selected: drawPayload.played, drawCount: 0, rackAfter: drawPayload.rackAfter,
+    seed: drawPayload.seed, bagCount: drawPayload.bagCount, finalTurnsRemaining: 0, plies: -1,
+    playToEnd: true, endgamePolicy: 'crossplay-endgame-v1', simulationMode: 'play-to-end', winModel: 'terminal'};
+}
+
+test('terminal draw retries the missing offset and reuses a matching baseline', async () => {
+  const {pool, log} = makePool(3);
+  const payload = {...drawPayload, beforeWin: {win: .75, samples: 64, seed: 33}};
+  const first = pool.run('simulateDraw', payload);
+  const joined = pool.run('simulateDraw', payload);
+  first.catch(() => {});
+  joined.catch(() => {});
+  try {
+    await settle();
+    assert.equal(log.requests.length, 1);
+    assert.equal(log.requests[0].type, 'simulateDrawBatch');
+    assert.equal(log.requests[0].payload.offset, 0);
+    assert.equal(log.requests[0].payload.knownBeforeWin, .75);
+    reply(log, log.requests[0], drawBatch(log.requests[0], 7));
+    await settle();
+    const failure = log.requests.shift();
+    assert.equal(failure.payload.offset, 7);
+    failure.worker.emit({id: failure.id, error: 'Transient worker failure'});
+    await assert.rejects(first, /Transient/);
+    await assert.rejects(joined, /Transient/);
+
+    let started = false;
+    const retry = pool.run('simulateDraw', payload, {taskKey: 'draw', onStart: () => { started = true; }});
+    retry.catch(() => {});
+    assert.equal(pool.promote('draw', 99), true);
+    await settle();
+    assert.equal(started, true);
+    for (const offset of [7, 23, 39, 55]) {
+      assert.equal(log.requests.length, 1);
+      assert.equal(log.requests[0].payload.offset, offset);
+      assert.equal(pool.slots[0].task.priority, offset === 7 ? 0 : 99);
+      reply(log, log.requests[0], drawBatch(log.requests[0]));
+      await settle();
+    }
+    const result = await retry;
+    assert.equal(result.iterationsRequested, 64);
+    assert.equal(result.iterationsCompleted, 64);
+    assert.equal(result.samplingVersion, 'rack-draw-v1');
+    assert.equal(result.beforeWin, .75);
+    assert.equal(result.afterWin, .75);
+    assert.equal(result.offset, undefined);
+    assert.equal(result.beforeWinSum, undefined);
+    assert.equal(log.workers.length, 1);
+  } finally {
+    pool.stop();
+    await Promise.allSettled([first, joined]);
+  }
+});
+
+test('terminal draws ignore incompatible baselines', async () => {
+  for (const beforeWin of [undefined, .5, {win: .5, samples: 277, seed: 33},
+    {win: .5, samples: 64, seed: 34}, {win: NaN, samples: 64, seed: 33},
+    {win: -1, samples: 64, seed: 33}]) {
+    const {pool, log} = makePool(3);
+    const job = pool.run('simulateDraw', {...drawPayload, beforeWin});
+    job.catch(() => {});
+    try {
+      await settle();
+      assert.equal(log.requests[0].payload.knownBeforeWin, -1);
+    } finally {
+      pool.stop();
+      await job.catch(() => {});
+    }
+  }
+});
+
+test('terminal draw stop discards a late batch and does not restart duplicate requests', async () => {
+  const {pool, log} = makePool(3);
+  const first = pool.run('simulateDraw', drawPayload);
+  const joined = pool.run('simulateDraw', drawPayload);
+  first.catch(() => {});
+  joined.catch(() => {});
+  try {
+    await settle();
+    assert.equal(log.requests[0].type, 'simulateDrawBatch');
+    reply(log, log.requests[0], drawBatch(log.requests[0], 4));
+    pool.stop(Object.assign(new Error('Refresh cancelled'), {name: 'AbortError'}));
+    await assert.rejects(first, {name: 'AbortError'});
+    await assert.rejects(joined, {name: 'AbortError'});
+    assert.equal(pool.partial.size, 0);
+    assert.equal(log.workers.length, 1);
+  } finally {
+    pool.stop();
+    await Promise.allSettled([first, joined]);
+  }
+});
+
+function workerContext(engine) {
+  const fs = require('node:fs');
+  const vm = require('node:vm');
+  let handler, message;
+  const context = vm.createContext({
+    QuackleModule: async () => ({initEngine: () => true, ...engine}),
+    self: {addEventListener(_type, fn) { handler = fn; }, postMessage(value) { message = value; }},
+  });
+  context.importScripts = (...files) => files.filter(file => file !== 'quackle.js')
+    .forEach(file => vm.runInContext(fs.readFileSync(file, 'utf8'), context));
+  vm.runInContext(fs.readFileSync('quackle-worker.js', 'utf8'), context);
+  return async (type, payload) => {
+    await handler({data: {id: 1, type, payload}});
+    return message;
+  };
+}
+
+test('worker forwards paired plans and enforces full terminal sample counts in partial batches', async () => {
+  const payload = {...drawPayload, numMoves: 15, requestType: 'simulateKibitz', seed: undefined};
+  const expected = {...terminalPlan({...payload, seed: 123456789}), actualIndex: -1, tieOrder: [0]};
+  const batch = {offset: 2, count: 16, candidates: [pass], seed: 123456789};
+  let invalid = false;
+  const ask = workerContext({
+    planReviewSimulation(...args) {
+      assert.deepEqual(args, [payload.gridJson, 'AEIRSTT', 0, 0, 15, 21, 0, null, 123456789]);
+      return expected;
+    },
+    simulateReviewBatch(...args) {
+      assert.deepEqual(args, [payload.gridJson, 'AEIRSTT', 0, 0, 21, 0, [pass], 123456789, 2, 16]);
+      const result = terminalBatch({payload: batch}, 3);
+      if (invalid) result.moves[0].terminalSamples = 2;
+      return result;
+    },
+  });
+  assert.equal((await ask('planReviewSimulation', payload)).result, expected);
+  assert.equal((await ask('simulateReviewBatch', {...payload, ...batch})).result?.completed, 3);
+  invalid = true;
+  assert.match((await ask('simulateReviewBatch', {...payload, ...batch})).error, /batch/i);
+});
+
+test('worker checks partial draw metadata and still asks native to validate a reused baseline', async () => {
+  const payload = {...drawPayload, offset: 1, count: 16, knownBeforeWin: .75};
+  let result = drawBatch({payload}, 4);
+  const ask = workerContext({
+    simulateDrawBatch(...args) {
+      assert.deepEqual(JSON.parse(JSON.stringify(args)), [payload.gridJson, 'AEIRSTT', 0, 0, 21, 0,
+        drawPayload.played, 33, 'AEIRSTT', 1, 16, .75]);
+      return result;
+    },
+  });
+  assert.equal((await ask('simulateDrawBatch', payload)).result, result);
+  for (const change of [{offset: 2}, {completed: 1}, {iterationsRequested: 4},
+    {beforeWinSum: 2}, {afterWinSum: 5}, {rackAfter: 'AAAAAAA'}, {seed: 34}]) {
+    result = {...drawBatch({payload}, 4), ...change};
+    assert.match((await ask('simulateDrawBatch', payload)).error, /rack draw/i);
+  }
+  result = {error: 'Impossible physical draw'};
+  assert.match((await ask('simulateDrawBatch', payload)).error, /Impossible physical draw/);
+});
+
+test('generic review worker failure preserves sibling checkpoints and retry priority', async () => {
+  const {pool, log} = makePool(3);
+  const payload = {bagCount: 8, finalTurnsRemaining: 0, iterations: 64, seed: 17};
+  const first = pool.run('simulateReview', payload);
+  let failed = false;
+  first.catch(() => { failed = true; });
+  try {
+    await settle();
+    const plan = terminalPlan(payload, 15);
+    reply(log, log.requests[0], plan);
+    await settle();
+    const crashed = log.requests.shift();
+    crashed.worker.listeners.error[0]({message: 'Worker crashed'});
+    await settle();
+    assert.equal(failed, false);
+    assert.equal(crashed.worker.terminated, true);
+    assert.equal(log.requests.length, 2);
+    const coverage = new Map();
+    for (const request of [...log.requests]) {
+      for (const move of request.payload.candidates) coverage.set(move.tiles, 5);
+      reply(log, request, terminalBatch(request, 5));
+    }
+    await assert.rejects(first, /Worker crashed/);
+    let starts = 0;
+    const retry = pool.run('simulateReview', payload, {priority: 1, taskKey: 'generic', onStart: () => { starts++; }});
+    retry.catch(() => {});
+    assert.equal(pool.promote('generic', 98), true);
+    await settle();
+    assert.equal(log.workers.length, 4);
+    assert.equal(log.workers.filter(worker => !worker.terminated).length, 3);
+    const firstRetryRequests = new Set(log.requests);
+    while (log.requests.length) {
+      for (const request of [...log.requests].reverse()) {
+        assert.equal(request.type, 'simulateReviewBatch');
+        assert.ok(firstRetryRequests.has(request) || pool.slots.find(slot =>
+          slot.task?.id === request.id).task.priority === 98);
+        for (const move of request.payload.candidates) {
+          assert.equal(request.payload.offset, coverage.get(move.tiles) || 0);
+          coverage.set(move.tiles, request.payload.offset + request.payload.count);
+        }
+        reply(log, request, terminalBatch(request));
+      }
+      await settle();
+    }
+    assert.equal(starts, 1);
+    assert.equal(coverage.size, 15);
+    assert.ok([...coverage.values()].every(count => count === 64));
+    assert.equal((await retry).iterationsCompleted, 64);
+  } finally {
+    pool.stop();
+    await first.catch(() => {});
+  }
+});
+
+test('terminal full draw sums each partial conditioned estimate and completes 277 samples', async () => {
+  const {pool, log} = makePool(3);
+  const payload = {...drawPayload, iterations: 277, played: {action: 'exchange', position: '', tiles: 'T'},
+    rackAfter: 'AEIRSTZ'};
+  const job = pool.run('simulateDraw', payload);
+  job.catch(() => {});
+  try {
+    let offset = 0;
+    await settle();
+    while (log.requests.length) {
+      assert.equal(log.requests.length, 1);
+      const request = log.requests[0];
+      assert.equal(request.payload.offset, offset);
+      assert.equal(request.payload.knownBeforeWin, -1);
+      const completed = offset === 0 ? 3 : request.payload.count;
+      // First batch wins every baseline and loses every conditioned trial.
+      // Every later batch has the opposite outcome.
+      const beforeWin = offset === 0 ? 1 : 0;
+      const afterWin = 1 - beforeWin;
+      reply(log, request, {...drawBatch(request, completed), drawCount: 1, selected: payload.played,
+        rackAfter: payload.rackAfter, beforeWin, afterWin,
+        beforeWinSum: beforeWin * completed, afterWinSum: afterWin * completed});
+      offset += completed;
+      await settle();
+    }
+    const result = await job;
+    assert.equal(offset, 277);
+    assert.equal(result.iterationsRequested, 277);
+    assert.equal(result.iterationsCompleted, 277);
+    assert.equal(result.beforeWin, 3 / 277);
+    assert.equal(result.afterWin, 274 / 277);
+    assert.equal(result.drawCount, 1);
+    assert.deepEqual(result.selected, payload.played);
+  } finally {
+    pool.stop();
+    await job.catch(() => {});
+  }
 });

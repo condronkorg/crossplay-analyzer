@@ -25,3 +25,33 @@ def mock_server():
             thread.join()
             with Handler.sessions_lock:
                 Handler.sessions.clear()
+
+
+def trace_quackle_workers(page):
+    """Observe real worker requests and let tests hold one request in flight."""
+    page.evaluate("""() => {
+      const BrowserWorker = window.Worker;
+      const trace = window.workerTrace = {count: 0, requests: [], terminations: 0};
+      window.Worker = class extends BrowserWorker {
+        constructor(...args) {
+          super(...args);
+          trace.count++;
+        }
+        postMessage(message, ...options) {
+          trace.requests.push(message);
+          if (trace.hold?.(message)) {
+            trace.hold = null;
+            trace.release = () => {
+              trace.release = null;
+              super.postMessage(message, ...options);
+            };
+          } else {
+            super.postMessage(message, ...options);
+          }
+        }
+        terminate() {
+          trace.terminations++;
+          super.terminate();
+        }
+      };
+    }""")

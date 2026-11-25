@@ -2,12 +2,16 @@
 
 import base64
 import functools
+import re
 import threading
 import unittest
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-from playwright.sync_api import Error, sync_playwright
+from playwright.sync_api import Error, expect, sync_playwright
+
+import test_endgame_simulation as endgame
+from tools.test_support import trace_quackle_workers
 
 
 ROOT = Path(__file__).resolve().parent
@@ -486,6 +490,60 @@ class BrowserPipelineTest(unittest.TestCase):
                 self.assertEqual(page_errors, [])
                 page.close()
 
+    def test_standalone_terminal_analysis_uses_complete_expanded_coverage(self):
+        grid = list(endgame.EndgameSimulationTests.GRID)
+        grid[0] = '..........G....'
+        for entry in ('manual.html', 'screenshot.html'):
+            with self.subTest(entry=entry):
+                page = self.browser.new_page()
+                self.addCleanup(page.close)
+                page.goto(f'{self.base_url}/{entry}', wait_until='domcontentloaded')
+                trace_quackle_workers(page)
+                page.evaluate("""({entry, grid}) => {
+                  Object.defineProperty(navigator, 'hardwareConcurrency', {value: 2});
+                  const data = {grid, rack: 'WEAFTUO', player_score: 110, opponent_score: 100,
+                    bag_count: 2, tile_values_complete: true, final_turns_remaining: 0};
+                  if (entry === 'manual.html') {
+                    // Supply a synthetic board with assigned blanks at the input boundary.
+                    buildJSON = () => data;
+                  } else {
+                    lastParsed = data;
+                    renderResult(data);
+                  }
+                }""", {'entry': entry, 'grid': grid})
+                page.locator('#kibitzBtn').click()
+                page.wait_for_function("workerTrace.requests.some(r => ['planBagEmptying', 'simulateKibitz'].includes(r.type))")
+                self.assertEqual(page.evaluate("workerTrace.requests.find(r => ['planBagEmptying', 'simulateKibitz'].includes(r.type)).type"),
+                                 'planBagEmptying')
+                status = page.locator('#engineStatus')
+                expect(status).to_have_text(re.compile(r'^Found '), timeout=120_000)
+                win_cells = page.locator('#movesContainer td[data-samples]')
+                self.assertGreater(win_cells.count(), 0)
+                self.assertTrue(all(samples == '277' for samples in win_cells.evaluate_all(
+                    'cells => cells.map(cell => cell.dataset.samples)')))
+                total = int(re.search(r'\(([\d,]+) playouts total\)', status.inner_text())[1].replace(',', ''))
+                self.assertGreater(total, 277 * win_cells.count())
+
+                page.get_by_role('textbox', name='Custom move word').fill('FET')
+                page.get_by_role('textbox', name='Custom move start square').fill('B15')
+                page.get_by_role('button', name='Evaluate move', exact=True).click()
+                output = page.locator('.custom-move-result')
+                expect(page.locator('.custom-move-status')).to_have_text('Move evaluated.', timeout=30_000)
+                static_rank = int(re.search(r'Static rank #(\d+)', output.inner_text())[1])
+                self.assertGreater(static_rank, 15)
+                page.get_by_role('button', name='Estimate win% (slower)', exact=True).click()
+                expect(page.locator('.custom-move-status')).to_have_text('Win simulation complete.', timeout=120_000)
+                expect(output.locator('tbody tr').first).to_contain_text('Your move: 15B FET')
+                expect(output).to_contain_text(f'Compared {total // 277} moves with 277 samples each')
+                trace = page.evaluate('workerTrace')
+                self.assertEqual(trace['count'], 1)
+                self.assertEqual([r['payload']['requestType'] for r in trace['requests']
+                                  if r['type'] == 'planBagEmptying'], ['simulateKibitz', 'simulateMove'])
+                self.assertTrue(any(r['type'] == 'simulateReviewBatch' and r['payload'].get('customMove')
+                                    for r in trace['requests']))
+                self.assertTrue(all(r['type'] not in ('simulateKibitz', 'simulateMove') for r in trace['requests']))
+                page.close()
+
     def test_compact_header_and_tile_glyph_regressions(self):
         """Check the exact pixels from the reported compact-screen failure.
 
@@ -608,6 +666,7 @@ class BrowserPipelineTest(unittest.TestCase):
 
     def test_engine_load_retry(self):
         page, page_errors, _ = self.open_page()
+        trace_quackle_workers(page)
         attempts = {"count": 0}
 
         def fail_first_worker_request(route):
@@ -626,7 +685,7 @@ class BrowserPipelineTest(unittest.TestCase):
             timeout=10_000,
         )
         self.assertFalse(page.locator("#kibitzBtn").is_disabled())
-        self.assertTrue(page.evaluate("quackleWorker === null"))
+        self.assertEqual(page.evaluate('workerTrace.terminations'), 1)
 
         page.locator("#kibitzBtn").click()
         page.wait_for_function(
@@ -649,11 +708,9 @@ class BrowserPipelineTest(unittest.TestCase):
                 gridJson: JSON.stringify(Array(15).fill('AAAAAAAAAAAAAAA')),
                 rack: 'A', playerScore: 0, opponentScore: 0,
                 numMoves: 15, iterations: 1, bagCount: 0, finalTurnsRemaining: 2
-              });
+              }).catch(error => ({error: error.message}));
             }"""
         )
-        self.assertFalse(result["simulated"])
-        self.assertEqual(result["iterationsCompleted"], 0)
         self.assertIn("more tiles than the Crossplay distribution", result["error"])
         self.assertEqual(page_errors, [])
         page.close()
@@ -676,7 +733,7 @@ class BrowserPipelineTest(unittest.TestCase):
                 gridJson: JSON.stringify(grid), rack: 'IUAFTIO',
                 playerScore: 150, opponentScore: 139,
                 numMoves: 15, iterations: 1, bagCount, finalTurnsRemaining: 0
-              });
+              }).catch(error => ({error: error.message}));
               return {
                 uppercase: await run(uppercaseGrid),
                 lowercase: await run(lowercaseGrid),
@@ -726,6 +783,26 @@ class BrowserPipelineTest(unittest.TestCase):
         self.assertFalse(page.locator("#kibitzBtn").is_disabled())
         self.assertEqual(page_errors, [])
         page.close()
+
+    def test_changing_screenshot_final_turn_state_cancels_inflight_simulation(self):
+        page, page_errors, _ = self.open_page()
+        self.addCleanup(page.close)
+        trace_quackle_workers(page)
+        page.evaluate("""grid => {
+          Object.defineProperty(navigator, 'hardwareConcurrency', {value: 2});
+          renderResult({grid, rack: 'WEAFTUO', player_score: 110, opponent_score: 100,
+            bag_count: 0, tile_values_complete: true});
+          workerTrace.hold = ({type}) => type === 'simulateReviewBatch' || type === 'simulateKibitz';
+        }""", endgame.EndgameSimulationTests.GRID)
+        page.locator("input[name='finalTurnState'][value='2']").check()
+        page.locator('#kibitzBtn').click()
+        page.wait_for_function('Boolean(workerTrace.release)')
+        page.locator("input[name='finalTurnState'][value='1']").check()
+        self.assertEqual(page.evaluate('workerTrace.terminations'), 1)
+        page.evaluate('workerTrace.release()')
+        expect(page.locator('#engineStatus')).to_have_text('1 Crossplay final turn remains.')
+        expect(page.locator('#movesContainer')).to_be_hidden()
+        self.assertEqual(page_errors, [])
 
     def test_near_end_simulation_reaches_crossplay_finish(self):
         page, page_errors, _ = self.open_page()
@@ -862,7 +939,7 @@ class BrowserPipelineTest(unittest.TestCase):
             }"""
         )
         self.assertIn("must be integers", errors["bag"])
-        self.assertIn("must be integers", errors["finalTurns"])
+        self.assertIn("bag state", errors["finalTurns"])
         self.assertEqual(page_errors, [])
         page.close()
 
@@ -884,14 +961,14 @@ class BrowserPipelineTest(unittest.TestCase):
                 numMoves: 15, iterations: 1, bagCount: 0, finalTurnsRemaining
               });
               return {
-                unknown: await run(0),
+                unknown: await run(0).catch(error => ({error: error.message})),
                 firstFinal: await run(2),
                 lastFinal: await run(1)
               };
             }""",
             grid,
         )
-        self.assertIn("Choose whether one or two", result["unknown"]["error"])
+        self.assertIn("bag state", result["unknown"]["error"])
         for key, expected_turns in (("firstFinal", 2), ("lastFinal", 1)):
             simulation = result[key]
             self.assertTrue(simulation["simulated"])

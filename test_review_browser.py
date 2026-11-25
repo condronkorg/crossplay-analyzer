@@ -17,7 +17,7 @@ from urllib.parse import urlsplit
 from playwright.sync_api import Error, expect, sync_playwright
 
 from tools.mock_nyt import EMPTY_COOKIE, EXPIRED_COOKIE, MOCK_COOKIE, OUTAGE_COOKIE
-from tools.test_support import mock_server
+from tools.test_support import mock_server, trace_quackle_workers
 
 
 class ReviewBrowserTest(unittest.TestCase):
@@ -819,7 +819,7 @@ class ReviewBrowserTest(unittest.TestCase):
         self.assertEqual(self.page.evaluate('moveQualityResults.points[0].samples'), 64)
         self.assertEqual(self.page.evaluate('reviewQueue.running'), 0)
 
-    def test_late_preview_after_full_failure_keeps_review_complete_and_retryable(self):
+    def test_late_preview_after_full_failure_keeps_review_incomplete_and_retryable(self):
         self.install_review_worker()
         self.open_game()
         result = self.page.evaluate("""async () => {
@@ -839,12 +839,13 @@ class ReviewBrowserTest(unittest.TestCase):
           return {quality: context.quality.state, trend: context.trend.state,
             point: context.quality.points[0], retry};
         }""")
-        self.assertEqual(result['quality'], 'done')
-        self.assertEqual(result['trend'], 'done')
+        self.assertEqual(result['quality'], 'error')
+        self.assertEqual(result['trend'], 'error')
         self.assertEqual(result['point']['category'], 'unrated')
         self.assertTrue(result['point']['retryable'])
         self.assertFalse(result['point']['provisional'])
         self.assertFalse(result['retry']['complete'])
+        self.assertTrue(result['retry']['failed'])
 
     def test_paused_review_does_not_start_new_preview_when_turn_changes(self):
         self.install_review_worker()
@@ -921,10 +922,12 @@ class ReviewBrowserTest(unittest.TestCase):
                 'reason': 'Played move was outside Quackle’s returned top 15 candidates.'}]}})
         self.page.evaluate('startBackgroundAnalysis = window.automaticAnalysis; undefined')
         self.open_game()
-        expect(self.page.locator('.quality-panel .trend-status')).to_contain_text('Your review is ready')
+        expect(self.page.locator('.quality-panel .trend-status')).to_contain_text('Some analysis failed')
         self.assertEqual(self.page.evaluate('moveQualityResults.evaluation'), 'win-probability-v1')
-        reason = self.page.evaluate('moveQualityResults.points[0].reason')
-        self.assertTrue(reason.startswith('Quackle could not evaluate the played move: This move is not legal'), reason)
+        point = self.page.evaluate('moveQualityResults.points[0]')
+        self.assertEqual(point['category'], 'unrated')
+        self.assertTrue(point['retryable'])
+        self.assertIn('Quackle could not evaluate the played move: This move is not legal', point['reason'])
 
     def use_saved_unrated_exchange(self, swapped_tiles):
         grid = ['.' * 15 for _ in range(15)]
@@ -1288,6 +1291,82 @@ class ReviewBrowserTest(unittest.TestCase):
         expect(self.page.locator('#backgroundStatus')).to_contain_text('2/2 games', timeout=15_000)
         self.assertEqual(self.page.evaluate('engineCalls'), [])
 
+    def test_three_worker_budget_runs_three_independent_turns(self):
+        self.assert_turns_run_with_worker_budget(cores=8, memory=8, budget=3)
+
+    def test_low_memory_worker_budget_runs_two_independent_turns(self):
+        self.assert_turns_run_with_worker_budget(cores=8, memory=4, budget=2)
+
+    def test_two_cores_run_one_turn_at_a_time(self):
+        self.assert_turns_run_with_worker_budget(cores=2, memory=8, budget=1)
+
+    def assert_turns_run_with_worker_budget(self, *, cores, memory, budget):
+        self.install_review_worker()
+        self.page.evaluate('''({cores,memory}) => {
+          Object.defineProperty(navigator,'hardwareConcurrency',{value:cores});
+          Object.defineProperty(navigator,'deviceMemory',{value:memory});
+        }''', {'cores': cores, 'memory': memory})
+        self.open_game()
+        result = self.page.evaluate('''async budget => {
+          const context=contextFor(currentReview);
+          const grid=Array(15).fill('.'.repeat(15));
+          currentReview.turns=Array.from({length:4},(_,index)=>({
+            index, mine:index%2===0, grid, grid_after:grid, rack:'CATERS?', rack_after:'CATERS?',
+            action:'PASS 0', score:0, bag_count:86, final_turns_remaining:0,
+            mover_score:index, other_score:0
+          }));
+          context.states=currentReview.turns.map(()=> 'pending');
+          context.openingState='unavailable';
+          const pending=new Map(), requests=[], workers=new Set(), post=Worker.prototype.postMessage;
+          Worker.prototype.postMessage=function(message,...options) {
+            if(message.type!=='simulateReview') return post.call(this,message,...options);
+            const {playerScore,iterations,numMoves}=message.payload;
+            requests.push({index:playerScore,iterations,numMoves});
+            workers.add(this);
+            pending.set(playerScore,()=>post.call(this,message,...options));
+          };
+          const release=index=>{
+            const finish=pending.get(index);
+            pending.delete(index);
+            finish();
+          };
+          const waitFor=async check=>{
+            const deadline=performance.now()+2500;
+            while(!check() && performance.now()<deadline) await new Promise(resolve=>setTimeout(resolve,5));
+            return check();
+          };
+          reviewQueue.select(currentReview.id);
+          const started=await waitFor(()=>pending.size>=budget);
+          const initial={active:[...pending.keys()].sort(),workers:workers.size,queue:reviewQueue.running};
+          if(!started) return {initial};
+          const firstDone=budget-1;
+          release(firstDone);
+          if(!await waitFor(()=>context.states[firstDone]==='done' && requests.length===budget+1)) {
+            throw new Error('A finished turn did not publish or free a worker.');
+          }
+          const published={
+            states:[...context.states],
+            points:context.quality.points.map(point=>({index:point.turnIndex,samples:point.samples}))
+          };
+          if(!await waitFor(()=>{
+            for(const index of [...pending.keys()]) release(index);
+            return reviewQueue.running===0;
+          })) throw new Error('The remaining turns did not finish.');
+          await analysisSaveQueue;
+          return {initial,published,states:context.states,workers:workers.size,requests,
+            summary:context.quality.state};
+        }''', budget)
+        self.assertEqual(result['initial'], {'active': list(range(budget)), 'workers': budget, 'queue': budget})
+        expected_states = ['running'] * (budget - 1) + ['done', 'running'] + ['pending'] * (3 - budget)
+        self.assertEqual(result['published'], {
+            'states': expected_states, 'points': [{'index': budget - 1, 'samples': 277}],
+        })
+        self.assertEqual(result['states'], ['done'] * 4)
+        self.assertEqual(result['workers'], budget)
+        self.assertEqual(sorted(result['requests'], key=lambda request: request['index']),
+                         [{'index': index, 'iterations': 277, 'numMoves': 15} for index in range(4)])
+        self.assertEqual(result['summary'], 'done')
+
     def test_retry_turn_updates_the_grade_trend_and_saved_summary(self):
         self.install_review_worker()
         saved = []
@@ -1305,7 +1384,7 @@ class ReviewBrowserTest(unittest.TestCase):
             return request(type, payload, options);
           }; undefined""")
         self.page.get_by_role('button', name='Analyze move quality', exact=True).click()
-        expect(self.page.locator('.quality-panel .trend-status')).to_contain_text('Your review is ready')
+        expect(self.page.locator('.quality-panel .trend-status')).to_contain_text('Some analysis failed')
         self.page.evaluate('flushAnalysisSave()')
         self.page.wait_for_function('reviewQueue.running === 0')
         self.page.get_by_role('combobox', name='Select game turn').select_option('0')
@@ -1340,7 +1419,7 @@ class ReviewBrowserTest(unittest.TestCase):
             return request(type,payload,options);
           }; undefined""")
         self.page.get_by_role('button', name='Analyze move quality', exact=True).click()
-        expect(self.page.locator('.quality-panel .trend-status')).to_contain_text('Your review is ready')
+        expect(self.page.locator('.quality-panel .trend-status')).to_contain_text('Some analysis failed')
         self.page.evaluate('flushAnalysisSave()')
         self.page.wait_for_function('reviewQueue.running === 0')
         self.page.get_by_role('combobox', name='Select game turn').select_option('0')
@@ -1637,9 +1716,8 @@ class ReviewBrowserTest(unittest.TestCase):
         expect(self.page.locator('.custom-move-result')).to_contain_text(
             f'WP loss: {loss:.1f} pp versus the best among analyzed moves.')
 
-    def test_custom_swap_with_six_bag_tiles_has_static_and_simulated_results(self):
-        self.open_game()
-        self.page.evaluate("""() => {
+    def set_terminal_custom_turn(self):
+        return self.page.evaluate("""() => {
           const rack = 'WEAFTUO';
           // Reuse the existing conserved engine regression board, with six
           // board tiles removed so the bag has six tiles.
@@ -1649,17 +1727,34 @@ class ReviewBrowserTest(unittest.TestCase):
             '..PROG..I.TEN.F', '....D..JOGS...I', '...LASSI.O..RUN',
             '.......V.R.MI..', '...C...E..HIPS.', '...A.BASE.A.E..',
             '...R.O..D.V....', '..RENT.LITER...', '.....H..T......'];
-          customMoveController.getPosition = () => ({gridJson:JSON.stringify(grid), rack,
-            playerScore:30, opponentScore:25, bagCount:6, finalTurnsRemaining:0});
+          const turn = {...currentReview.turns[0], grid, grid_after: grid, rack, rack_after: rack,
+            action: 'PASS', mover_score: 30, other_score: 25, bag_count: 6, final_turns_remaining: 0};
+          currentReview.turns[0] = turn;
+          selectTurn(0);
         }""")
+
+    def enter_terminal_custom_swap(self):
         self.page.get_by_role('combobox', name='Custom move action', exact=True).select_option('exchange')
         self.page.get_by_role('textbox', name='Tiles to swap', exact=True).fill('WEAF')
         self.page.get_by_role('button', name='Evaluate move', exact=True).click()
         expect(self.page.locator('.custom-move-status')).to_have_text('Move evaluated.', timeout=30_000)
+
+    def test_custom_swap_with_six_bag_tiles_has_static_and_simulated_results(self):
+        self.open_game()
+        self.set_terminal_custom_turn()
+        trace_quackle_workers(self.page)
+        self.page.evaluate("""async () => {
+          Object.defineProperty(navigator, 'hardwareConcurrency', {value: 2});
+          await workerRequest('init');
+        }""")
+        self.enter_terminal_custom_swap()
         row = self.page.locator('.custom-move-result tbody tr').first
         expect(row).to_contain_text('Your move: Swap AEFW')
         expect(row.locator('td').nth(2)).to_have_text('TUO')
         self.page.get_by_role('button', name='Estimate win% (slower)', exact=True).click()
+        self.page.wait_for_function("workerTrace.requests.some(r => ['planBagEmptying', 'simulateMove'].includes(r.type))")
+        self.assertEqual(self.page.evaluate("workerTrace.requests.find(r => ['planBagEmptying', 'simulateMove'].includes(r.type)).type"),
+                         'planBagEmptying')
         self.page.wait_for_function("""() => {
           const status = document.querySelector('.custom-move-status');
           return status.textContent === 'Win simulation complete.' || status.classList.contains('custom-move-error');
@@ -1668,6 +1763,54 @@ class ReviewBrowserTest(unittest.TestCase):
         expect(row).to_contain_text('Your move: Swap AEFW')
         self.assertRegex(row.locator('td').last.inner_text(), r'^\d+\.\d%$')
         expect(self.page.locator('.custom-move-result')).to_contain_text('277 samples each')
+        trace = self.page.evaluate('workerTrace')
+        self.assertEqual(trace['count'], 1)
+        self.assertTrue(any(r['type'] == 'simulateReviewBatch' for r in trace['requests']))
+        self.assertNotIn('simulateMove', [r['type'] for r in trace['requests']])
+
+    def check_custom_terminal_cancellation(self, hold_custom):
+        self.open_game()
+        self.set_terminal_custom_turn()
+        trace_quackle_workers(self.page)
+        self.page.evaluate("""holdCustom => {
+          Object.defineProperty(navigator, 'hardwareConcurrency', {value: 2, configurable: true});
+          workerTrace.hold = ({type, payload}) => holdCustom
+            ? (type === 'simulateMove' || (type === 'simulateReviewBatch' && payload.customMove))
+            : (type === 'simulateReviewBatch' && !payload.customMove);
+          window.startPendingReview = () => {
+            const turn = currentReview.turns[0];
+            window.pendingReview = ensurePositionAnalysis(currentReview, turn, 'preview').then(
+              result => ({samples: result.selected.terminalSamples}), error => ({error: error.message}));
+          };
+        }""", hold_custom)
+        self.enter_terminal_custom_swap()
+        estimate = self.page.get_by_role('button', name='Estimate win% (slower)', exact=True)
+        if hold_custom:
+            estimate.click()
+            self.page.wait_for_function('Boolean(workerTrace.release)')
+            self.page.evaluate('startPendingReview()')
+        else:
+            self.page.evaluate('startPendingReview()')
+            self.page.wait_for_function('Boolean(workerTrace.release)')
+            estimate.click()
+        self.page.get_by_role('button', name='Cancel evaluation').click()
+        expect(self.page.locator('.custom-move-status')).to_have_text('Evaluation cancelled.')
+        self.page.evaluate('workerTrace.release()')
+        self.assertEqual(self.page.evaluate('pendingReview'), {'samples': 64})
+        expect(self.page.locator('.custom-move-result')).to_contain_text('Static equity')
+        trace = self.page.evaluate('workerTrace')
+        self.assertEqual(trace['count'], 1)
+        self.assertEqual(trace['terminations'], 0)
+        self.assertNotIn('simulateMove', [r['type'] for r in trace['requests']])
+        custom_batches = [r for r in trace['requests'] if r['type'] == 'simulateReviewBatch'
+                          and r['payload'].get('customMove')]
+        self.assertEqual(len(custom_batches), int(hold_custom))
+
+    def test_cancel_running_custom_batch_keeps_pending_review(self):
+        self.check_custom_terminal_cancellation(hold_custom=True)
+
+    def test_cancel_queued_custom_plan_keeps_running_review(self):
+        self.check_custom_terminal_cancellation(hold_custom=False)
 
     def test_custom_swap_rejects_empty_bag_before_engine_evaluation(self):
         self.open_game()

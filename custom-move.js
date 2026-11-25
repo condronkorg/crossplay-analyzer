@@ -1,11 +1,8 @@
-// A separate worker keeps long custom simulations cancellable without stopping
-// the generated-move analysis or a whole-game review.
 window.CustomMove = class CustomMove {
-  constructor(container, getPosition, note = '') {
+  constructor(container, getPosition, request, note = '') {
     this.getPosition = getPosition;
-    this.token = 0;
-    this.worker = null;
-    this.pending = null;
+    this.request = request;
+    this.controller = null;
     this.payload = null;
     this.root = document.createElement('section');
     this.root.className = 'custom-move';
@@ -64,11 +61,8 @@ window.CustomMove = class CustomMove {
   }
 
   stop() {
-    this.token++;
-    if (this.worker) this.worker.terminate();
-    this.worker = null;
-    if (this.pending) this.pending.reject(new Error('Evaluation cancelled.'));
-    this.pending = null;
+    this.controller?.abort();
+    this.controller = null;
     this.setBusy(false);
   }
 
@@ -84,38 +78,13 @@ window.CustomMove = class CustomMove {
     this.root.remove();
   }
 
-  request(type, payload) {
-    if (!this.worker) {
-      const worker = new Worker('quackle-worker.js');
-      this.worker = worker;
-      worker.addEventListener('message', event => {
-        if (this.worker !== worker || !this.pending || this.pending.id !== event.data.id) return;
-        const pending = this.pending;
-        this.pending = null;
-        if (event.data.error) pending.reject(new Error(event.data.error));
-        else pending.resolve(event.data.result);
-      });
-      worker.addEventListener('error', () => {
-        if (this.worker !== worker) return;
-        if (this.pending) this.pending.reject(new Error('The engine failed to load. Try again.'));
-        this.pending = null;
-        this.worker.terminate();
-        this.worker = null;
-      });
-    }
-    return new Promise((resolve, reject) => {
-      const id = this.token;
-      this.pending = { id, resolve, reject };
-      this.worker.postMessage({ id, type, payload });
-    });
-  }
-
   async evaluate(simulateWin) {
-    const token = ++this.token;
+    this.controller?.abort();
+    const controller = this.controller = new AbortController();
     this.setBusy(true);
     this.status.classList.remove('custom-move-error');
     this.status.textContent = simulateWin
-      ? 'Estimating win chances against up to 15 leading alternatives… You can cancel.'
+      ? 'Estimating win chances… You can cancel.'
       : 'Checking the move and evaluating all legal alternatives…';
     if (!simulateWin) this.output.replaceChildren();
     try {
@@ -130,16 +99,20 @@ window.CustomMove = class CustomMove {
           direction: this.form.elements.direction.value
         } };
       }
-      const result = await this.request(simulateWin ? 'simulateMove' : 'evaluateMove', this.payload);
-      if (token !== this.token) return;
+      const result = await this.request(simulateWin ? 'simulateMove' : 'evaluateMove', this.payload,
+        {signal: controller.signal});
+      if (controller !== this.controller) return;
       this.renderResult(result);
       this.status.textContent = simulateWin ? 'Win simulation complete.' : 'Move evaluated.';
     } catch (error) {
-      if (token !== this.token) return;
+      if (controller !== this.controller) return;
       this.status.classList.add('custom-move-error');
       this.status.textContent = error.message;
     } finally {
-      if (token === this.token) this.setBusy(false);
+      if (controller === this.controller) {
+        this.controller = null;
+        this.setBusy(false);
+      }
     }
   }
 

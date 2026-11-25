@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <script src="datadog-rum.js"></script>
 <link rel="stylesheet" href="custom-move.css">
-<script src="custom-move.js"></script>
+<script src="custom-move.js?v=bounded-terminal-v1"></script>
 <meta name="description" content="Review completed NYT Crossplay games, replay turns, and compare plays with Quackle. Analyze screenshots or enter a board manually.">
 <meta name="referrer" content="no-referrer">
 <title>Crossplay Board Analyzer — Game Review</title>
@@ -575,8 +575,8 @@
 <script src="move-continuation.js"></script>
 <script src="analysis-cache.js"></script>
 <script src="bag-emptying-analysis.js"></script>
-<script src="quackle-pool.js"></script>
-<script src="review-analysis.js?v=played-candidate-index"></script>
+<script src="quackle-pool.js?v=bounded-terminal-v1"></script>
+<script src="review-analysis.js?v=bounded-terminal-v1"></script>
 <script src="opening-draw.js"></script>
 <script>
 const PREMIUM_COORDS = {
@@ -596,6 +596,8 @@ const SIMULATION_ITERATIONS = 277;
 const PREVIEW_MOVE_COUNT = 5;
 const PREVIEW_ITERATIONS = 64;
 const TERMINAL_BAG_LIMIT = 21;
+const TERMINAL_EXECUTION_POLICY = 'bounded-terminal-v1';
+const REVIEW_RETRY_MESSAGE = 'Some analysis failed. Retry to finish the review.';
 // Legacy cache settings remain distinct from the full recorded-move simulations.
 const TREND_MOVE_COUNT = 1;
 const TREND_ITERATIONS = 80;
@@ -1075,12 +1077,30 @@ function drawPoint(result) {
 function savedFailureMatches(failure, key, preview) {
   return failure?.analysisKey === key || (!failure?.analysisKey && Boolean(preview));
 }
+function terminalAnalysisTurn(turn) {
+  const bag = Number(turn?.bag_count);
+  return Number.isInteger(bag) && bag >= 0 && bag <= TERMINAL_BAG_LIMIT;
+}
+function savedTurnFailureMatches(failure, cache, turn, kind) {
+  const key = cache.key(turn, kind);
+  if (terminalAnalysisTurn(turn)) {
+    return failure.executionPolicy === TERMINAL_EXECUTION_POLICY && failure.analysisKey === key;
+  }
+  return savedFailureMatches(failure, key, cache.get(turn, kind === 'draw' ? 'draw-preview' : 'preview'));
+}
+function turnFailure(cache, turn, kind) {
+  return {retryable: true, analysisKey: cache.key(turn, kind),
+    ...(terminalAnalysisTurn(turn) ? {executionPolicy: TERMINAL_EXECUTION_POLICY} : {})};
+}
+function retryableTurn(point) {
+  return Boolean(point?.retryable || point?.draw?.retryable);
+}
 function restoreDrawPoint(cache, turn, point) {
   const restored = {...point};
   delete restored.draw;
   if (!Number.isFinite(point.playedWin)) return restored;
   if (!cache.get(turn, 'draw') && point.draw?.retryable &&
-      savedFailureMatches(point.draw, cache.key(turn, 'draw'), cache.get(turn, 'draw-preview'))) {
+      savedTurnFailureMatches(point.draw, cache, turn, 'draw')) {
     restored.draw = {...point.draw};
     return restored;
   }
@@ -1170,7 +1190,7 @@ function makeReviewContext(review, owner, shared = false) {
       if (point.category === 'unrated' && !point.retryable &&
           !Number.isFinite(point.playedWin) && !Number.isFinite(point.bestWin)) return true;
       if (point.retryable && !cache.get(turn, 'review') &&
-          savedFailureMatches(point, cache.key(turn, 'review'), cache.get(turn, 'preview'))) return true;
+          savedTurnFailureMatches(point, cache, turn, 'review')) return true;
       const result = cache.get(turn, 'review');
       return point.endgamePolicy === 'crossplay-endgame-v1' &&
         result?.endgamePolicy === point.endgamePolicy &&
@@ -1198,7 +1218,7 @@ function makeReviewContext(review, owner, shared = false) {
       restored.set(index, point);
       rebuilt = true;
     } else if (point?.retryable &&
-        !savedFailureMatches(point, cache.key(turn, 'review'), cache.get(turn, 'preview'))) {
+        !savedTurnFailureMatches(point, cache, turn, 'review')) {
       restored.delete(index);
       rebuilt = true;
     }
@@ -1211,21 +1231,26 @@ function makeReviewContext(review, owner, shared = false) {
   }
   const states = review.turns.map((turn, index) => {
     const point = restored.get(index);
-    if (point?.retryable || point?.draw?.retryable) return 'error';
+    if (retryableTurn(point)) return 'error';
     if (point?.category === 'unrated' && !point.provisional) return 'done';
     const result = cache.get(turn, 'review');
     return point && !point.provisional && result?.selected.win === point.playedWin &&
       result.best.win === point.bestWin && drawWorkComplete({review, cache}, index) ? 'done' : 'pending-preview';
   });
-  if (quality) quality.state = states.some(state => state === 'pending-preview') ||
-    ['pending', 'pending-preview'].includes(openingState) ? 'running' : 'done';
+  if (quality) {
+    const pending = states.includes('pending-preview') || ['pending', 'pending-preview'].includes(openingState);
+    const failed = states.includes('error') || openingState === 'error';
+    if (pending && ['done', 'error'].includes(quality.state)) quality.message = 'Win estimates are queued.';
+    quality.state = pending ? 'running' : failed ? 'error' : 'done';
+    if (quality.state === 'error') quality.message = REVIEW_RETRY_MESSAGE;
+  }
   const trend = quality ? deriveWinTrend({review, quality}, quality.state === 'done') : null;
   const context = {review, cache, owner, shared, quality, trend, openingInput, openingState, states,
     openingError: openingState === 'error' ? opening.reason : null};
   // Raw results may have reached the database before the derived summary.
   // Repair that summary without starting the engine or rewriting valid saves.
-  if (rebuilt && quality?.points.length === review.turns.length &&
-      states.every(state => state === 'done') && !['pending', 'pending-preview'].includes(openingState)) {
+  if ((rebuilt || savedQuality?.state === 'error') && quality?.points.length === review.turns.length &&
+      states.every(state => state === 'done') && ['done', 'unavailable'].includes(openingState)) {
     queueMicrotask(() => finishReviewAnalysis(context).catch(() => {}));
   }
   return context;
@@ -1235,12 +1260,13 @@ function getReviewQueue() {
   const owner = analysisOwner();
   const queue = new CrossplayReview.ReviewQueue({
     preview: true,
-    concurrency: Math.max(1, Math.min(2, quacklePoolSize() - 1)),
+    concurrency: QuackleWorkerPool.browserSize(),
     load: async id => makeReviewContext(await api('games/' + encodeURIComponent(id) + '/review',
       { expectedOwner: owner, signal: queue.controller.signal }), owner),
     run: analyzeReviewTurn,
     runOpening: analyzeOpeningDraw,
     complete: finishReviewAnalysis,
+    settleFailure: finishReviewAnalysis,
     change: updateBackgroundStatus
   });
   reviewQueue = queue;
@@ -1257,12 +1283,26 @@ function suspendAnalysisForRefresh({ abortRequests = true } = {}) {
   if (queue) {
     for (const [id, context] of queue.contexts) {
       context.cancelled = true;
+      const points = new Map((context.quality?.points || []).map(point => [point.turnIndex, point]));
+      const restartState = (state, index) => {
+        if (state === 'error') {
+          const turn = context.review.turns[index], point = points.get(index);
+          const {cache} = context;
+          // A current terminal failure requires an explicit retry, even after
+          // an unrelated reset replaces the queue.
+          if (terminalAnalysisTurn(turn)) {
+            const moveFailed = point?.retryable && !cache.get(turn, 'review') && savedTurnFailureMatches(point, cache, turn, 'review');
+            const drawFailed = point?.draw?.retryable && !cache.get(turn, 'draw') && savedTurnFailureMatches(point.draw, cache, turn, 'draw');
+            if (moveFailed || drawFailed) return 'error';
+          }
+        }
+        return ['running', 'running-preview', 'error'].includes(state) ? 'pending-preview' : state;
+      };
       snapshot.contexts.set(id, {...context, cancelled: false,
         quality: estimate(context.quality), trend: estimate(context.trend),
         openingState: ['running', 'running-preview', 'error'].includes(context.openingState)
           ? 'pending-preview' : context.openingState,
-        states: context.states.map(state => ['running', 'running-preview', 'error'].includes(state)
-          ? 'pending-preview' : state)});
+        states: context.states.map(restartState)});
     }
     if (abortRequests) queue.close();
     else queue.closed = true; // Let already-sent saves finish before a deliberate reset.
@@ -1327,7 +1367,7 @@ function updateBackgroundStatus() {
     early += points.filter(point => point.provisional && Number.isFinite(point.playedWin)).length;
     total += context.states.length;
     unrated += points.filter(point => point.category === 'unrated').length;
-    if (context.states.every(state => state === 'done') && !queue.openingPending(context)) done++;
+    if (context.states.every(state => state === 'done') && !queue.openingPending(context) && context.openingState !== 'error') done++;
     if (context.openingError || context.quality?.opening?.retryable) {
       failures.add(id);
       details.push({id, label: 'Initial rack draw failed', reason: context.openingError || context.quality.opening.reason});
@@ -1479,7 +1519,7 @@ function recordEngineResult(review, cache, key, result) {
 }
 function markAnalysisComplete(field, value, cache = positionCache) {
   if (cache.shared || cache.discarded || cache.owner !== analysisOwner()) return;
-  cache.completed = { ...cache.completed, [field]: value };
+  cache.completed = { ...cache.completed, [field]: structuredClone(value) };
 }
 function flushAnalysisSave(review = currentReview, cache = positionCache, { keepalive = false } = {}) {
   clearTimeout(cache.saveTimer);
@@ -1824,7 +1864,8 @@ function makeGameOverview(review) {
         const info = CrossplayReview.rackDraw(turn);
         if (info.drawCount > 0) {
           drawTotal++;
-          if (point?.draw?.unavailable) drawUnavailable++; else drawPending++;
+          if (point?.draw?.unavailable) drawUnavailable++;
+          else if (!retryableTurn(point) || point.provisional || point.draw?.provisional) drawPending++;
         }
       } catch (_) {
         // A pass or an empty bag has no refill to measure.
@@ -1910,7 +1951,10 @@ function makeGameOverview(review) {
   const pending = players.reduce((sum, player) => sum + player.pending, 0);
   const early = players.reduce((sum, player) => sum + player.early, 0);
   const unrated = players.reduce((sum, player) => sum + player.unrated, 0);
-  const status = [pending ? pending + ' moves waiting for estimates.' : 'All moves checked.'];
+  const failed = moveQualityResults?.state === 'error' || [...points.values()].some(retryableTurn);
+  const status = [];
+  if (pending) status.push(pending + ' moves waiting for estimates.');
+  else if (!failed) status.push('All moves checked.');
   if (early) status.push(early + ' early estimates; grades can change.');
   if (unrated) status.push(unrated + ' moves could not be rated.');
   const drawPending = players.reduce((sum, player) => sum + player.drawPending, 0);
@@ -1920,7 +1964,7 @@ function makeGameOverview(review) {
   if (drawUnavailable) status.push(drawUnavailable + (drawUnavailable === 1 ? ' draw record unavailable.' : ' draw records unavailable.'));
   if (drawEarly) status.push(drawEarly + (drawEarly === 1 ? ' early draw estimate; totals can change.' : ' early draw estimates; totals can change.'));
   if (contextFor(review)?.paused || moveQualityResults?.state === 'stopped') status.push('Analysis paused. Open the review to resume.');
-  if (moveQualityResults?.state === 'error' || [...points.values()].some(point => point.retryable)) status.push('Some moves need a retry. Open the review for details.');
+  if (failed) status.push('Some analysis needs a retry. Open the review for details.');
   if (positionCache?.saveError) status.push('Results could not be saved.');
   metrics.append(makeElement('p', 'overview-status', status.join(' ')));
   const start = makeElement('button', 'start-review', 'Start Review');
@@ -2138,7 +2182,8 @@ function renderReview() {
       const context = contextFor(review);
       if (!context) return;
       if (context.quality) context.quality.state = 'running';
-      await analyzeReviewTurn(context, review.turns.indexOf(turn), 'preview', { priority: ANALYSIS_PRIORITY.view + ++viewRequestSequence });
+      await analyzeReviewTurn(context, review.turns.indexOf(turn), 'preview',
+        { priority: ANALYSIS_PRIORITY.view + ++viewRequestSequence, retry: true });
       getReviewQueue().retryTurn(review.id, review.turns.indexOf(turn));
       await flushAnalysisSave(review, context.cache);
     } catch (_) { /* The position panel displays the error and retry action. */ }
@@ -2151,6 +2196,8 @@ function renderReview() {
     gridJson: JSON.stringify(turn.grid), rack: turn.rack,
     playerScore: Number(turn.mover_score) || 0, opponentScore: Number(turn.other_score) || 0,
     bagCount: Number(turn.bag_count), finalTurnsRemaining: Number(turn.bag_count) === 0 ? Number(turn.final_turns_remaining) : 0
+  }), (type, payload, options) => workerRequest(type, payload, {
+    ...options, priority: ANALYSIS_PRIORITY.view + ++viewRequestSequence
   }), 'Try an alternative using the rack and board before this turn, even when it is outside Quackle’s suggestions.');
   body.append(turnPanel);
 
@@ -3573,6 +3620,18 @@ function startMoveQuality(review) {
   const queue = getReviewQueue();
   const context = contextFor(review);
   if (!context) return Promise.resolve();
+  if (context.paused && (queue.openingPending(context) ||
+      context.states.some(state => ['pending', 'pending-preview', 'running', 'running-preview'].includes(state)))) {
+    context.paused = false;
+    if (context.quality) {
+      context.quality.state = 'running';
+      context.quality.message = 'Continuing win estimates…';
+      context.trend = deriveWinTrend(context);
+    }
+    syncVisibleContext(context);
+    queue.pump();
+    return Promise.resolve();
+  }
   context.quality = { state: 'running', evaluation: MOVE_QUALITY_EVALUATION, points: [], current: 0,
     opening: cachedOpeningPoint(context.openingInput || CrossplayOpening.describe(review), context.cache) || undefined,
     message: 'Preparing win estimates…' };
@@ -3591,15 +3650,15 @@ async function analyzeReviewTurn(context, index, phase = 'review', options = {})
       value.playedWin === cache.get(turn, 'review').selected.win) && drawWorkComplete(context, index);
   if (fullPointReady()) return { complete: true };
   const savedPoint = context.quality?.points.find(value => value.turnIndex === index);
-  if (phase === 'preview' && context.quality?.state === 'done' && savedPoint && !savedPoint.provisional &&
-      !canAnalyzeUnratedExchange(turn, savedPoint) &&
-      (savedPoint.category === 'unrated' || drawWorkComplete(context, index))) {
-    // Keep alternatives available for unrated turns in a restored review.
-    if (savedPoint.category === 'unrated' && !savedPoint.retryable && validAnalysisTurn(turn)) {
-      await ensurePositionAnalysis(review, turn, 'candidates', options);
-    }
-    // A failed full pass stays retryable; an early result cannot complete it.
-    return { complete: savedPoint.category === 'unrated' && !savedPoint.retryable };
+  if (phase === 'preview' && !options.retry && context.states[index] !== 'running-preview' &&
+      (context.states[index] === 'error' || (retryableTurn(savedPoint) && !savedPoint.provisional && !savedPoint.draw?.provisional))) {
+    return {complete: false, failed: true};
+  }
+  if (phase === 'preview' && savedPoint?.category === 'unrated' && !savedPoint.retryable &&
+      !savedPoint.provisional && !canAnalyzeUnratedExchange(turn, savedPoint)) {
+    // Keep alternatives available for permanently unrated turns.
+    if (validAnalysisTurn(turn)) await ensurePositionAnalysis(review, turn, 'candidates', options);
+    return {complete: true};
   }
   if (!context.quality) {
     context.quality = { state: 'running', evaluation: MOVE_QUALITY_EVALUATION, points: [], current: 0, message: 'Preparing win estimates…' };
@@ -3631,8 +3690,8 @@ async function analyzeReviewTurn(context, index, phase = 'review', options = {})
       }
       point = makeUnratedPoint(index, turn, missingExchangeTiles ? error.message
         : 'Quackle could not evaluate the played move: ' + error.message);
-      point.retryable = !missingExchangeTiles;
-      if (point.retryable) point.analysisKey = cache.key(turn, 'review');
+      if (missingExchangeTiles) point.retryable = false;
+      else Object.assign(point, turnFailure(cache, turn, 'review'));
       point.provisional = !missingExchangeTiles && phase === 'preview';
     }
   }
@@ -3651,8 +3710,7 @@ async function analyzeReviewTurn(context, index, phase = 'review', options = {})
         }
       } catch (error) {
         if (error.name === 'AbortError' || context.cancelled || owner !== analysisOwner()) throw error;
-        point.draw = {retryable: true, provisional: phase === 'preview',
-          analysisKey: cache.key(turn, 'draw'),
+        point.draw = {...turnFailure(cache, turn, 'draw'), provisional: phase === 'preview',
           reason: 'Rack draw analysis failed: ' + error.message};
       }
     }
@@ -3660,17 +3718,19 @@ async function analyzeReviewTurn(context, index, phase = 'review', options = {})
   if (context.cancelled || owner !== analysisOwner()) throw accountChanged();
   if (fullPointReady()) return { complete: true };
   const existing = context.quality.points.find(value => value.turnIndex === index);
-  // A cached full move can still have an early draw in flight. Preserve a
-  // newer failed full draw; its retry flag must survive that late early result.
-  if (phase === 'preview' && existing !== savedPoint && existing?.draw?.retryable && !existing.draw.provisional) {
-    return {complete: false};
+  // A late preview must not replace a newer full failure.
+  if (phase === 'preview' && existing !== savedPoint &&
+      ((existing?.retryable && !existing.provisional) || (existing?.draw?.retryable && !existing.draw.provisional))) {
+    return {complete: false, failed: true};
   }
   if (point.provisional && existing && !existing.provisional) {
     return { complete: Boolean(cache.get(turn, 'review')) && drawWorkComplete(context, index) };
   }
   context.quality.points = context.quality.points.filter(value => value.turnIndex !== index).concat(point).sort((a, b) => a.turnIndex - b.turnIndex);
   context.quality.current = context.quality.points.length;
-  const fullCount = context.quality.points.filter(value => !value.provisional).length;
+  const fullTurnComplete = value => !value.provisional && !value.draw?.provisional && !retryableTurn(value) &&
+    (value.category === 'unrated' || drawWorkComplete(context, value.turnIndex));
+  const fullCount = context.quality.points.filter(fullTurnComplete).length;
   context.quality.message = 'Estimated ' + context.quality.current + ' of ' + review.turns.length + ' moves · ' + fullCount + ' fully checked. You can keep reviewing.';
   context.trend = deriveWinTrend(context);
   if (context.paused) {
@@ -3678,8 +3738,8 @@ async function analyzeReviewTurn(context, index, phase = 'review', options = {})
     context.quality.message = context.trend.message = 'Analysis paused. A running move can finish and save.';
   }
   syncVisibleContext(context);
-  return { complete: !point.provisional && !point.draw?.provisional &&
-    (phase !== 'preview' || drawWorkComplete(context, index)) };
+  if (phase === 'review' && retryableTurn(point)) return {complete: false, failed: true};
+  return { complete: fullTurnComplete(point) };
 }
 function deriveWinTrend(context, done = false) {
   const points = (context.quality?.points || []).filter(point => Number.isFinite(point.playedWin)).flatMap(point => {
@@ -3699,8 +3759,10 @@ function deriveWinTrend(context, done = false) {
     const mine = Number(context.review.my_score) === Number(context.review.opponent_score) ? 50 : Number(context.review.my_score) > Number(context.review.opponent_score) ? 100 : 0;
     points.push({ x: context.review.turns.length, mine, theirs: 100 - mine, actual: true });
   }
-  return { state: done ? 'done' : 'running', evaluation: MOVE_QUALITY_EVALUATION, points,
-    message: done ? 'Win trend complete. Estimates separate moves and recorded rack draws.' : 'Win trend adds rack draws as their estimates finish.' };
+  const state = done ? 'done' : context.quality?.state === 'error' ? 'error' : 'running';
+  return { state, evaluation: MOVE_QUALITY_EVALUATION, points,
+    message: done ? 'Win trend complete. Estimates separate moves and recorded rack draws.'
+      : state === 'error' ? REVIEW_RETRY_MESSAGE : 'Win trend adds rack draws as their estimates finish.' };
 }
 async function finishReviewAnalysis(context) {
   if (context.cancelled || context.owner !== analysisOwner()) return;
@@ -3708,12 +3770,36 @@ async function finishReviewAnalysis(context) {
       context.quality?.points.some(point => point.provisional || point.draw?.provisional)) return;
   if (!context.quality) context.quality = { evaluation: MOVE_QUALITY_EVALUATION, points: [] };
   const quality = context.quality;
+  const retryable = quality.points.some(retryableTurn) || quality.opening?.retryable;
+  const failed = retryable || context.states.includes('error') || context.openingState === 'error';
+  if (failed) {
+    quality.state = 'error';
+    quality.message = REVIEW_RETRY_MESSAGE;
+    context.trend = deriveWinTrend(context);
+    if (retryable) {
+      markAnalysisComplete('move_quality', quality, context.cache);
+      markAnalysisComplete('win_trend', context.trend, context.cache);
+    }
+    syncVisibleContext(context);
+    const saveError = await flushAnalysisSave(context.review, context.cache);
+    if (saveError && context.quality === quality && quality.state === 'error') {
+      quality.message += ' Save failed: ' + saveError;
+      syncVisibleContext(context);
+    }
+    return;
+  }
   const missingOpportunity = (quality.points || []).filter(point =>
     Number.isFinite(point.playedWin) && !point.opportunity &&
     context.cache.get(context.review.turns[point.turnIndex], 'review')?.selected.action === 'place');
   if (missingOpportunity.length) {
+    const {points, state: qualityState} = quality;
+    const {paused, openingState} = context;
+    const states = [...context.states];
     const frequencies = await loadWordFrequency().catch(() => null);
-    if (context.cancelled || context.owner !== analysisOwner() || context.quality !== quality) return;
+    if (context.cancelled || context.owner !== analysisOwner() || context.quality !== quality ||
+        quality.points !== points || quality.state !== qualityState || context.paused !== paused ||
+        context.openingState !== openingState ||
+        context.states.length !== states.length || context.states.some((state, index) => state !== states[index])) return;
     if (frequencies) for (const point of missingOpportunity) {
       const turn = context.review.turns[point.turnIndex];
       point.opportunity = CrossplayLuck.opportunityContext(turn,
@@ -3727,7 +3813,7 @@ async function finishReviewAnalysis(context) {
   markAnalysisComplete('win_trend', context.trend, context.cache);
   syncVisibleContext(context);
   const saveError = await flushAnalysisSave(context.review, context.cache);
-  if (context.cancelled || context.owner !== analysisOwner() || context.quality !== quality) return;
+  if (context.cancelled || context.owner !== analysisOwner() || context.quality !== quality || quality.state !== 'done') return;
   if (saveError) context.quality.message += ' Save failed: ' + saveError;
   syncVisibleContext(context);
 }
@@ -3763,17 +3849,8 @@ function reviewMove(turn, move) {
   };
 }
 
-// Each worker holds its own engine and dictionary, so phones and low-memory devices get fewer.
-function quacklePoolSize() {
-  const cores = navigator.hardwareConcurrency || 2;
-  const constrained = matchMedia('(pointer: coarse)').matches || (navigator.deviceMemory || 8) <= 4;
-  return Math.max(1, Math.min(constrained ? 2 : 3, cores - 1));
-}
-
 function workerRequest(type, payload = {}, options = {}) {
-  if (!quacklePool) quacklePool = new QuackleWorkerPool({
-    createWorker: () => new Worker('quackle-worker.js'), size: quacklePoolSize()
-  });
+  if (!quacklePool) quacklePool = QuackleWorkerPool.forBrowser();
   return quacklePool.run(type, payload, options);
 }
 
@@ -3848,6 +3925,12 @@ async function ensureRackDrawAnalysis(context, turn, phase, options = {}) {
       playerScore: Number(turn.mover_score) || 0, opponentScore: Number(turn.other_score) || 0,
       bagCount: turn.bag_count, finalTurnsRemaining: turn.bag_count === 0 ? turn.final_turns_remaining : 0,
       played: CrossplayReview.playedMove(turn), seed: cache.seed(turn), iterations};
+    const reviewKind = phase === 'preview' ? 'preview' : 'review';
+    const baseline = cache.get(turn, reviewKind);
+    if (terminalAnalysisTurn(turn) && CrossplayReview.validResult(baseline, turn, payload.seed,
+      iterations, phase === 'preview' ? PREVIEW_MOVE_COUNT : MOVE_COUNT)) {
+      payload.beforeWin = {win: baseline.selected.win, samples: iterations, seed: payload.seed};
+    }
     const result = await workerRequest('simulateDraw', payload, {priority, signal, taskKey, onStart});
     if (context.cancelled || owner !== analysisOwner()) throw accountChanged();
     if (!CrossplayReview.validDrawResult(result, turn, payload.seed, iterations)) throw new Error('Quackle returned incomplete rack draw results.');
@@ -3900,7 +3983,7 @@ function prepareViewedTurn() {
   const key = turn && validAnalysisTurn(turn) ? positionCache.key(turn, 'preview') : null;
   if (viewedTurnRequest?.key === key && viewedTurnRequest.review === review) return;
   viewedTurnRequest = null;
-  if (!key || !context || positionCache.errors.has(key)) return;
+  if (!key || !context || context.states[index] === 'error' || positionCache.errors.has(key)) return;
   const cached = positionCache.get(turn, 'review') || positionCache.get(turn, 'preview');
   if (context.paused && !cached) return;
   const point = context.quality?.points.find(value => value.turnIndex === index);
@@ -3920,23 +4003,30 @@ function renderPositionAnalysis(turn, button, status, output) {
   const candidates = positionCache.get(turn, 'candidates');
   const point = qualityPointForTurn(currentTurnIndex);
   const simulating = ['review', 'preview'].some(kind => positionCache.pending.has(positionCache.key(turn, kind)));
-  const error = full || simulating ? null : (positionCache.errors.get(positionCache.key(turn, 'review')) ||
+  const drawRunning = ['draw', 'draw-preview'].some(kind => positionCache.pending.has(positionCache.key(turn, kind)));
+  const moveError = full || simulating ? null : (point?.retryable ? point.reason || 'The move could not be analyzed.' : null) ||
+    positionCache.errors.get(positionCache.key(turn, 'review')) ||
     positionCache.errors.get(positionCache.key(turn, 'preview')) ||
-    positionCache.errors.get(positionCache.key(turn, 'candidates')));
+    positionCache.errors.get(positionCache.key(turn, 'candidates'));
+  const drawError = drawRunning || positionCache.get(turn, 'draw') ? null :
+    (point?.draw?.retryable ? point.draw.reason || 'The rack draw could not be analyzed.' : null) ||
+    positionCache.errors.get(positionCache.key(turn, 'draw')) ||
+    positionCache.errors.get(positionCache.key(turn, 'draw-preview'));
   output.replaceChildren();
   if (simulation || candidates) renderMoves((simulation || candidates).moves, simulation || candidates, output, turn);
   status.textContent = simulation ? (full ? 'Full estimate' : 'Early estimate') + ' · ' + simulation.iterationsCompleted + ' simulations per move.' +
-    (!full ? (error ? ' Full estimate failed: ' + error : moveQualityResults?.state === 'stopped'
+    (!full ? (moveError ? ' Full estimate failed: ' + moveError : drawError ? '' : moveQualityResults?.state === 'stopped'
       ? ' Full analysis is paused.' : ' Full analysis continues in the background.') : '')
-    : error ? 'Analysis failed: ' + error
+    : moveError ? 'Analysis failed: ' + moveError
     : !validAnalysisTurn(turn) ? 'This turn is missing a valid board, rack, or bag count.'
     : simulating && candidates ? 'Move candidates ready · simulating win chances for this turn…'
     : simulating ? 'Simulating candidates and win chances for this turn…'
     : candidates && point?.category === 'unrated' && !point.retryable ? 'Move candidates ready. This turn is unrated: ' + point.reason
     : candidates ? 'Move candidates ready · win estimates are queued in the background.'
     : 'Analysis is queued in the background. You can keep reviewing the game.';
+  if (drawError) status.textContent += ' ' + drawError;
   if (positionCache.saveError) status.textContent += ' Save failed: ' + positionCache.saveError;
-  button.classList.toggle('hidden', !error && !positionCache.saveError);
+  button.classList.toggle('hidden', !moveError && !drawError && !positionCache.saveError);
   button.disabled = false;
 }
 

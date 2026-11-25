@@ -127,6 +127,59 @@ class RackDrawBrowserTest(unittest.TestCase):
         }''')
         self.assertEqual(result, {'calls': [], 'state': 'stopped'})
 
+    def test_stopping_full_move_without_draw_preview_keeps_draw_pending(self):
+        self.assert_stopped_full_move_resumes_draw(False)
+
+    def test_stopping_full_move_with_draw_preview_keeps_draw_pending(self):
+        self.assert_stopped_full_move_resumes_draw(True)
+
+    def assert_stopped_full_move_resumes_draw(self, preview):
+        self.prepare_draw()
+        result = self.page.evaluate('''async preview => {
+          const context=contextFor(currentReview), request=workerRequest, apiRequest=api;
+          currentReview.turns=context.review.turns.slice(0,1);
+          context.openingState='unavailable';
+          context.states=['pending'];
+          if(preview) await analyzeReviewTurn(context,0,'preview');
+          const saves=[], moves=[];
+          api = (path,options) => {
+            if(path.endsWith('/analysis') && options?.method==='PUT') {
+              const quality=JSON.parse(options.body).move_quality;
+              if(quality) saves.push(quality.state);
+            }
+            return apiRequest(path,options);
+          };
+          let release;
+          workerRequest=(type,payload,options)=>{
+            if(type!=='simulateReview') return request(type,payload,options);
+            moves.push(payload.iterations);
+            if(payload.iterations!==277 || release) return request(type,payload,options);
+            return new Promise(resolve=>release=()=>resolve(request(type,payload,options)));
+          };
+          const drain=async()=>{
+            while(reviewQueue.running||reviewQueue.loading.size) await new Promise(resolve=>setTimeout(resolve,1));
+            await analysisSaveQueue;
+          };
+          reviewQueue.concurrency=1; reviewQueue.pump();
+          while(!release) await new Promise(resolve=>setTimeout(resolve,1));
+          pauseReviewAnalysis(currentReview);
+          release(); await drain();
+          reviewQueue.pump(); await drain();
+          const stopped={queue:context.states[0],quality:context.quality.state,moves:[...moves],
+            draws:[...drawCalls],saves:[...saves],hasFullMove:Boolean(context.cache.get(currentReview.turns[0],'review'))};
+          await startMoveQuality(currentReview); await drain();
+          return {stopped,resumed:{queue:context.states[0],quality:context.quality.state,
+            moves,draws:drawCalls,saves,drawSamples:context.quality.points[0].draw?.samples}};
+        }''', preview)
+        self.assertEqual(result['stopped'], {
+            'queue': 'pending', 'quality': 'stopped', 'moves': [277],
+            'draws': [64] if preview else [], 'saves': [], 'hasFullMove': True,
+        })
+        self.assertEqual(result['resumed'], {
+            'queue': 'done', 'quality': 'done', 'moves': [277],
+            'draws': [64, 277] if preview else [277], 'saves': ['done'], 'drawSamples': 277,
+        })
+
     def test_real_worker_draw_matches_recorded_move_and_validates_output(self):
         self.open_game()
         result=self.page.evaluate("""async () => {
@@ -153,16 +206,18 @@ class RackDrawBrowserTest(unittest.TestCase):
             :Promise.reject(new Error('Full draw failed'));
           const pending=analyzeReviewTurn(context,0,'preview');
           while(!release)await new Promise(resolve=>setTimeout(resolve,0));
-          await analyzeReviewTurn(context,0,'review');
+          const full=await analyzeReviewTurn(context,0,'review');
           await finishReviewAnalysis(context);
-          release();await pending;
+          release();const early=await pending;
           const failed=structuredClone(context.quality.points[0]);
           const state=context.quality.state;
           workerRequest=request;
           await analyzeReviewTurn(context,0,'review');
-          return {failed,state,recovered:context.quality.points[0]};
+          return {failed,state,full,early,recovered:context.quality.points[0]};
         }''')
-        self.assertEqual(result['state'],'done')
+        self.assertEqual(result['state'],'error')
+        self.assertTrue(result['full']['failed'])
+        self.assertTrue(result['early']['failed'])
         self.assertTrue(result['failed']['draw'].get('retryable'))
         self.assertFalse(result['failed']['draw'].get('provisional',False))
         self.assertEqual(result['recovered']['draw']['samples'],277)

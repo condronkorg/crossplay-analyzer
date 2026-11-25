@@ -2,6 +2,8 @@
 import re
 import unittest
 
+from playwright.sync_api import expect
+
 import test_review_browser as review_browser
 
 
@@ -56,21 +58,43 @@ class AnalysisRestoreBrowserTest(unittest.TestCase):
             review.stored_analysis.turn_analyses[preview] = result;
             return full;
           };
-          window.restoreMoveFailure = (review, index, {keyed=true, preview=true, removeFull=true}={}) => {
+          window.restoreMoveFailure = (review, index, {keyed=true, preview=true, removeFull=true, executionPolicy}={}) => {
             const cache = new AnalysisCache({}, POSITION_PARAMETERS), turn = review.turns[index];
             const key = cache.key(turn, 'review');
             if (preview) restorePreview(review, index);
             if (removeFull) delete review.stored_analysis.turn_analyses[key];
             const point = {...makeUnratedPoint(index, turn, 'Synthetic full analysis timeout.'),
-              retryable:true, provisional:false, ...(keyed ? {analysisKey:key} : {})};
+              retryable:true, provisional:false, ...(keyed ? {analysisKey:key} : {}), ...(executionPolicy ? {executionPolicy} : {})};
             review.stored_analysis.move_quality.points = review.stored_analysis.move_quality.points
               .filter(value => value.turnIndex !== index).concat(point).sort((a,b) => a.turnIndex-b.turnIndex);
             return key;
           };
-          window.restoreInstall = review => {
+          window.restoreTerminal = (review, index) => {
+            const cache = new AnalysisCache({}, POSITION_PARAMETERS), turn = review.turns[index];
+            const move = structuredClone(review.stored_analysis.turn_analyses[cache.key(turn, 'review')]);
+            const draw = structuredClone(review.stored_analysis.turn_analyses[cache.key(turn, 'draw')]);
+            turn.bag_count = 21;
+            const available=Object.entries(CrossplayLuck.TILE_COUNTS)
+              .flatMap(([tile, count]) => Array(count).fill(tile));
+            const boardCount=available.length-turn.rack.length-21-7;
+            const refill=CrossplayReview.rackDraw({...turn,bag_count:available.length-turn.rack.length-7});
+            for (const tile of turn.rack + refill.drawn) available.splice(available.indexOf(tile),1);
+            const boardTiles=available.slice(0,boardCount).map(tile=>tile==='?'?'a':tile).join('');
+            turn.grid=turn.grid.map((row,i)=>i<5?boardTiles.slice(i*15,(i+1)*15).padEnd(15,'.'):row);
+            const seed = cache.seed(turn);
+            const terminal = {seed, bagCount:21, plies:-1, playToEnd:true,
+              winModel:'terminal', simulationMode:'play-to-end', endgamePolicy:'crossplay-endgame-v1'};
+            for (const candidate of [...move.moves, move.selected, move.best]) candidate.terminalSamples = 277;
+            review.stored_analysis.turn_analyses[cache.key(turn, 'review')] = Object.assign(move, terminal);
+            if (draw) review.stored_analysis.turn_analyses[cache.key(turn, 'draw')] = Object.assign(draw, terminal);
+            review.stored_analysis.move_quality.points.find(point => point.turnIndex===index).endgamePolicy = terminal.endgamePolicy;
+            return {move, draw};
+          };
+          window.restoreInstall = (review, shared=false) => {
             reviewQueue?.close(); reviewQueue = null;
             const queue = getReviewQueue(); queue.concurrency = 0;
-            const context = makeReviewContext(review, analysisOwner());
+            const context = makeReviewContext(review, analysisOwner(), shared);
+            viewingSharedGame = shared;
             queue.contexts.set(review.id, context); queue.ids=[review.id]; queue.activeId=review.id;
             currentReview=review; activeGameId=review.id; positionCache=context.cache;
             moveQualityResults=context.quality; trendResults=context.trend;
@@ -110,6 +134,27 @@ class AnalysisRestoreBrowserTest(unittest.TestCase):
         self.assertEqual(result['calls'], [])
         self.assertEqual(result['states'], ['done'] * 4 + ['error', 'error'])
         self.assertEqual(result['failed'], [4, 5])
+
+    def test_reset_preserves_current_terminal_failure_in_another_game(self):
+        self.prepare_saved_review()
+        result = self.page.evaluate('''async () => {
+          const review=structuredClone(restoreSaved), index=0;
+          restoreTerminal(review,index);
+          restoreMoveFailure(review,index,{executionPolicy:'bounded-terminal-v1'});
+          const other=makeReviewContext(review,analysisOwner());
+          other.review.id='mockgame02';
+          reviewQueue.contexts.set(other.review.id,other);
+          const queue=getReviewQueue;
+          getReviewQueue=()=>{const current=queue();current.concurrency=0;return current;};
+          const cleared=await restartEntireGameAnalysis(currentReview);
+          const restored=reviewQueue.contexts.get(other.review.id);
+          return {cleared,state:restored.states[index],quality:restored.quality.state,
+            reason:restored.quality.points.find(point=>point.turnIndex===index).reason};
+        }''')
+        self.assertTrue(result['cleared'])
+        self.assertEqual(result['state'], 'error')
+        self.assertEqual(result['quality'], 'error')
+        self.assertIn('Synthetic full analysis timeout', result['reason'])
 
     def test_current_raw_full_result_replaces_stale_failure_without_engine_work(self):
         self.prepare_saved_review()
@@ -202,7 +247,7 @@ class AnalysisRestoreBrowserTest(unittest.TestCase):
             staticMoves:[move],bestStaticEquity:0,candidateCount:1,totalPlayaheads:277,
             plies:-1,playToEnd:true,simulationMode:'play-to-end',winModel:'terminal',
             bagCount:2,finalTurnsRemaining:0,iterationsRequested:277,iterationsCompleted:277};
-          restoreMoveFailure(review,index);
+          restoreMoveFailure(review,index,{executionPolicy:'bounded-terminal-v1'});
           const current=restoreInstall(review), currentPoint=current.quality.points.find(point=>point.turnIndex===index);
           const changed=structuredClone(review);
           changed.stored_analysis.move_quality.points.find(point=>point.turnIndex===index).analysisKey=
@@ -212,6 +257,151 @@ class AnalysisRestoreBrowserTest(unittest.TestCase):
         self.assertEqual(result['states'], ['done'] * 4 + ['error', 'done'])
         self.assertTrue(result['point']['retryable'])
         self.assertEqual(result['changed'], ['done'] * 4 + ['pending-preview', 'done'])
+
+    def test_shared_terminal_preview_shows_saved_failure_and_manual_retry(self):
+        self.prepare_saved_review()
+        self.page.evaluate('''() => {
+          const review=structuredClone(restoreSaved), index=0;
+          const {move}=restoreTerminal(review,index);
+          restoreMoveFailure(review,index,{executionPolicy:'bounded-terminal-v1'});
+          restoreInstall(review,true);
+          const request=workerRequest;
+          workerRequest=(type,payload,options)=>type==='simulateReview' && payload.rack===review.turns[index].rack
+            ?Promise.resolve(move):request(type,payload,options);
+          reviewQueue.concurrency=1;
+          prepareViewedTurn=window.automaticViewedTurn;
+          currentTurnIndex=index; renderReview();
+        }''')
+        status = self.page.locator('#engineStatus')
+        retry = self.page.get_by_role('button', name='Retry this turn', exact=True)
+        expect(status).to_contain_text('Early estimate')
+        expect(status).to_contain_text('Synthetic full analysis timeout')
+        expect(status).not_to_contain_text('continues in the background')
+        expect(retry).to_be_enabled()
+        self.open_statistics()
+        expect(self.page.locator('.quality-panel .trend-status')).not_to_contain_text('Your review is ready')
+        expect(self.page.locator('.trend-panel .trend-status')).not_to_contain_text('Win trend complete')
+        self.page.get_by_role('button', name='Game summary', exact=True).click()
+        expect(self.page.locator('.overview-status')).not_to_contain_text('All moves checked')
+        expect(self.page.locator('.overview-status')).to_contain_text('needs a retry')
+        self.start_review()
+        self.assertEqual(self.page.evaluate('restoreCalls'), [])
+        retry.click()
+        expect(status).to_contain_text('Full estimate')
+        expect(retry).to_be_hidden()
+
+    def test_legacy_terminal_failure_retries_once_and_new_failure_survives_save(self):
+        self.prepare_saved_review()
+        result = self.page.evaluate('''async () => {
+          const review=structuredClone(restoreSaved), index=0;
+          restoreTerminal(review,index);
+          restoreMoveFailure(review,index,{keyed:false});
+          await api('games/'+review.id+'/analysis',{method:'PUT',headers:{'Content-Type':'application/json'},
+            body:JSON.stringify({analysis_version:ANALYSIS_VERSION,turn_analyses:review.stored_analysis.turn_analyses})});
+          const context=restoreInstall(review), initial=context.states[index], request=workerRequest;
+          let attempts=0;
+          workerRequest=(type,payload,options)=>{
+            if (type==='simulateReview' && payload.rack===review.turns[index].rack) {
+              attempts++;
+              return Promise.reject(new Error('Synthetic current full timeout.'));
+            }
+            return request(type,payload,options);
+          };
+          reviewQueue.concurrency=1;
+          await window.automaticAnalysis(review); await restoreDrain(); await analysisSaveQueue;
+          const saved=(await api('games/'+review.id+'/review')).stored_analysis;
+          const restored=restoreInstall({...review, stored_analysis:saved});
+          // The synthetic turn's original server record has a large bag.
+          // Restore with the terminal identity used for the actual save.
+          const point=saved.move_quality.points.find(value=>value.turnIndex===index);
+          reviewQueue.concurrency=1;
+          await window.automaticAnalysis(restored.review); await restoreDrain();
+          return {initial,attempts,state:context.states[index],quality:context.quality.state,
+            trend:context.trend.state,savedQuality:saved.move_quality.state,
+            restored:restored.states[index],point};
+        }''')
+        self.assertEqual(result['initial'], 'pending-preview')
+        self.assertEqual(result['attempts'], 1)
+        self.assertEqual(result['state'], 'error')
+        self.assertEqual(result['quality'], 'error')
+        self.assertEqual(result['trend'], 'error')
+        self.assertEqual(result['savedQuality'], 'error')
+        self.assertEqual(result['restored'], 'error')
+        self.assertEqual(result['point'].get('executionPolicy'), 'bounded-terminal-v1')
+
+    def test_shared_saved_terminal_draw_failure_retries_only_draw(self):
+        self.prepare_saved_review()
+        self.page.evaluate('''() => {
+          const review=structuredClone(restoreSaved), index=0;
+          const {draw}=restoreTerminal(review,index);
+          const key=restorePreview(review,index,'draw');
+          delete review.stored_analysis.turn_analyses[key];
+          const point=review.stored_analysis.move_quality.points.find(value=>value.turnIndex===index);
+          point.draw={retryable:true,reason:'Synthetic saved terminal draw timeout.',analysisKey:key,
+            provisional:false,executionPolicy:'bounded-terminal-v1'};
+          restoreInstall(review,true);
+          workerRequest=async (type,payload)=>{
+            restoreCalls.push({type,iterations:payload.iterations});
+            return draw;
+          };
+          reviewQueue.concurrency=1;
+          prepareViewedTurn=window.automaticViewedTurn;
+          currentTurnIndex=index; renderReview();
+        }''')
+        status = self.page.locator('#engineStatus')
+        retry = self.page.get_by_role('button', name='Retry this turn', exact=True)
+        expect(status).to_contain_text('Full estimate')
+        expect(status).to_contain_text('Synthetic saved terminal draw timeout')
+        self.assertEqual(self.page.evaluate('restoreCalls'), [])
+        expect(retry).to_be_enabled()
+        retry.click()
+        expect(status).not_to_contain_text('Synthetic saved terminal draw timeout')
+        expect(retry).to_be_hidden()
+        self.assertEqual(self.page.evaluate('restoreCalls'), [{'type': 'simulateDraw', 'iterations': 277}])
+        self.page.wait_for_function("contextFor(currentReview).states.every(state=>state==='done')")
+
+    def test_terminal_draw_retry_uses_only_matching_valid_move_baseline(self):
+        self.prepare_saved_review()
+        result = self.page.evaluate('''async () => {
+          const review=structuredClone(restoreSaved), index=0, turn=review.turns[index];
+          const {move,draw}=restoreTerminal(review,index), cache=new AnalysisCache({},POSITION_PARAMETERS);
+          const drawKey=restorePreview(review,index,'draw'), reviewKey=restorePreview(review,index);
+          delete review.stored_analysis.turn_analyses[drawKey];
+          const point=review.stored_analysis.move_quality.points.find(point=>point.turnIndex===index);
+          point.draw={retryable:true,reason:'Synthetic unmarked draw timeout.',analysisKey:drawKey};
+          const context=restoreInstall(review,true), initial=context.states[index];
+          const payloads=[];
+          let fail=true;
+          workerRequest=async (type,payload)=>{
+            payloads.push(payload);
+            if (fail) throw new Error('Synthetic terminal draw timeout.');
+            return {...draw,iterationsRequested:payload.iterations,iterationsCompleted:payload.iterations};
+          };
+          const failed=await analyzeReviewTurn(context,index,'review');
+          const failure=context.quality.points.find(point=>point.turnIndex===index).draw;
+          fail=false;
+          await ensureRackDrawAnalysis(context,turn,'review');
+          delete context.cache.results[drawKey];
+          const previewKey=cache.key(turn,'preview');
+          context.cache.results[previewKey]={...context.cache.results[previewKey],seed:move.seed+1};
+          delete context.cache.results[cache.key(turn,'draw-preview')];
+          await ensureRackDrawAnalysis(context,turn,'preview');
+          delete context.cache.results[cache.key(turn,'draw-preview')];
+          context.cache.results[previewKey]=review.stored_analysis.turn_analyses[previewKey];
+          await ensureRackDrawAnalysis(context,turn,'preview');
+          return {initial,failed,failure,payloads,move,
+            preserved:context.cache.get(turn,'review')===review.stored_analysis.turn_analyses[reviewKey]};
+        }''')
+        self.assertEqual(result['initial'], 'pending-preview')
+        self.assertTrue(result['failed'].get('failed'))
+        self.assertEqual(result['failure'].get('executionPolicy'), 'bounded-terminal-v1')
+        self.assertTrue(result['preserved'])
+        self.assertEqual(len(result['payloads']), 4)
+        for payload, samples in zip(result['payloads'], [277, 277, None, 64]):
+            if samples is None:
+                self.assertNotIn('beforeWin', payload)
+            else:
+                self.assertEqual(payload['beforeWin'], {'win': .3, 'samples': samples, 'seed': result['move']['seed']})
 
     def test_new_full_move_failure_records_the_current_analysis_identity(self):
         self.prepare_saved_review()
@@ -342,6 +532,63 @@ class AnalysisRestoreBrowserTest(unittest.TestCase):
             self.assertEqual(self.page.evaluate('restoreEngineCalls'), [])
             self.assertEqual(self.page.evaluate('contextFor(currentReview).openingState'), 'done')
 
+
+    def test_queued_completion_saves_an_immutable_summary_after_turn_retry(self):
+        self.prepare_saved_review()
+        result = self.page.evaluate('''async () => {
+          const review=structuredClone(restoreSaved), context=restoreInstall(review);
+          let releaseSave;
+          analysisSaveQueue=new Promise(resolve=>releaseSave=resolve);
+          const writes=[], request=api;
+          api=(path,options)=>{
+            if(path.endsWith('/analysis')) writes.push(JSON.parse(options.body));
+            return request(path,options);
+          };
+          const finishing=finishReviewAnalysis(context);
+          const originalWord=context.quality.points[0].playedMove.word, originalMine=context.trend.points[0].mine;
+          context.cache.saveError='Synthetic previous save interruption.';
+          currentTurnIndex=0; renderReview();
+          document.querySelector('.analysis-panel .analysis-button').click();
+          const liveState=context.quality.state;
+          context.quality.points[0].playedMove.word='Changed after the save was queued';
+          context.trend.points[0].mine=-1;
+          releaseSave();
+          await finishing; await analysisSaveQueue;
+          const saved=writes.find(body=>body.move_quality);
+          return {liveState,quality:saved.move_quality.state,trend:saved.win_trend.state,
+            savedWord:saved.move_quality.points[0].playedMove.word,originalWord,
+            savedMine:saved.win_trend.points[0].mine,originalMine};
+        }''')
+        self.assertEqual(result['liveState'], 'running')
+        self.assertEqual(result['quality'], 'done')
+        self.assertEqual(result['trend'], 'done')
+        self.assertEqual(result['savedWord'], result['originalWord'])
+        self.assertEqual(result['savedMine'], result['originalMine'])
+
+    def test_turn_retry_during_frequency_wait_leaves_review_pending(self):
+        self.prepare_saved_review()
+        result = self.page.evaluate('''async () => {
+          const review=structuredClone(restoreSaved), context=restoreInstall(review), quality=context.quality;
+          delete quality.points[0].opportunity;
+          let releaseFrequency;
+          wordFrequencyPromise=new Promise(resolve=>releaseFrequency=()=>resolve(new Map()));
+          const writes=[], request=api;
+          api=(path,options)=>{
+            if(path.endsWith('/analysis')) writes.push(JSON.parse(options.body));
+            return request(path,options);
+          };
+          const finishing=finishReviewAnalysis(context);
+          context.cache.saveError='Synthetic previous save interruption.';
+          currentTurnIndex=0; renderReview();
+          document.querySelector('.analysis-panel .analysis-button').click();
+          await new Promise(resolve=>setTimeout(resolve,0));
+          releaseFrequency();
+          await finishing; await analysisSaveQueue;
+          return {sameQuality:quality===context.quality, state:quality.state, turnState:context.states[0],
+            wroteSummary:writes.some(body=>Boolean(body.move_quality))};
+        }''')
+        self.assertEqual(result, {'sameQuality': True, 'state': 'running',
+                                  'turnState': 'pending-preview', 'wroteSummary': False})
 
     def test_old_completion_cannot_finish_a_rebuilt_review_after_frequency_wait(self):
         self.prepare_saved_review()

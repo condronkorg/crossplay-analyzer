@@ -276,6 +276,46 @@ test('a turn abort on an open queue is an error and cannot complete a game', asy
   queue.close();
 });
 
+test('a returned failure blocks completion until explicit retry', async () => {
+  let attempted = 0, completed = 0;
+  const queue = new ReviewQueue({ load: async id => ({ review: { id, turns: [{}] } }),
+    run: async () => ({failed: ++attempted === 1}),
+    complete: () => { completed++; }
+  });
+  queue.add([{ id: 'saved', status: 'completed' }]); await tick();
+  assert.equal(queue.contexts.get('saved').states[0], 'error');
+  assert.equal(attempted, 1);
+  assert.equal(completed, 0);
+  queue.retryTurn('saved', 0); await tick();
+  assert.equal(queue.contexts.get('saved').states[0], 'done');
+  assert.equal(completed, 1);
+  queue.close();
+});
+
+test('a paused full job that returns incomplete stays pending until resumed', async () => {
+  let attempted = 0, completed = 0;
+  const queue = new ReviewQueue({ load: async id => ({ review: { id, turns: [{}] } }),
+    run: async context => {
+      if (++attempted === 1) {
+        context.paused = true;
+        return {complete: false};
+      }
+    },
+    complete: () => { completed++; }
+  });
+  queue.add([{ id: 'saved', status: 'completed' }]); await tick();
+  const context = queue.contexts.get('saved');
+  assert.equal(context.states[0], 'pending');
+  assert.equal(attempted, 1);
+  assert.equal(completed, 0);
+  context.paused = false;
+  queue.pump(); await tick();
+  assert.equal(context.states[0], 'done');
+  assert.equal(attempted, 2);
+  assert.equal(completed, 1);
+  queue.close();
+});
+
 test('a directly opened game remains queued when another game is selected', async () => {
   const calls = [];
   const queue = new ReviewQueue({ concurrency: 1,
