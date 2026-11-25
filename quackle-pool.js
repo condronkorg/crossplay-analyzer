@@ -12,6 +12,18 @@
   }
 
   class QuackleWorkerPool {
+    static browserSize() {
+      const cores = navigator.hardwareConcurrency || 2;
+      const constrained = matchMedia('(pointer: coarse)').matches || (navigator.deviceMemory || 8) <= 4;
+      return Math.max(1, Math.min(constrained ? 2 : 3, cores - 1));
+    }
+
+    static forBrowser() {
+      return new QuackleWorkerPool({
+        createWorker: () => new Worker('quackle-worker.js'), size: this.browserSize()
+      });
+    }
+
     constructor({ createWorker, size = 1, timeout = 120000 } = {}) {
       this.createWorker = createWorker;
       this.maxSize = Math.max(1, size);
@@ -22,82 +34,102 @@
       this.nextId = 0;
       this.sequence = 0;
       this.partial = new Map();
-      this.expandedJobs = new Map();
-      this.expandedOptions = new Map();
+      this.batchJobs = new Map();
+      this.batchOptions = new Map();
       this.generation = 0;
     }
 
     // Higher priorities run first; equal priorities run in request order.
     // Aborting a signal only cancels work that has not reached a worker yet.
     run(type, payload = {}, options = {}) {
-      if (
-        payload.bagCount >= 1 &&
-        payload.bagCount <= 7 &&
-        payload.iterations === 277 &&
-        ['simulateReview', 'simulateKibitz', 'simulateMove'].includes(type)
-      ) {
-        return this.runExpanded(type, payload, options);
-      }
+      const terminal = Number.isInteger(payload.bagCount) &&
+        payload.bagCount >= 0 && payload.bagCount <= 21;
+      if (terminal && ['simulateReview', 'simulateKibitz', 'simulateMove', 'simulateDraw'].includes(type))
+        return this.runBatched(type, payload, options);
       return this.runSingle(type, payload, options);
     }
 
-    runExpanded(type, payload, options) {
+    runBatched(type, payload, options) {
       const key = JSON.stringify([type, payload]);
       if (options.signal?.aborted) return Promise.reject(abortError());
+      if (!Number.isInteger(payload.iterations) || payload.iterations < 1 || payload.iterations > 277)
+        return Promise.reject(new Error('Simulation iterations must be between 1 and 277.'));
       const generation = this.generation;
-      const existing = this.expandedJobs.get(key);
+      const existing = this.batchJobs.get(key);
       if (existing) {
-        return existing.catch((error) => {
+        if (options.priority !== undefined && existing.options.taskKey)
+          this.promote(existing.options.taskKey, options.priority);
+        return existing.promise.catch((error) => {
           if (
             error.name === 'AbortError' &&
             !options.signal?.aborted &&
             generation === this.generation
           )
-            return this.runExpanded(type, payload, options);
+            return this.runBatched(type, payload, options);
           throw error;
         });
       }
-      options = { ...options };
-      if (options.taskKey) this.expandedOptions.set(options.taskKey, options);
-      const promise = this.computeExpanded(key, type, payload, options, generation).finally(() => {
-        if (this.expandedOptions.get(options.taskKey) === options)
-          this.expandedOptions.delete(options.taskKey);
-        if (this.expandedJobs.get(key) === promise) this.expandedJobs.delete(key);
-      });
-      this.expandedJobs.set(key, promise);
-      return promise;
-    }
-
-    async computeExpanded(key, type, payload, options, generation) {
-      let state = this.partial.get(key);
+      const onStart = options.onStart;
+      let started = false;
+      options = { ...options, onStart: onStart && (() => {
+        if (started) return;
+        started = true;
+        onStart();
+      }) };
+      if (options.taskKey) this.batchOptions.set(options.taskKey, options);
       const active = () => {
         if (options.signal?.aborted || generation !== this.generation) throw abortError();
       };
+      const compute = type === 'simulateDraw'
+        ? this.computeDraw(key, payload, options, generation, active)
+        : this.computeReview(key, type, payload, options, generation, active);
+      const promise = compute.finally(() => {
+        if (this.batchOptions.get(options.taskKey) === options)
+          this.batchOptions.delete(options.taskKey);
+        if (this.batchJobs.get(key)?.promise === promise) this.batchJobs.delete(key);
+      });
+      this.batchJobs.set(key, {promise, options});
+      return promise;
+    }
+
+    saveCheckpoint(key, state) {
+      this.partial.set(key, state);
+      while (this.partial.size > 16) {
+        const old = [...this.partial.keys()].find(id => id !== key && !this.batchJobs.has(id));
+        if (!old) break;
+        this.partial.delete(old);
+      }
+    }
+
+    async computeReview(key, type, payload, options, generation, active) {
+      const {bagCount, iterations} = payload;
+      const expanded = bagCount >= 1 && bagCount <= 7 && iterations === 277;
+      let state = this.partial.get(key);
       active();
       if (!state) {
         const plan = await this.runSingle(
-          'planBagEmptying',
+          expanded ? 'planBagEmptying' : 'planReviewSimulation',
           { ...payload, requestType: type },
           options,
         );
         active();
         if (plan.error) throw new Error(plan.error);
         state = Bag.create(plan);
-        this.partial.set(key, state);
-        while (this.partial.size > 16) this.partial.delete(this.partial.keys().next().value);
+        this.saveCheckpoint(key, state);
       }
-      // Reserve whole candidate groups. Each group keeps its sample order while
-      // independent groups use the workers already allowed by the device budget.
+      const lanes = Math.min(this.size, expanded ? Math.ceil(state.sums.length / 8) : state.sums.length);
+      const groupSize = expanded ? 8 : Math.min(8, Math.ceil(state.sums.length / lanes));
+      // Groups use disjoint candidates and keep the next sample offset per candidate.
       const reserved = new Set();
       let failure = null;
       const claimGroup = () => {
         active();
         const start = state.sums.findIndex((sum, index) =>
-          sum.samples < 277 && !reserved.has(index));
+          sum.samples < iterations && !reserved.has(index));
         if (start < 0) return null;
         const offset = state.sums[start].samples;
         let end = start + 1;
-        while (end < state.sums.length && end - start < 8 &&
+        while (end < state.sums.length && end - start < groupSize &&
             state.sums[end].samples === offset && !reserved.has(end)) end++;
         for (let index = start; index < end; index++) reserved.add(index);
         return {start, end};
@@ -109,21 +141,25 @@
             group = claimGroup();
             if (!group) return;
             const {start, end} = group;
-            while (!failure && state.sums[start].samples < 277) {
+            while (!failure && state.sums[start].samples < iterations) {
               active();
               const offset = state.sums[start].samples;
+              const count = Math.min(16, iterations - offset);
               const batch = await this.runSingle(
-                'simulateCandidateBatch',
+                'simulateReviewBatch',
                 {
                   ...payload,
+                  finalTurnsRemaining: state.plan.finalTurnsRemaining,
                   candidates: state.plan.moves.slice(start, end),
                   seed: state.plan.seed,
                   offset,
-                  count: Math.min(16, 277 - offset),
+                  count,
                 },
-                { ...options, onStart: undefined },
+                options,
               );
               if (generation !== this.generation) throw abortError();
+              if (batch.offset !== offset || batch.completed > count || batch.moves?.length !== end - start)
+                throw new Error('Invalid candidate batch coverage.');
               Bag.incorporate(state, { ...batch, start });
             }
           } catch (error) {
@@ -135,13 +171,49 @@
           }
         }
       };
-      const lanes = Math.min(this.size, Math.ceil(state.sums.length / 8));
       // A failed lane must settle its siblings before a retry can reuse state.
       await Promise.all(Array.from({length: lanes}, () => runLane()));
       if (generation !== this.generation) throw abortError();
       if (failure) throw failure;
       active();
-      const result = Bag.finish(state, 277);
+      const result = Bag.finish(state, iterations, expanded);
+      this.partial.delete(key);
+      return result;
+    }
+
+    async computeDraw(key, payload, options, generation, active) {
+      const {iterations, seed, beforeWin} = payload;
+      const knownBeforeWin = [64, 277].includes(iterations) && beforeWin?.samples === iterations &&
+        beforeWin.seed === seed && Number.isFinite(beforeWin.win) && beforeWin.win >= 0 && beforeWin.win <= 1
+        ? beforeWin.win : -1;
+      const state = this.partial.get(key) || {samples: 0, beforeWinSum: 0, afterWinSum: 0};
+      const review = typeof module !== 'undefined' && module.exports
+        ? require('./review-analysis.js') : root.CrossplayReview;
+      const turn = Bag.drawTurn(payload, payload.played || {});
+      while (state.samples < iterations) {
+        active();
+        const offset = state.samples;
+        const count = Math.min(16, iterations - offset);
+        const batch = await this.runSingle('simulateDrawBatch', { ...payload, offset, count, knownBeforeWin }, options);
+        if (generation !== this.generation) throw abortError();
+        if (!Bag.validDrawBatch(batch, offset, count, knownBeforeWin))
+          throw new Error('Invalid rack draw batch coverage.');
+        const {completed, offset: _, beforeWinSum, afterWinSum, ...metadata} = batch;
+        if (!review.validDrawResult({...metadata, iterationsRequested: completed}, turn, seed, completed))
+          throw new Error('Quackle returned incomplete rack draw batch results.');
+        state.samples += completed;
+        state.beforeWinSum += beforeWinSum;
+        state.afterWinSum += afterWinSum;
+        state.metadata = metadata;
+        this.saveCheckpoint(key, state);
+      }
+      active();
+      const result = { ...state.metadata, iterationsRequested: iterations, iterationsCompleted: state.samples,
+        beforeWin: knownBeforeWin === -1 ? state.beforeWinSum / iterations : knownBeforeWin,
+        afterWin: knownBeforeWin !== -1 && state.metadata.drawCount === 0
+          ? knownBeforeWin : state.afterWinSum / iterations };
+      if (!review.validDrawResult(result, turn, seed, iterations))
+        throw new Error('Quackle returned incomplete rack draw results.');
       this.partial.delete(key);
       return result;
     }
@@ -176,10 +248,10 @@
 
     // A viewed turn can join and promote an existing background request.
     promote(taskKey, priority) {
-      const expanded = this.expandedOptions.get(taskKey);
-      if (expanded) expanded.priority = Math.max(expanded.priority || 0, priority);
+      const options = this.batchOptions.get(taskKey);
+      if (options) options.priority = Math.max(options.priority || 0, priority);
       const tasks = taskKey ? this.queue.filter((task) => task.taskKey === taskKey) : [];
-      if (!tasks.length) return Boolean(expanded);
+      if (!tasks.length) return Boolean(options);
       for (const task of tasks) task.priority = Math.max(task.priority, priority);
       this.schedule();
       return true;
@@ -205,6 +277,9 @@
       slot.worker.addEventListener('message', (event) => this.receive(slot, event.data || {}));
       slot.worker.addEventListener('error', (event) =>
         this.fail(slot, new Error(event.message || 'Quackle worker failed.')),
+      );
+      slot.worker.addEventListener('messageerror', () =>
+        this.fail(slot, new Error('Quackle worker returned an unreadable response.')),
       );
       this.send(slot, { type: 'init', payload: {}, init: true });
     }
@@ -267,8 +342,8 @@
 
     stop(error = new Error('Quackle worker stopped')) {
       this.generation++;
-      this.expandedJobs.clear();
-      this.expandedOptions.clear();
+      this.batchJobs.clear();
+      this.batchOptions.clear();
       for (const slot of this.slots) {
         slot.worker.terminate();
         if (slot.task) {

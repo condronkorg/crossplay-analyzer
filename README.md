@@ -14,7 +14,7 @@ Open [http://localhost:8000](http://localhost:8000). On the game review page, pa
 
 The recent games list comes from NYT's Crossplay service and only completed games can be reviewed. NYT may change its service endpoints or session requirements.
 
-Each game review shows the result, scores, points per turn, and a score timeline. Background analysis covers every saved completed game for the signed-in account while the page is open. The visible turn has first priority, then the open game, then other saved games. Up to three Quackle workers run independently of the page (two on phones and low-memory devices). When more than one worker is available, background work leaves one free for the visible turn or a custom move. You can replay moves while estimates finish. The game list shows progress and a retry button for failed imports, calculations, or saves. Personal summaries exclude opponent moves and unrated turns.
+Each game review shows the result, scores, points per turn, and a score timeline. Background analysis covers every saved completed game for the signed-in account while the page is open. The visible turn and custom moves have priority over the other turns in the open game and other saved games. Each analysis page uses one shared pool of up to three Quackle workers. Phones and low-memory devices use up to two. Background turn jobs can use all available workers. Foreground requests run first when a worker is free. You can replay moves while estimates finish. The game list shows progress and a retry button for failed imports, calculations, or saves. Personal summaries exclude opponent moves and unrated turns.
 
 Choose **Start walkthrough** to review the game from the first turn. Step forward or backward, jump to the first or last move, or use the arrow keys and Home/End while focused in the replay. After analyzing move quality, use **Previous flagged move** / **Next flagged move** or **Only your flagged moves** to revisit your inaccuracies, mistakes, and blunders in game order. Opponent moves remain available in the full turn list.
 
@@ -69,10 +69,13 @@ evaluate against the board and rack **before** the selected turn.
 
 The result compares score, rack leave, and static equity with the best legal
 move. **Estimate win% (slower)** runs 277 samples per candidate and compares
-simulated equity and win chances. Moves far down the static ranking take longer
-because the bundled engine must simulate the candidates above them too. You can
-cancel a custom evaluation independently of other analysis. Custom results stay
-in the current page and do not alter the recorded game or saved move-quality review.
+simulated equity and win chances. The comparison includes the custom move and
+the leading static candidates. With one through seven bag tiles, it also
+includes every legal placement that empties the bag. The manual and screenshot
+pages use the same search for generated moves and use seed 123456789 for paired
+terminal samples. You can cancel a custom evaluation while other analysis
+continues. Custom results stay in the current page and do not alter the
+recorded game or saved move-quality review.
 
 Game imports refresh automatically when the signed-in account has not refreshed successfully in 24 hours. The page checks on startup, hourly while open, and when returning to the tab; manual Refresh always imports immediately. Saved history stays visible during background refreshes and after a refresh failure. Each import reports the number of games NYT returned, new and changed games, the newest returned game date, and the check time. An incomplete NYT response is an error and does not mark an import successful. An explicit empty games list is valid. Successful refresh times are stored per Supabase user, including accounts with no games. Local sessions refresh daily while open.
 

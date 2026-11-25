@@ -16,8 +16,8 @@ repository (SHA-256
 Artifact SHA-256 values:
 
 ```text
-quackle.js    3d0a388e0e53d937e7a5629a7f4602643994401b700a107dd7fd196c0babd319
-quackle.wasm  38d66677106dff6616b251214da274dd26c283802f1ab250152d353a0407813c
+quackle.js    865a555e856374c545e95f2899a81e2588bd41548dd97bb239427566607815e0
+quackle.wasm  54defd6db78cf827db3bab8e50bd6d85484fbaa5b80aa6623c97a842cfe07494
 quackle.data  0f7b4e8cdcf4cb743c5423d6befe23ea77691c588f7c7dfb603bf475c1fbf8f3
 ```
 
@@ -158,15 +158,9 @@ Exchanges do not empty the bag. Early64-sample previews retain their bounded
 shortlist and remain provisional. Empty-bag solving and future-play policy
 are unchanged; these remain estimates before the bag empties.
 
-`simulateCandidateBatch` accepts up to8 explicit candidates, a zero-based
-sample offset, and up to16 samples. It uses the existing paired trial-seed
-schedule, shifted by the sample offset, and returns per-ply score sums/counts
-and residual sums so variable-length games retain the original simulated
-equity across batch boundaries. It checks an eight-second budget
-between trials. One trial cannot be interrupted. The worker pool retains
-completed sums across cancellation or transient failure, yields between calls,
-and coalesces matching jobs. It retains at most16 partial positions in memory;
-older evicted positions restart. The120-second worker deadline still applies.
+The worker pool submits the plan through `simulateReviewBatch`. It retains
+completed sums across transient failures, yields between requests, and
+coalesces matching jobs. The 120-second worker deadline still applies.
 
 Full results retain the top15 sampled alternatives, the recorded action, and
 the highest static-equity action, with duplicates removed (at most17 moves).
@@ -176,14 +170,46 @@ match before completion. `totalPlayaheads` counts all searched candidates.
 `equityMoves` preserves the original static shortlist plus the recorded action
 for word-commonness and adjusted-performance calculations. These metrics do
 not use the compact win-ranked display list. Results and affected cache identities carry `candidatePolicy: bag-emptying-v1`.
-The cache policy does not change the paired seed. Draw-only calculations keep
-their existing identity and behavior. Legacy synchronous native APIs remain
-available for bounded callers; browser full comparisons use the batch APIs.
+The cache policy does not change the paired seed. The legacy
+`simulateCandidateBatch` export still accepts explicit candidates for bags
+with one through seven tiles.
 
 Run `node --test test_bag_emptying_analysis.js test_quackle_pool.js` for compact
 results, coverage, coalescing and resume checks, and
 `python3 -m unittest -v test_bag_emptying_simulation` for real browser/WASM
 coverage and sample-offset checks. The data artifact is unchanged.
+
+## Terminal review and draw batches
+
+For a bag with zero through 21 tiles, `planReviewSimulation` returns the
+legacy static shortlist and includes the recorded action when supplied. At
+zero tiles, the shortlist includes the exact final winner from the native
+search. Both plan exports include the native tie order as an array of candidate
+indices, starting with the highest-ranked candidate when win and equity tie.
+
+`simulateReviewBatch` accepts one through eight explicit candidates, a
+zero-based sample offset, and one through 16 samples. The offset plus the
+requested count cannot exceed 277. The engine shifts the base seed by the
+sample offset and uses the same paired sample schedule as the original review.
+Each result includes raw win and residual sums, terminal counts, and per-level,
+per-player score sums and sample counts. Combining these values preserves
+equity across variable-length games.
+
+`simulateDrawBatch` uses the same offset and sample limits for one recorded
+action. A supplied win estimate in the range zero through one reuses a
+matching completed review. Pass `-1` to compute the unconditional estimate.
+The engine checks physical draws in both cases. It returns before and after
+sums plus the draw metadata. The estimates are exactly equal for a move with
+no draw.
+
+Both batch APIs return the offset and the number of complete samples. They
+check the eight-second budget between trials. The draw call completes both
+estimates for the current sample before checking the budget. One trial can
+exceed the budget. Legacy synchronous review and draw exports remain available.
+
+Run `python3 -m unittest -v test_terminal_batches` to check split and monolithic
+results, the native tie order, conditioned draws, batch limits, and the
+cooperative budget in real browser WASM.
 
 ## Exact final-reply optimization
 

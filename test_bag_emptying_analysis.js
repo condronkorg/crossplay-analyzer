@@ -172,3 +172,28 @@ test('variable-length games combine conditional per-ply equity statistics correc
   });
   assert.equal(Bag.finish(state, 4).selected.equity, 40);
 });
+
+test('generic terminal results apply native tie order and retain the full raw static list', () => {
+  const moves = [
+    {action: 'pass', position: '', tiles: '', score: 0, equity: -999},
+    {action: 'place', position: 'B9', tiles: 'IN', score: 14, equity: 18},
+    {action: 'place', position: '9B', tiles: 'iN', score: 13, equity: 16},
+    {action: 'exchange', position: '', tiles: 'A?', score: 0, equity: 3},
+  ];
+  const plan = {moves, actualIndex: 0, bagEmptyingIndices: [], tieOrder: [2, 1, 3, 0],
+    bagCount: 8, seed: 2, finalTurnsRemaining: 0};
+  const state = Bag.create(plan);
+  for (const [offset, completed] of [[0, 3], [3, 61]]) {
+    Bag.incorporate(state, {start: 0, offset, completed, moves: moves.map(() => ({
+      samples: completed, terminalSamples: completed, win: .5, winSum: completed / 2,
+      equity: 2, equityStatistics: [[0, 0, 2 * completed, completed]], residualSum: 0,
+    }))});
+  }
+  const result = Bag.finish(state, 64, false);
+  assert.deepEqual(result.moves.map(move => move.tiles), ['iN', 'IN', 'A?', '']);
+  assert.equal(result.best.tiles, 'iN');
+  assert.equal(result.selected.action, 'pass');
+  assert.equal(result.candidatePolicy, undefined);
+  assert.equal(result.equityMoves, undefined);
+  assert.deepEqual(result.staticMoves, moves);
+});

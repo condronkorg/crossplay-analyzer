@@ -207,8 +207,8 @@
   }
 
   class ReviewQueue {
-    constructor({ load, run, runOpening = null, complete = () => {}, change = () => {}, concurrency = 2, preview = false }) {
-      Object.assign(this, { load, run, runOpening, complete, change, concurrency, preview });
+    constructor({ load, run, runOpening = null, complete = () => {}, settleFailure = () => {}, change = () => {}, concurrency = 2, preview = false }) {
+      Object.assign(this, { load, run, runOpening, complete, settleFailure, change, concurrency, preview });
       this.contexts = new Map();
       this.loading = new Map();
       this.errors = new Map();
@@ -245,13 +245,11 @@
     openingPending(context) {
       return Boolean(this.runOpening && ['pending-preview', 'running-preview', 'pending', 'running'].includes(context.openingState));
     }
-    async notifyComplete(context) {
-      if (!context.states.every(state => state === 'done') || this.openingPending(context)) return;
-      if (!context.states.length) {
-        if (context.completedEmpty) return;
-        context.completedEmpty = true;
-      }
-      await this.complete(context);
+    async notifySettled(context) {
+      if (!context.states.every(state => state === 'done' || state === 'error') || this.openingPending(context)) return;
+      if (!context.states.length) context.completedEmpty = true;
+      if (context.openingState === 'error' || context.states.includes('error')) await this.settleFailure(context);
+      else await this.complete(context);
     }
     openingJob(context, phase) {
       context.openingState = phase === 'preview' ? 'running-preview' : 'running';
@@ -263,7 +261,7 @@
           if (!this.closed && !this.controller.signal.aborted) context.openingError = error.message;
         } finally {
           context.openingState = succeeded ? (phase === 'preview' && result?.complete !== true ? 'pending' : 'done') : 'error';
-          if (!this.closed) await this.notifyComplete(context);
+          if (!this.closed) await this.notifySettled(context);
         }
       };
     }
@@ -285,18 +283,19 @@
           return async () => {
             let succeeded = false;
             let result;
-            try { result = await this.run(context, index, phase); succeeded = true; }
+            try { result = await this.run(context, index, phase); succeeded = result?.failed !== true; }
             catch (error) {
               if (!this.closed && !this.controller.signal.aborted) context.error = error.message;
             } finally {
-              context.states[index] = succeeded ? (phase === 'preview' && result?.complete !== true ? 'pending' : 'done') : 'error';
-              if (!this.closed) await this.notifyComplete(context);
+              const complete = phase === 'preview' ? result?.complete === true : result?.complete !== false;
+              context.states[index] = succeeded ? (complete ? 'done' : 'pending') : 'error';
+              if (!this.closed) await this.notifySettled(context);
             }
           };
         }
         if (!context.states.length && !context.completedEmpty && !this.openingPending(context)) {
           context.completedEmpty = true;
-          return () => this.complete(context);
+          return () => this.notifySettled(context);
         }
       }
       return null;

@@ -741,9 +741,26 @@ class Handler(SimpleHTTPRequestHandler):
             raise CrossplayError('Unsupported analysis version.', 400)
         for field in ('win_trend', 'move_quality'):
             value = body.get(field)
-            if field in body and (not isinstance(value, dict) or value.get('state') != 'done' or not isinstance(value.get('points'), list)):
-                raise CrossplayError('Only completed game analyses can be saved.', 400)
+            if field in body and (not isinstance(value, dict) or value.get('state') not in ('done', 'error')
+                                  or not isinstance(value.get('points'), list)):
+                raise CrossplayError('Only completed or failed game analyses can be saved.', 400)
         quality = body.get('move_quality')
+        trend = body.get('win_trend')
+        if quality:
+            failures = [quality.get('opening'), *quality['points'],
+                        *(point.get('draw') for point in quality['points'] if isinstance(point, dict))]
+            failures = [value for value in failures if isinstance(value, dict) and value.get('retryable') is True]
+            if quality.get('state') == 'done' and failures:
+                raise CrossplayError('Retryable failures cannot be saved as a completed analysis.', 400)
+            failed = any(isinstance(value.get('reason'), str) and bool(value['reason'].strip()) for value in failures)
+            if quality.get('state') == 'error' and (quality.get('evaluation') != 'win-probability-v1' or not failed):
+                raise CrossplayError('A failed analysis must include a retryable failure.', 400)
+        quality_failed = bool(quality and quality.get('state') == 'error')
+        trend_failed = bool(trend and trend.get('state') == 'error')
+        if quality_failed != trend_failed:
+            raise CrossplayError('Failed move quality and win trend must be saved together.', 400)
+        if trend_failed and any(not isinstance(point, dict) or point.get('actual') is True for point in trend['points']):
+            raise CrossplayError('A failed win trend cannot contain a completion marker.', 400)
         if quality and quality.get('evaluation') == 'win-probability-v1':
             Handler.validate_win_quality(quality)
         if quality and 'opening' in quality:

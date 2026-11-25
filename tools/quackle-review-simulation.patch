@@ -770,7 +770,7 @@ index c87b8ad..075eeee 100755
      --bind \
      --preload-file "$DATA_DIR/alphabets/crossplay.quackle_alphabet@/data/alphabets/crossplay.quackle_alphabet" \
 diff --git c/wasm/quackle_wasm.cpp w/wasm/quackle_wasm.cpp
-index 6de2970..2a81f8f 100644
+index 6de2970..2ffd03e 100644
 --- c/wasm/quackle_wasm.cpp
 +++ w/wasm/quackle_wasm.cpp
 @@ -5,6 +5,7 @@
@@ -781,20 +781,33 @@ index 6de2970..2a81f8f 100644
  #include <emscripten/val.h>
  
  #include <fstream>
-@@ -14,6 +15,8 @@
+@@ -13,7 +14,10 @@
+ #include <vector>
  #include <iostream>
  #include <algorithm>
++#include <numeric>
  #include <cctype>
 +#include <cmath>
 +#include <stdexcept>
  
  #include "alphabetparameters.h"
  #include "boardparameters.h"
-@@ -396,8 +399,20 @@ bool prepareGame(std::string gridJson, std::string rackStr, int playerScore, int
+@@ -214,7 +218,7 @@ bool initEngine(std::string dataDir)
+ 
+ bool prepareGame(std::string gridJson, std::string rackStr, int playerScore, int oppScore, int numMoves,
+ 				 int requestedBagCount, int requestedFinalTurns, bool requireObservedState,
+-				 Quackle::Game &game, std::string *error)
++				 Quackle::Game &game, std::string *error, bool generateCandidates = true)
+ {
+     if (numMoves <= 0)
+     {
+@@ -396,8 +400,22 @@ bool prepareGame(std::string gridJson, std::string rackStr, int playerScore, int
  		}
  	}
  
 -    // Generate moves
++    if (!generateCandidates) return true;
++
 +    // Generate moves. Preserve the requested candidate limit, but never miss
 +    // the exact empty-bag winner merely because its score ranks below it.
      pos.kibitz(numMoves);
@@ -812,7 +825,7 @@ index 6de2970..2a81f8f 100644
  
      if (pos.moves().empty())
      {
-@@ -537,6 +552,7 @@ emscripten::val simulateKibitz(std::string gridJson, std::string rackStr, int pl
+@@ -537,6 +555,7 @@ emscripten::val simulateKibitz(std::string gridJson, std::string rackStr, int pl
          result.set("candidateCount", candidateCount);
          result.set("totalPlayaheads", completed * candidateCount);
  		result.set("winModel", std::string(playToEnd ? "terminal" : "bogowin"));
@@ -820,7 +833,7 @@ index 6de2970..2a81f8f 100644
  		result.set("error", playToEnd && !allTerminal
  			? std::string("A sampled endgame did not reach the official Crossplay finish")
  			: std::string(""));
-@@ -549,6 +565,545 @@ emscripten::val simulateKibitz(std::string gridJson, std::string rackStr, int pl
+@@ -549,6 +568,696 @@ emscripten::val simulateKibitz(std::string gridJson, std::string rackStr, int pl
      return result;
  }
  
@@ -944,6 +957,65 @@ index 6de2970..2a81f8f 100644
 +    return move;
 +}
 +
++int appendRecordedCandidate(Quackle::GamePosition &pos, Quackle::MoveList &candidates, const emscripten::val &played)
++{
++    const auto actual = recordedMove(pos, played);
++    const auto key = physicalMoveKey(actual);
++    const auto found = std::find_if(candidates.begin(), candidates.end(), [&](const Quackle::Move &move) {
++        return physicalMoveKey(move) == key;
++    });
++    if (found != candidates.end())
++        return found - candidates.begin();
++    candidates.push_back(actual);
++    return candidates.size() - 1;
++}
++
++emscripten::val nativeTieOrder(const Quackle::MoveList &moves)
++{
++    std::vector<int> indices(moves.size());
++    std::iota(indices.begin(), indices.end(), 0);
++    std::stable_sort(indices.begin(), indices.end(), [&](int left, int right) {
++        return Quackle::MoveList::wordPosComparator(moves[left], moves[right]);
++    });
++    // MoveList::sort reverses the ascending stable order, including exact ties.
++    auto order = emscripten::val::array();
++    for (size_t rank = 0; rank < indices.size(); ++rank)
++        order.set(static_cast<unsigned int>(rank), indices[indices.size() - 1 - rank]);
++    return order;
++}
++
++emscripten::val planReviewSimulation(std::string gridJson, std::string rackStr, int playerScore, int oppScore,
++    int numMoves, int bagCount, int finalTurnsRemaining, emscripten::val played, unsigned int seed)
++{
++    auto result = emscripten::val::object();
++    try
++    {
++        if (!s_dm || !s_dm->isGood()) throw std::invalid_argument("Engine not initialized");
++        if (numMoves < 1 || numMoves > 15) throw std::invalid_argument("Review candidate count must be between 1 and 15");
++        if (bagCount < 0 || bagCount > 21) throw std::invalid_argument("Terminal review requires zero to 21 bag tiles");
++        s_dm->seedRandomNumbers(seed);
++        Quackle::Game game;
++        std::string error;
++        if (!prepareGame(gridJson, rackStr, playerScore, oppScore, numMoves, bagCount, finalTurnsRemaining, true, game, &error))
++            throw std::invalid_argument(error);
++        auto &pos = game.currentPosition();
++        auto moves = pos.moves();
++        const int actualIndex = played.isNull() || played.isUndefined() ? -1 : appendRecordedCandidate(pos, moves, played);
++        const auto serialized = serializeMoves(moves, pos.currentPlayer().rack(), nullptr);
++        result.set("moves", serialized);
++        result.set("equityMoves", serialized);
++        result.set("bagEmptyingIndices", emscripten::val::array());
++        result.set("tieOrder", nativeTieOrder(moves));
++        result.set("actualIndex", actualIndex);
++        result.set("seed", seed);
++        result.set("bagCount", bagCount);
++        result.set("finalTurnsRemaining", finalTurnsRemaining);
++        result.set("error", std::string(""));
++    }
++    catch (const std::exception &error) { result.set("error", std::string(error.what())); }
++    return result;
++}
++
 +emscripten::val simulateReviewMove(std::string gridJson, std::string rackStr, int playerScore, int oppScore,
 +                                  int numMoves, int iterations, int bagCount, int finalTurnsRemaining,
 +                                  emscripten::val played, unsigned int seed)
@@ -966,15 +1038,9 @@ index 6de2970..2a81f8f 100644
 +            throw std::invalid_argument(error);
 +        Quackle::GamePosition &pos = game.currentPosition();
 +        const Quackle::Rack rack = pos.currentPlayer().rack();
-+        Quackle::Move actual = recordedMove(pos, played);
-+        const std::string actualKey = physicalMoveKey(actual);
 +        Quackle::MoveList candidates = pos.moves();
-+        bool found = false;
-+        for (const auto &move : candidates)
-+        {
-+            if (physicalMoveKey(move) == actualKey) { actual = move; found = true; break; }
-+        }
-+        if (!found) candidates.push_back(actual);
++        const int actualIndex = appendRecordedCandidate(pos, candidates, played);
++        const std::string actualKey = physicalMoveKey(candidates[actualIndex]);
 +        const bool playToEnd = bagCount <= 21;
 +        const int plies = playToEnd ? -1 : 2;
 +        Quackle::Simulator simulator;
@@ -1082,6 +1148,7 @@ index 6de2970..2a81f8f 100644
 +		result.set("moves", serializeMoves(candidates, rack, nullptr));
 +		result.set("equityMoves", serializeMoves(equityMoves, rack, nullptr));
 +		result.set("bagEmptyingIndices", indices);
++		result.set("tieOrder", nativeTieOrder(candidates));
 +		result.set("actualIndex", actualIndex);
 +		result.set("seed", seed);
 +		result.set("bagCount", bag);
@@ -1095,19 +1162,39 @@ index 6de2970..2a81f8f 100644
 +	return result;
 +}
 +
-+emscripten::val simulateCandidateBatch(std::string gridJson, std::string rackStr, int playerScore, int oppScore, int bagCount,
-+	emscripten::val candidates, unsigned int seed, int offset, int count)
++constexpr double batchBudgetMs = 8000;
++
++bool validBatchRange(double offset, double count)
++{
++    return std::isfinite(count) && count >= 1 && count <= 16 && std::floor(count) == count
++        && std::isfinite(offset) && offset >= 0 && offset <= 277 - count && std::floor(offset) == offset;
++}
++
++unsigned int shiftedSampleSeed(unsigned int seed, int offset)
++{
++    // Trial numbers start at one inside Simulator, so shift the base seed.
++    return seed + 0x9e3779b9u * static_cast<unsigned int>(offset);
++}
++
++emscripten::val simulateCandidateBatchImpl(std::string gridJson, std::string rackStr, int playerScore, int oppScore, int bagCount,
++    int finalTurnsRemaining, emscripten::val candidates, unsigned int seed, double offsetValue, double countValue, bool legacy)
 +{
 +	auto result = emscripten::val::object();
 +	try
 +	{
++		if (!s_dm || !s_dm->isGood()) throw std::invalid_argument("Engine not initialized");
++		if (!legacy && !emscripten::val::global("Array").call<bool>("isArray", candidates))
++			throw std::invalid_argument("Review candidates must be an array");
 +		const int size = candidates["length"].as<int>();
-+		if (size < 1 || size > 8 || count < 1 || count > 16 || offset < 0 || offset + count > 277 || bagCount < 1 || bagCount > 7)
++		if (size < 1 || size > 8 || !validBatchRange(offsetValue, countValue)
++			|| (legacy ? bagCount < 1 || bagCount > 7 : bagCount < 0 || bagCount > 21))
 +			throw std::invalid_argument("Invalid candidate batch bounds");
++		const int offset = static_cast<int>(offsetValue);
++		const int count = static_cast<int>(countValue);
 +		s_dm->seedRandomNumbers(seed);
 +		Quackle::Game game;
 +		std::string error;
-+		if (!prepareGame(gridJson, rackStr, playerScore, oppScore, 1, bagCount, 0, true, game, &error))
++		if (!prepareGame(gridJson, rackStr, playerScore, oppScore, 1, bagCount, finalTurnsRemaining, true, game, &error, legacy))
 +			throw std::invalid_argument(error);
 +		auto &pos = game.currentPosition();
 +		const auto rack = pos.currentPlayer().rack();
@@ -1118,7 +1205,7 @@ index 6de2970..2a81f8f 100644
 +		simulator.setThreadCount(0);
 +		simulator.setPosition(pos);
 +		simulator.setIncludedMoves(moves);
-+		simulator.setPairedSampleSeed(seed + 0x9e3779b9u * (unsigned int)offset);
++		simulator.setPairedSampleSeed(shiftedSampleSeed(seed, offset));
 +		simulator.setIgnoreOppos(false);
 +		const double start = emscripten_get_now();
 +		int completed = 0;
@@ -1126,7 +1213,7 @@ index 6de2970..2a81f8f 100644
 +		{
 +			simulator.simulate(-1, 1);
 +			++completed;
-+		} while (completed < count && emscripten_get_now() - start < 8000);
++		} while (completed < count && emscripten_get_now() - start < batchBudgetMs);
 +		auto serialized = emscripten::val::array();
 +		for (int i = 0; i < size; ++i)
 +		{
@@ -1146,12 +1233,19 @@ index 6de2970..2a81f8f 100644
 +					auto entry = emscripten::val::array();
 +					entry.set(0, (int)level);
 +					entry.set(1, (int)player);
-+					entry.set(2, score.averagedValue() * samples);
++					entry.set(2, legacy ? score.averagedValue() * samples : static_cast<double>(score.valueSum()));
 +					entry.set(3, samples);
 +					statistics.set(statisticIndex++, entry);
 +				}
 +			item.set("equityStatistics", statistics);
-+			item.set("residualSum", simmed.residual.averagedValue() * completed);
++			item.set("residualSum", legacy ? simmed.residual.averagedValue() * completed
++				: static_cast<double>(simmed.residual.valueSum()));
++			if (!legacy)
++			{
++				if (simmed.wins.incorporatedValues() != completed || simmed.terminalResults.valueSum() != completed)
++					throw std::invalid_argument("A sampled endgame did not reach the official Crossplay finish");
++				item.set("winSum", static_cast<double>(simmed.wins.valueSum()));
++			}
 +			item.set("equity", simmed.calculateEquity());
 +			item.set("win", simmed.wins.averagedValue());
 +			serialized.set(i, item);
@@ -1168,8 +1262,22 @@ index 6de2970..2a81f8f 100644
 +	return result;
 +}
 +
-+emscripten::val simulateReviewDraw(std::string gridJson, std::string rackStr, int playerScore, int oppScore, int numMoves, int iterations,
-+	int bagCount, int finalTurnsRemaining, emscripten::val played, double seedValue, std::string rackAfter)
++emscripten::val simulateCandidateBatch(std::string gridJson, std::string rackStr, int playerScore, int oppScore, int bagCount,
++    emscripten::val candidates, unsigned int seed, int offset, int count)
++{
++    return simulateCandidateBatchImpl(gridJson, rackStr, playerScore, oppScore, bagCount, 0, candidates, seed, offset, count, true);
++}
++
++emscripten::val simulateReviewBatch(std::string gridJson, std::string rackStr, int playerScore, int oppScore, int bagCount,
++    int finalTurnsRemaining, emscripten::val candidates, unsigned int seed, double offset, double count)
++{
++    return simulateCandidateBatchImpl(gridJson, rackStr, playerScore, oppScore, bagCount, finalTurnsRemaining,
++        candidates, seed, offset, count, false);
++}
++
++emscripten::val simulateReviewDrawImpl(std::string gridJson, std::string rackStr, int playerScore, int oppScore, int numMoves,
++    int bagCount, int finalTurnsRemaining, emscripten::val played, double seedValue, std::string rackAfter,
++    double offsetValue, double countValue, double knownBeforeWin, bool bounded)
 +{
 +	emscripten::val result = emscripten::val::object();
 +	result.set("simulated", false);
@@ -1181,8 +1289,17 @@ index 6de2970..2a81f8f 100644
 +			throw std::invalid_argument("Engine not initialized");
 +		if (numMoves < 1 || numMoves > 15)
 +			throw std::invalid_argument("Review candidate count must be between 1 and 15");
-+		if (iterations < 1 || iterations > 277)
-+			throw std::invalid_argument("Simulation iterations must be between 1 and 277");
++        if (bounded)
++        {
++            if (bagCount < 0 || bagCount > 21 || !validBatchRange(offsetValue, countValue))
++                throw std::invalid_argument("Invalid draw batch bounds");
++            if (knownBeforeWin != -1 && (!std::isfinite(knownBeforeWin) || knownBeforeWin < 0 || knownBeforeWin > 1))
++                throw std::invalid_argument("Known before-draw win must be -1 or between zero and one");
++        }
++        else if (countValue < 1 || countValue > 277)
++            throw std::invalid_argument("Simulation iterations must be between 1 and 277");
++        const int offset = static_cast<int>(offsetValue);
++        const int iterations = static_cast<int>(countValue);
 +		if (!std::isfinite(seedValue) || seedValue < 0 || seedValue > 4294967295.0 || std::floor(seedValue) != seedValue)
 +			throw std::invalid_argument("Review seed must be an unsigned 32-bit integer");
 +		const unsigned int seed = static_cast<unsigned int>(seedValue);
@@ -1222,25 +1339,57 @@ index 6de2970..2a81f8f 100644
 +            throw std::invalid_argument("The recorded draw contains unavailable tiles");
 +        const bool playToEnd = bagCount <= 21;
 +        const int plies = playToEnd ? -1 : 2;
-+        auto estimate = [&](bool conditionDraw) {
-+            Quackle::Simulator simulator;
++        const bool reuseBefore = knownBeforeWin != -1;
++        Quackle::Simulator before, after;
++        Quackle::MoveList moves;
++        moves.push_back(actual);
++        auto prepare = [&](Quackle::Simulator &simulator, bool conditionDraw) {
 +            simulator.setThreadCount(0);
 +            simulator.setPosition(pos);
-+            Quackle::MoveList moves;
-+            moves.push_back(actual);
 +            simulator.setIncludedMoves(moves);
-+            simulator.setPairedSampleSeed(seed);
++            simulator.setPairedSampleSeed(shiftedSampleSeed(seed, offset));
 +            simulator.setIgnoreOppos(false);
 +            if (conditionDraw) simulator.setFirstDraw(drawn);
-+            simulator.simulate(plies, iterations);
++        };
++        if (!reuseBefore) prepare(before, false);
++        if (drawCount) prepare(after, true);
++
++        int completed = 0;
++        if (bounded)
++        {
++            const double start = emscripten_get_now();
++            do
++            {
++                if (!reuseBefore) before.simulate(plies, 1);
++                if (drawCount) after.simulate(plies, 1);
++                // A checkpoint must contain both estimates for each offset.
++                ++completed;
++            } while (completed < iterations && emscripten_get_now() - start < batchBudgetMs);
++        }
++        else
++        {
++            before.simulate(plies, iterations);
++            if (drawCount) after.simulate(plies, iterations);
++            completed = iterations;
++        }
++        auto wins = [&](const Quackle::Simulator &simulator) -> const Quackle::AveragedValue & {
 +            const auto &simmed = simulator.simmedMoveForMove(actual);
-+            if (simulator.iterations() != iterations || simmed.wins.incorporatedValues() != iterations ||
++            if (simulator.iterations() != completed || simmed.wins.incorporatedValues() != completed ||
 +                (playToEnd && simmed.terminalResults.averagedValue() != 1))
 +                throw std::invalid_argument("The rack draw simulation did not finish all requested samples");
-+            return simmed.wins.averagedValue();
++            return simmed.wins;
 +        };
-+        const double beforeWin = estimate(false);
-+        const double afterWin = drawCount == 0 ? beforeWin : estimate(true);
++        const double beforeWin = reuseBefore ? knownBeforeWin : wins(before).averagedValue();
++        const double afterWin = drawCount == 0 ? beforeWin : wins(after).averagedValue();
++        if (bounded)
++        {
++            const double beforeWinSum = reuseBefore ? knownBeforeWin * completed
++                : static_cast<double>(wins(before).valueSum());
++            result.set("beforeWinSum", beforeWinSum);
++            result.set("afterWinSum", drawCount == 0 ? beforeWinSum : static_cast<double>(wins(after).valueSum()));
++            result.set("completed", completed);
++            result.set("offset", offset);
++        }
 +        emscripten::val selected = emscripten::val::object();
 +        selected.set("action", moveActionStr(actual.action));
 +        selected.set("position", positionString(actual));
@@ -1250,7 +1399,7 @@ index 6de2970..2a81f8f 100644
 +        result.set("afterWin", afterWin);
 +        result.set("drawCount", drawCount);
 +        result.set("iterationsRequested", iterations);
-+        result.set("iterationsCompleted", iterations);
++        result.set("iterationsCompleted", completed);
 +        result.set("bagCount", bagCount);
 +        result.set("finalTurnsRemaining", finalTurnsRemaining);
 +        result.set("plies", plies);
@@ -1263,6 +1412,21 @@ index 6de2970..2a81f8f 100644
 +	}
 +	catch (const std::exception &error) { result.set("error", std::string(error.what())); }
 +    return result;
++}
++
++emscripten::val simulateReviewDraw(std::string gridJson, std::string rackStr, int playerScore, int oppScore, int numMoves, int iterations,
++    int bagCount, int finalTurnsRemaining, emscripten::val played, double seed, std::string rackAfter)
++{
++    return simulateReviewDrawImpl(gridJson, rackStr, playerScore, oppScore, numMoves, bagCount, finalTurnsRemaining,
++        played, seed, rackAfter, 0, iterations, -1, false);
++}
++
++emscripten::val simulateDrawBatch(std::string gridJson, std::string rackStr, int playerScore, int oppScore,
++    int bagCount, int finalTurnsRemaining, emscripten::val played, double seed, std::string rackAfter,
++    double offset, double count, double knownBeforeWin)
++{
++    return simulateReviewDrawImpl(gridJson, rackStr, playerScore, oppScore, 1, bagCount, finalTurnsRemaining,
++        played, seed, rackAfter, offset, count, knownBeforeWin, true);
 +}
 +
 +// Four conditional opening estimates from the first mover's perspective.
@@ -1366,14 +1530,17 @@ index 6de2970..2a81f8f 100644
  bool isWordValid(std::string word)
  {
      if (!s_dm || !s_dm->isGood())
-@@ -587,6 +1142,11 @@ EMSCRIPTEN_BINDINGS(quackle)
+@@ -587,6 +1296,14 @@ EMSCRIPTEN_BINDINGS(quackle)
      emscripten::function("initEngine", &initEngine);
      emscripten::function("kibitz", &kibitz);
      emscripten::function("simulateKibitz", &simulateKibitz);
 +    emscripten::function("simulateReviewMove", &simulateReviewMove);
++    emscripten::function("planReviewSimulation", &planReviewSimulation);
++    emscripten::function("simulateReviewBatch", &simulateReviewBatch);
 +    emscripten::function("planBagEmptying", &planBagEmptying);
 +    emscripten::function("simulateCandidateBatch", &simulateCandidateBatch);
 +    emscripten::function("simulateReviewDraw", &simulateReviewDraw);
++    emscripten::function("simulateDrawBatch", &simulateDrawBatch);
 +    emscripten::function("simulateInitialDeal", &simulateInitialDeal);
      emscripten::function("isWordValid", &isWordValid);
      emscripten::function("getEngineInfo", &getEngineInfo);

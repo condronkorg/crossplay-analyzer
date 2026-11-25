@@ -205,8 +205,11 @@ class BackgroundAnalysisTest(unittest.TestCase):
             self.assertEqual(self.handler.validate_game_analysis(body)['move_quality'], quality)
         for opening in ({'unavailable': True, 'reason': 'Opening rack missing.'},
                         {'unavailable': True, 'reason': 'Engine failed.', 'retryable': True}):
-            quality = {'state': 'done', 'points': [], 'opening': opening}
+            state = 'error' if opening.get('retryable') is True else 'done'
+            quality = {'state': state, 'evaluation': 'win-probability-v1', 'points': [], 'opening': opening}
             body = {'analysis_version': ANALYSIS_VERSION, 'move_quality': quality}
+            if state == 'error':
+                body['win_trend'] = {'state': 'error', 'points': []}
             self.assertEqual(self.handler.validate_game_analysis(body)['move_quality'], quality)
 
     def test_completed_opening_quality_rejects_preview_malformed_and_guessed_zero_values(self):

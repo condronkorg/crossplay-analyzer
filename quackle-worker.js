@@ -1,6 +1,8 @@
 importScripts('quackle.js');
 importScripts('bag-emptying-analysis.js', 'luck-analysis.js', 'review-analysis.js', 'opening-draw.js');
 
+const integerBetween = (value, min, max) => Number.isInteger(value) && value >= min && value <= max;
+const DEFAULT_REVIEW_SEED = 123456789;
 const ENDGAME_POLICY = 'crossplay-endgame-v1';
 let modulePromise = null;
 
@@ -141,12 +143,20 @@ function evaluateCustomMove(module, payload, simulateWin) {
   // Force the canonical legal move into a bounded comparison, preserving
   // existing letters and assigned blanks without simulating its whole rank.
   const result = simulateRecordedMove(module, { ...payload, numMoves: 15,
-    played: selected, seed: 123456789 });
+    played: selected, seed: DEFAULT_REVIEW_SEED });
   return { ...evaluation, ...result };
 }
 
+function recordedMove(payload, requirePosition = false) {
+  const move = payload.played || {};
+  if (!['place', 'pass', 'exchange'].includes(move.action) || typeof move.tiles !== 'string' ||
+      ((requirePosition || move.position !== undefined) && typeof move.position !== 'string')) {
+    throw new Error('The recorded move must specify its action, position, and tiles.');
+  }
+  return { action: move.action, position: move.position || '', tiles: move.tiles };
+}
+
 function simulateRecordedMove(module, payload) {
-  const integerBetween = (value, min, max) => Number.isInteger(value) && value >= min && value <= max;
   if (!integerBetween(payload.seed, 0, 0xffffffff)) throw new Error('Review seed must be an unsigned 32-bit integer.');
   if (!integerBetween(payload.numMoves, 1, 15)) throw new Error('Review candidate count must be between 1 and 15.');
   if (!integerBetween(payload.iterations, 1, 277)) throw new Error('Simulation iterations must be between 1 and 277.');
@@ -154,15 +164,10 @@ function simulateRecordedMove(module, payload) {
       !Number.isInteger(payload.playerScore) || !Number.isInteger(payload.opponentScore)) {
     throw new Error('Review scores, bag count, and final-turn state must be integers.');
   }
-  const played = payload.played || {};
-  if (!['place', 'pass', 'exchange'].includes(played.action) || typeof played.tiles !== 'string' ||
-      (played.position !== undefined && typeof played.position !== 'string')) {
-    throw new Error('The recorded move must specify its action, position, and tiles.');
-  }
   const result = module.simulateReviewMove(
     payload.gridJson, payload.rack, payload.playerScore, payload.opponentScore,
     payload.numMoves, payload.iterations, payload.bagCount, payload.finalTurnsRemaining,
-    { action: played.action, position: played.position || '', tiles: played.tiles }, payload.seed,
+    recordedMove(payload), payload.seed,
   );
   if (result.error) throw new Error(result.error);
   const playToEnd = payload.bagCount <= 21;
@@ -192,47 +197,101 @@ function simulateRecordedMove(module, payload) {
   return result;
 }
 
-function simulateRackDraw(module, payload) {
-  if (!Number.isInteger(payload.seed) || payload.seed < 0 || payload.seed > 0xffffffff ||
-      !Number.isInteger(payload.iterations) || payload.iterations < 1 || payload.iterations > 277 ||
+function validTerminalPosition(payload) {
+  return integerBetween(payload.bagCount, 0, 21) &&
+    (payload.bagCount === 0 ? [1, 2].includes(payload.finalTurnsRemaining) : payload.finalTurnsRemaining === 0) &&
+    Number.isInteger(payload.playerScore) && Number.isInteger(payload.opponentScore);
+}
+
+function planTerminalReview(module, payload, expanded) {
+  const {requestType, bagCount, finalTurnsRemaining} = payload;
+  const seed = requestType === 'simulateMove' ? DEFAULT_REVIEW_SEED :
+    requestType === 'simulateKibitz' ? payload.seed ?? DEFAULT_REVIEW_SEED : payload.seed;
+  if (!validTerminalPosition(payload) || !integerBetween(seed, 0, 0xffffffff) ||
+      !integerBetween(payload.iterations, 1, 277) ||
+      (expanded && !(integerBetween(bagCount, 1, 7) && payload.iterations === 277))) {
+    throw new Error('Candidate search requires valid scores, seed, samples, and bag state.');
+  }
+  let played = null, evaluation;
+  if (requestType === 'simulateMove') {
+    evaluation = evaluateCustomMove(module, payload, false);
+    played = evaluation.selected;
+  } else if (requestType === 'simulateReview') {
+    played = recordedMove(payload);
+  } else if (requestType !== 'simulateKibitz') {
+    throw new Error('Invalid candidate search request.');
+  }
+  const numMoves = evaluation ? 15 : payload.numMoves;
+  if (!expanded && !integerBetween(numMoves, 1, 15))
+    throw new Error('Review candidate count must be between 1 and 15.');
+  const args = [payload.gridJson, payload.rack, payload.playerScore, payload.opponentScore];
+  const result = expanded ? module.planBagEmptying(...args, played, seed) :
+    module.planReviewSimulation(...args, numMoves, bagCount, finalTurnsRemaining, played, seed);
+  if (result.error) throw new Error(result.error);
+  if (result.seed !== seed || result.bagCount !== bagCount || result.finalTurnsRemaining !== finalTurnsRemaining ||
+      !Array.isArray(result.moves) || !Array.isArray(result.tieOrder) ||
+      (played ? !integerBetween(result.actualIndex, 0, result.moves.length - 1) : result.actualIndex !== -1) ||
+      (!expanded && (result.moves.length > numMoves + Number(Boolean(played)) || result.bagEmptyingIndices?.length !== 0))) {
+    throw new Error('Quackle returned an invalid candidate plan.');
+  }
+  if (evaluation) result.evaluation = evaluation;
+  return result;
+}
+
+function validBatchBounds(payload) {
+  return integerBetween(payload.seed, 0, 0xffffffff) && integerBetween(payload.count, 1, 16) &&
+    integerBetween(payload.offset, 0, 277 - payload.count);
+}
+
+function simulateTerminalReviewBatch(module, payload, legacy) {
+  if (!validBatchBounds(payload) || !Array.isArray(payload.candidates) ||
+      !integerBetween(payload.candidates.length, 1, 8) || (!legacy && !validTerminalPosition(payload))) {
+    throw new Error('Invalid candidate batch bounds.');
+  }
+  const args = [payload.gridJson, payload.rack, payload.playerScore, payload.opponentScore, payload.bagCount];
+  const batchArgs = [payload.candidates, payload.seed, payload.offset, payload.count];
+  const result = legacy ? module.simulateCandidateBatch(...args, ...batchArgs) :
+    module.simulateReviewBatch(...args, payload.finalTurnsRemaining, ...batchArgs);
+  if (result.error) throw new Error(result.error);
+  if (!legacy && (result.offset !== payload.offset || !integerBetween(result.completed, 1, payload.count) ||
+      !Array.isArray(result.moves) || result.moves.length !== payload.candidates.length ||
+      !result.moves.every(move => move.samples === result.completed && move.terminalSamples === result.completed &&
+        Array.isArray(move.equityStatistics) && Number.isFinite(move.residualSum) &&
+        self.CrossplayBagEmptying.validWinSum(move.winSum, move.win, result.completed)))) {
+    throw new Error('Quackle returned incomplete candidate batch results.');
+  }
+  return result;
+}
+
+function simulateRackDraw(module, payload, batched = false) {
+  if (!integerBetween(payload.seed, 0, 0xffffffff) || !integerBetween(payload.iterations, 1, 277) ||
       !Number.isInteger(payload.playerScore) || !Number.isInteger(payload.opponentScore) ||
-      !Number.isInteger(payload.finalTurnsRemaining) ||
       (payload.bagCount === 0 ? ![1, 2].includes(payload.finalTurnsRemaining) : payload.finalTurnsRemaining !== 0)) {
     throw new Error('Rack draw simulation requires valid scores, seed, samples, and final-turn state.');
   }
-  const move = payload.played || {};
-  if (!['place', 'pass', 'exchange'].includes(move.action) || typeof move.tiles !== 'string' || typeof move.position !== 'string') {
-    throw new Error('The recorded move must specify its action, position, and tiles.');
-  }
-  const result = module.simulateReviewDraw(
-    payload.gridJson, payload.rack, payload.playerScore, payload.opponentScore,
-    1, payload.iterations, payload.bagCount, payload.finalTurnsRemaining,
-    { action: move.action, position: move.position, tiles: move.tiles }, payload.seed, payload.rackAfter,
-  );
-  if (result.error) throw new Error(result.error);
-  const turn = {grid: JSON.parse(payload.gridJson), rack: payload.rack, rack_after: payload.rackAfter,
-    bag_count: payload.bagCount, final_turns_remaining: payload.finalTurnsRemaining,
-    action: move.action === 'pass' ? 'PASS 0' : move.action === 'exchange' ? 'SWAP 0' : '',
-    swapped_tiles: move.action === 'exchange' ? move.tiles : ''};
-  // The canonical move uses dots for existing tiles; reconstruct only the import
-  // notation needed by the shared physical-placement validator.
-  if (move.action === 'place') {
-    const across = move.position.match(/^(\d{1,2})([A-O])$/);
-    const down = move.position.match(/^([A-O])(\d{1,2})$/);
-    if (!across && !down) throw new Error('Invalid recorded move position.');
-    let row = Number(across ? across[1] : down[2]) - 1;
-    let col = 'ABCDEFGHIJKLMNO'.indexOf(across ? across[2] : down[1]);
-    let word = '';
-    for (const tile of move.tiles) {
-      if (!turn.grid[row] || col < 0 || col > 14) throw new Error('Invalid recorded move position.');
-      word += tile === '.' ? '(' + turn.grid[row][col] + ')' : tile;
-      if (across) col++; else row++;
+  const move = recordedMove(payload, true);
+  const args = [payload.gridJson, payload.rack, payload.playerScore, payload.opponentScore];
+  const drawArgs = [payload.bagCount, payload.finalTurnsRemaining, move, payload.seed, payload.rackAfter];
+  let result;
+  if (batched) {
+    const {offset, count, knownBeforeWin} = payload;
+    if (!validTerminalPosition(payload) || !validBatchBounds(payload) || offset + count > payload.iterations ||
+        (knownBeforeWin !== -1 && !(Number.isFinite(knownBeforeWin) && knownBeforeWin >= 0 && knownBeforeWin <= 1))) {
+      throw new Error('Invalid rack draw batch bounds.');
     }
-    turn.action = word + ' ' + move.position + ' 0';
+    result = module.simulateDrawBatch(...args, ...drawArgs, offset, count, knownBeforeWin);
+    if (result.error) throw new Error(result.error);
+    if (!self.CrossplayBagEmptying.validDrawBatch(result, offset, count, knownBeforeWin))
+      throw new Error('Quackle returned incomplete rack draw batch results.');
+  } else {
+    result = module.simulateReviewDraw(...args, 1, payload.iterations, ...drawArgs);
+    if (result.error) throw new Error(result.error);
   }
-  if (!CrossplayReview.validDrawResult(result, turn, payload.seed, payload.iterations)) {
+  const turn = self.CrossplayBagEmptying.drawTurn(payload, move);
+  const completed = batched ? result.completed : payload.iterations;
+  const validated = batched ? {...result, iterationsRequested: completed} : result;
+  if (!CrossplayReview.validDrawResult(validated, turn, payload.seed, completed))
     throw new Error('Quackle returned incomplete rack draw results.');
-  }
   return result;
 }
 
@@ -266,44 +325,18 @@ self.addEventListener('message', async event => {
     const module = await getModule();
     let result;
 
-    if (type === 'planBagEmptying') {
-      const seed = payload.seed ?? 123456789;
-      if (!Number.isInteger(seed) || seed < 0 || seed > 0xffffffff ||
-          !Number.isInteger(payload.bagCount) || payload.bagCount < 1 || payload.bagCount > 7 ||
-          payload.finalTurnsRemaining !== 0 || payload.iterations !== 277 ||
-          !Number.isInteger(payload.playerScore) || !Number.isInteger(payload.opponentScore)) {
-        throw new Error('Candidate search requires valid scores, seed, samples, and bag state.');
-      }
-      let played = payload.requestType === 'simulateKibitz' ? null : payload.played;
-      let evaluation;
-      if (payload.requestType === 'simulateMove') {
-        evaluation = evaluateCustomMove(module, payload, false);
-        played = evaluation.selected;
-      }
-      result = module.planBagEmptying(payload.gridJson, payload.rack, payload.playerScore,
-        payload.opponentScore, played ?? null, seed);
-      if (result.error) throw new Error(result.error);
-      if (result.bagCount !== payload.bagCount) throw new Error('Candidate plan has an invalid bag state.');
-      if (evaluation) result.evaluation = evaluation;
-    } else if (type === 'simulateCandidateBatch') {
-      if (!Number.isInteger(payload.seed) || payload.seed < 0 || payload.seed > 0xffffffff ||
-          !Number.isInteger(payload.offset) || !Number.isInteger(payload.count) ||
-          payload.offset < 0 || payload.count < 1 || payload.count > 16 ||
-          payload.offset + payload.count > 277 || !Array.isArray(payload.candidates) ||
-          payload.candidates.length < 1 || payload.candidates.length > 8) {
-        throw new Error('Invalid candidate batch bounds.');
-      }
-      result = module.simulateCandidateBatch(payload.gridJson, payload.rack, payload.playerScore,
-        payload.opponentScore, payload.bagCount, payload.candidates, payload.seed, payload.offset, payload.count);
-      if (result.error) throw new Error(result.error);
+    if (type === 'planBagEmptying' || type === 'planReviewSimulation') {
+      result = planTerminalReview(module, payload, type === 'planBagEmptying');
+    } else if (type === 'simulateCandidateBatch' || type === 'simulateReviewBatch') {
+      result = simulateTerminalReviewBatch(module, payload, type === 'simulateCandidateBatch');
     } else if (type === 'init') {
       result = { info: module.getEngineInfo() };
     } else if (type === 'evaluateMove' || type === 'simulateMove') {
       result = evaluateCustomMove(module, payload, type === 'simulateMove');
     } else if (type === 'simulateReview') {
       result = simulateRecordedMove(module, payload);
-    } else if (type === 'simulateDraw') {
-      result = simulateRackDraw(module, payload);
+    } else if (type === 'simulateDraw' || type === 'simulateDrawBatch') {
+      result = simulateRackDraw(module, payload, type === 'simulateDrawBatch');
     } else if (type === 'simulateOpening') {
       result = simulateOpeningDeal(module, payload);
     } else if (type === 'kibitz') {
