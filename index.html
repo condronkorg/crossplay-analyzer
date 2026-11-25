@@ -645,6 +645,7 @@ const POSITION_PARAMETERS = { moveCount: MOVE_COUNT, iterations: SIMULATION_ITER
   trendMoveCount: TREND_MOVE_COUNT, trendIterations: TREND_ITERATIONS };
 let positionCache = new AnalysisCache({}, POSITION_PARAMETERS);
 let analysisSaveQueue = Promise.resolve();
+let analysisResetState = null;
 let reviewQueue = null;
 let analysisEpoch = 0;
 let catalogRequest = 0;
@@ -871,6 +872,12 @@ function clearAccountUi(message) {
 }
 
 async function refreshGames() {
+  const reset = analysisResetState;
+  if (reset?.busy) {
+    byId('refreshStatus').textContent = 'Waiting for the analysis reset, then refreshing games…';
+    await reset.finished;
+    if (reset.owner !== analysisOwner()) return false;
+  }
   const state = {owner: analysisOwner(), snapshot: manualRefreshState?.snapshot || suspendAnalysisForRefresh()};
   manualRefreshState = state;
   try {
@@ -886,7 +893,7 @@ async function refreshGames() {
 }
 
 async function loadGames({ refresh = false, background = false, manual = false, recoverConnection = false } = {}) {
-  if (manualRefreshState && !manual) return false;
+  if ((manualRefreshState || analysisResetState?.busy) && !manual) return false;
   const account = signedInUser;
   let owner = analysisOwner();
   let wasConfigured = nytConfigured;
@@ -1046,6 +1053,7 @@ function analysisOwner() {
   return analysisEpoch + ':' + (persistenceEnabled ? signedInUser?.id || signedInUser?.email || 'signed-out' : 'local');
 }
 function resetBackgroundAnalysis() {
+  analysisResetState = null;
   historyResizeObserver?.disconnect();
   observedHistoryVisual = null;
   analysisEpoch++;
@@ -1239,7 +1247,7 @@ function getReviewQueue() {
   return queue;
 }
 
-function suspendAnalysisForRefresh() {
+function suspendAnalysisForRefresh({ abortRequests = true } = {}) {
   const queue = reviewQueue;
   const snapshot = {owner: analysisOwner(), queue, games: [...games], ids: queue?.orderedIds() || [],
     activeId: queue?.activeId, contexts: new Map()};
@@ -1256,7 +1264,8 @@ function suspendAnalysisForRefresh() {
         states: context.states.map(state => ['running', 'running-preview', 'error'].includes(state)
           ? 'pending-preview' : state)});
     }
-    queue.close();
+    if (abortRequests) queue.close();
+    else queue.closed = true; // Let already-sent saves finish before a deliberate reset.
   }
   stopWorker(Object.assign(new Error('Analysis interrupted by refresh.'), {name: 'AbortError'}));
   // Interrupted requests must not be shared with the replacement queue. Their
@@ -1461,7 +1470,7 @@ async function openGame(gameId, { shareToken = null, preloadedReview = null } = 
 
 // Each cache keeps its own pending writes and account identity across navigation.
 function recordEngineResult(review, cache, key, result) {
-  if (cache.shared || cache.owner !== analysisOwner()) return;
+  if (cache.shared || cache.discarded || cache.owner !== analysisOwner()) return;
   cache.unsaved = { ...cache.unsaved, [key]: result };
   if (result.simulated === true && result.iterationsCompleted === SIMULATION_ITERATIONS) {
     // Full simulations are expensive. Start their save before displaying them.
@@ -1469,7 +1478,7 @@ function recordEngineResult(review, cache, key, result) {
   } else if (!cache.saveTimer) cache.saveTimer = setTimeout(() => flushAnalysisSave(review, cache), ANALYSIS_SAVE_DELAY);
 }
 function markAnalysisComplete(field, value, cache = positionCache) {
-  if (cache.shared || cache.owner !== analysisOwner()) return;
+  if (cache.shared || cache.discarded || cache.owner !== analysisOwner()) return;
   cache.completed = { ...cache.completed, [field]: value };
 }
 function flushAnalysisSave(review = currentReview, cache = positionCache, { keepalive = false } = {}) {
@@ -1477,7 +1486,7 @@ function flushAnalysisSave(review = currentReview, cache = positionCache, { keep
   cache.saveTimer = null;
   const owner = cache.owner;
   const save = analysisSaveQueue.then(async () => {
-    if (cache.shared || owner !== analysisOwner()) return null;
+    if (cache.shared || cache.discarded || owner !== analysisOwner()) return null;
     const entries = cache.unsaved || {};
     const completed = cache.completed || {};
     if (!review || (!Object.keys(entries).length && !Object.keys(completed).length)) return null;
@@ -1503,6 +1512,110 @@ function flushAnalysisSave(review = currentReview, cache = positionCache, { keep
   analysisSaveQueue = save;
   return save;
 }
+// A reset is a single-session operation. Other open tabs must stop old analysis
+// before it is used; the database merge API does not fence writes across tabs.
+async function restartEntireGameAnalysis(review) {
+  if (analysisResetState?.busy || manualRefreshState || viewingSharedGame) return false;
+  const context = contextFor(review);
+  if (!context || context.shared || context.owner !== analysisOwner()) return false;
+  const owner = analysisOwner();
+  let finishReset;
+  const finished = new Promise(resolve => { finishReset = resolve; });
+  const state = analysisResetState = {owner, id: review.id, busy: true, finished, message: 'Waiting for saved analysis to finish…'};
+  context.cache.discarded = true;
+  clearTimeout(context.cache.saveTimer);
+  const snapshot = suspendAnalysisForRefresh({abortRequests: false});
+  showAnalysisResetState(state);
+  let resetSent = false, drainTimeout;
+  try {
+    // Closing the controller first would abort fetch without proving that the
+    // server finished its write. Wait for acknowledgments, then delete.
+    const drainExpired = Symbol('save-drain-timeout');
+    const acknowledgment = await Promise.race([analysisSaveQueue, new Promise(resolve => {
+      drainTimeout = setTimeout(() => resolve(drainExpired), 30000);
+    })]);
+    clearTimeout(drainTimeout);
+    if (acknowledgment === drainExpired || context.cache.saveError) {
+      throw new Error('Analysis was not cleared because a pending save failed or did not finish. Retry saving, then clear again.');
+    }
+    if (owner !== analysisOwner()) throw accountChanged();
+    snapshot.queue?.close();
+    state.message = 'Clearing all opening, move, and draw estimates…';
+    showAnalysisResetState(state);
+    resetSent = true;
+    const result = await api('games/' + encodeURIComponent(review.id) + '/analysis', {
+      method: 'DELETE', expectedOwner: owner, signal: AbortSignal.timeout(45000)
+    });
+    if (result.cleared !== true) throw new Error('The saved analysis reset was not confirmed.');
+    const fresh = await api('games/' + encodeURIComponent(review.id) + '/review', {
+      expectedOwner: owner, signal: AbortSignal.timeout(20000)
+    });
+    const stored = fresh.stored_analysis;
+    if (stored && (Object.keys(stored.turn_analyses || {}).length || stored.move_quality || stored.win_trend)) {
+      throw new Error('Saved analysis appeared again. Stop analysis in other tabs, then clear again.');
+    }
+    if (owner !== analysisOwner() || reviewQueue !== snapshot.queue) throw accountChanged();
+    fresh.stored_analysis = null;
+    snapshot.contexts.set(review.id, makeReviewContext(fresh, owner));
+    if (currentReview === review) currentReview = fresh;
+    state.message = 'All saved estimates cleared. Reanalyzing the entire game.';
+    resumeAnalysisAfterRefresh(snapshot);
+    if (currentReview === fresh) renderReview();
+    startBackgroundAnalysis(fresh);
+    return true;
+  } catch (error) {
+    if (error.name === 'AbortError' || owner !== analysisOwner()) return false;
+    snapshot.queue?.close();
+    state.error = true;
+    state.message = error.message;
+    // A failed/uncertain reset must not automatically publish the old cache.
+    if (resetSent) {
+      const empty = makeReviewContext({...review, stored_analysis: null}, owner);
+      empty.paused = true;
+      snapshot.contexts.set(review.id, empty);
+      if (currentReview === review) currentReview = empty.review;
+    } else {
+      context.cache.discarded = false;
+      const restored = snapshot.contexts.get(review.id);
+      if (restored) restored.paused = true;
+    }
+    resumeAnalysisAfterRefresh(snapshot);
+    return false;
+  } finally {
+    clearTimeout(drainTimeout);
+    state.busy = false;
+    finishReset();
+    if (owner === analysisOwner() && currentReview?.id === review.id) renderReview();
+  }
+}
+
+function showAnalysisResetState(state) {
+  if (state.owner !== analysisOwner() || currentReview?.id !== state.id) return;
+  for (const button of byId('reviewPanel').querySelectorAll('.reset-analysis-button, .quality-panel .trend-controls > .analysis-button, .trend-panel .trend-controls > .analysis-button')) {
+    button.disabled = state.busy;
+    button.textContent = state.busy ? 'Clearing analysis…' : 'Clear and rerun analysis';
+  }
+  for (const status of byId('reviewPanel').querySelectorAll('.quality-panel .trend-status, .trend-panel .trend-status')) {
+    status.textContent = state.message;
+  }
+  for (const note of byId('reviewPanel').querySelectorAll('.analysis-reset-controls .analysis-note')) {
+    note.textContent = state.message;
+  }
+}
+
+function makeAnalysisResetControls(review) {
+  if (viewingSharedGame || contextFor(review)?.shared) return null;
+  const controls = makeElement('div', 'analysis-reset-controls');
+  const state = analysisResetState?.owner === analysisOwner() && analysisResetState.id === review.id ? analysisResetState : null;
+  const button = makeElement('button', 'analysis-button reset-analysis-button', state?.busy ? 'Clearing analysis…' : 'Clear and rerun analysis');
+  button.type = 'button';
+  button.disabled = Boolean(analysisResetState?.busy);
+  button.addEventListener('click', () => { void restartEntireGameAnalysis(review); });
+  controls.append(button, makeElement('p', 'analysis-note', state?.message ||
+    'Clears all opening, move, and draw estimates for this game. Imported moves, scores, sharing, and other games are kept. Stop analysis for this game in other tabs first.'));
+  return controls;
+}
+
 function startBackgroundAnalysis(review = null) {
   const queue = getReviewQueue();
   if (review) queue.select(review.id);
@@ -1816,6 +1929,8 @@ function makeGameOverview(review) {
   metrics.append(start);
   const method = makeReviewDetails('overview-method', 'overview-method', 'About these estimates');
   method.append(makeElement('p', '', 'Gameplay WPA is the recorded move’s win estimate minus the best sampled alternative from the same position. Best: under 2 percentage points; Inaccuracy: 2–under 5; Mistake: 5–under 10; Blunder: 10 or more. Rack Draws WPA compares the same recorded move before and after its actual refill. Each row shows the average signed change with the total in parentheses; passes and empty-bag turns have no draw. Each player’s initial seven tiles count as one draw, with later refills counted separately. Partial totals and averages include only measured draws. The gray triangle shows the joint estimate after both initial racks, before Turn 1. The opening estimate uses a fixed static-best move policy, conditioned on both racks. Opening WPA averages both rack reveal orders. It removes the normal first-move advantage from draw luck. These values do not exactly divide the whole chart into move and draw effects. Missing estimates stay blank. These are engine estimates, not a measure of human accuracy.'));
+  const reset = makeAnalysisResetControls(review);
+  if (reset) method.append(reset);
   metrics.append(method);
   return panel;
 }
@@ -2548,15 +2663,20 @@ function makeMoveQualityPanel(review) {
   const panel = makeElement('section', 'panel quality-panel');
   panel.append(makeElement('h3', '', 'How well you played'), makeElement('p', 'panel-subtitle', 'Your move quality · measured against Quackle'));
   const controls = makeElement('div', 'trend-controls');
-  const button = makeElement('button', 'analysis-button', moveQualityResults && moveQualityResults.state === 'running' ? 'Stop move analysis' :
+  const reset = analysisResetState?.owner === analysisOwner() && analysisResetState.id === review.id ? analysisResetState : null;
+  const resetting = Boolean(reset?.busy);
+  const button = makeElement('button', 'analysis-button', resetting ? 'Clearing analysis…' : reset?.error ? 'Retry clearing analysis' : moveQualityResults && moveQualityResults.state === 'running' ? 'Stop move analysis' :
     (moveQualityResults && moveQualityResults.state === 'done' ? 'Re-analyze moves' : 'Analyze move quality'));
   button.type = 'button';
+  button.disabled = Boolean(resetting);
   button.addEventListener('click', () => {
+    if (reset?.error) { void restartEntireGameAnalysis(review); return; }
     if (moveQualityResults && moveQualityResults.state === 'running') {
       pauseReviewAnalysis(review);
       return;
     }
-    startMoveQuality(review).then(() => startBackgroundAnalysis(review));
+    if (moveQualityResults?.state === 'done' && !viewingSharedGame) void restartEntireGameAnalysis(review);
+    else startMoveQuality(review).then(() => startBackgroundAnalysis(review));
   });
   controls.append(button);
   if (!moveQualityResults) {
@@ -2564,7 +2684,7 @@ function makeMoveQualityPanel(review) {
     empty.append(makeElement('span', 'quality-empty-icon', '↗'), makeElement('strong', '', 'Go beyond the final score'), makeElement('p', '', 'Find your best moves and the opportunities you missed. Your personal breakdown is prepared automatically in the background.'), controls);
     panel.append(empty);
   } else panel.append(controls);
-  panel.append(makeElement('div', 'trend-status', moveQualityResults
+  panel.append(makeElement('div', 'trend-status', resetting || reset?.error ? reset.message : moveQualityResults
     ? moveQualityResults.state === 'done'
       ? 'Your review is ready · ' + personalQualityPoints(review).filter(point => Number.isFinite(point.loss)).length + ' of your ' + review.turns.filter(turn => turn.mine).length + ' turns rated.' + (moveQualityResults.message?.includes('Save failed:') ? ' ' + moveQualityResults.message.slice(moveQualityResults.message.indexOf('Save failed:')) : '')
       : moveQualityResults.message || ''
@@ -2739,10 +2859,14 @@ function makeTrendPanel(review) {
   chart.append(drawTrendChart(point, review));
   panel.append(chart);
   const controls = makeElement('div', 'trend-controls');
-  const button = makeElement('button', 'analysis-button', trendResults?.state === 'running' ? 'Pause analysis' :
+  const reset = analysisResetState?.owner === analysisOwner() && analysisResetState.id === review.id ? analysisResetState : null;
+  const resetting = Boolean(reset?.busy);
+  const button = makeElement('button', 'analysis-button', resetting ? 'Clearing analysis…' : reset?.error ? 'Retry clearing analysis' : trendResults?.state === 'running' ? 'Pause analysis' :
     trendResults?.state === 'done' ? 'Rebuild estimates' : 'Start analysis');
   button.type = 'button';
+  button.disabled = Boolean(resetting);
   button.addEventListener('click', () => {
+    if (reset?.error) { void restartEntireGameAnalysis(review); return; }
     if (trendResults?.state === 'running') {
       pauseReviewAnalysis(review);
       return;
@@ -2752,7 +2876,7 @@ function makeTrendPanel(review) {
   controls.append(button);
   const settings = makeReviewDetails('trend', 'trend-settings', 'Estimate details and controls');
   settings.append(controls);
-  const status = makeElement('div', 'trend-status', preview
+  const status = makeElement('div', 'trend-status', resetting || reset?.error ? reset.message : preview
     ? (previewCandidate ? 'Showing the selected alternative for this turn.' : 'Showing the best sampled alternative for this turn.') : trendResults
     ? trendResults.message || (trendResults.state === 'running' ? 'Preparing estimates…' : '')
     : 'Estimates appear as background analysis finishes.');

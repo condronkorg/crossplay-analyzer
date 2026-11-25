@@ -315,6 +315,26 @@ class CrossplayAPITest(unittest.TestCase):
         self.cookie = owner_cookie
         self.assertEqual(self.request('GET', 'games/mockgame01/review')[1]['stored_analysis'], saved)
 
+    def test_full_analysis_reset_preserves_import_and_other_games(self):
+        self.connect()
+        review = self.request('GET', 'games/mockgame01/review')[1]
+        other = self.request('GET', 'games/mockgame02/review')[1]
+        payload = {'analysis_version': 'quackle-crossplay-v2', 'turn_analyses': {
+            'synthetic-candidates': {'simulated': False, 'moves': [{'tiles': 'CAT'}]}}}
+        for game_id in ('mockgame01', 'mockgame02'):
+            self.assertEqual(self.request('PUT', 'games/' + game_id + '/analysis', payload)[0], 200)
+        status, result, _ = self.request('DELETE', 'games/mockgame01/analysis')
+        self.assertEqual(status, 200, result)
+        self.assertTrue(result['cleared'])
+        fresh = self.request('GET', 'games/mockgame01/review')[1]
+        self.assertIsNone(fresh['stored_analysis'])
+        for field in ('turns', 'share_token', 'my_score', 'opponent_score'):
+            self.assertEqual(fresh[field], review[field])
+        self.assertIsNotNone(self.request('GET', 'games/mockgame02/review')[1]['stored_analysis'])
+        self.assertEqual(self.request('DELETE', 'shared/' + review['share_token'])[0], 405)
+        self.cookie = ''
+        self.assertEqual(self.request('DELETE', 'games/mockgame01/analysis')[0], 409)
+
     def test_review_win_results_merge_and_reload_without_replacing_saved_turns(self):
         from test_background_analysis import review_analysis_entry
 

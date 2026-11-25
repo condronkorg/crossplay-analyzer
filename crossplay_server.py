@@ -1126,6 +1126,15 @@ class Handler(SimpleHTTPRequestHandler):
         })
         return rows[0].get('status') if rows else None
 
+    def delete_game_analysis(self, user_id, game_id):
+        if self.saved_review_status(user_id, game_id) != 'completed':
+            raise CrossplayError('Import this finished game before clearing analysis.', 404)
+        # Clear every engine version, while keeping the imported game and share token.
+        self.supabase_data_request('DELETE', 'game_analyses', {
+            'user_id': 'eq.' + user_id,
+            'nyt_game_id': 'eq.' + game_id,
+        })
+
     def save_game_analysis(self, user_id, game_id, body):
         snapshot = self.validate_game_analysis(body)
         if self.saved_review_status(user_id, game_id) != 'completed':
@@ -1293,6 +1302,18 @@ class Handler(SimpleHTTPRequestHandler):
             if os.environ.get('VERCEL'):
                 return self.handle_persistent_api(method, route)
             match = re.fullmatch(r'games/([a-z0-9]{6,32})/analysis', route)
+            if match and method == 'DELETE':
+                session_id, client = self.current_session()
+                if client is None:
+                    raise CrossplayError('Paste your NYT-S cookie first', 409)
+                with Handler.sessions_lock:
+                    session = Handler.sessions.get(session_id)
+                    saved = next((review for review in session.get('shared_reviews', {}).values()
+                                  if review['id'] == match.group(1)), None) if session else None
+                    if saved is None or saved.get('status') != 'completed':
+                        raise CrossplayError('Import this finished game before clearing analysis.', 404)
+                    saved.pop('stored_analysis', None)
+                return self.send_json(200, {'cleared': True})
             if match and method == 'PUT':
                 session_id, client = self.current_session()
                 if client is None:
@@ -1383,6 +1404,12 @@ class Handler(SimpleHTTPRequestHandler):
             review['stored_analysis'] = self.saved_game_analysis(user_id, game_id)
             return self.send_json(200, review)
         match = re.match(r'^games/([^/]+)/analysis$', route)
+        if match and method == 'DELETE':
+            game_id = match.group(1).lower()
+            if not GAME_ID_RE.match(game_id):
+                return self.send_json(400, {'error': 'Invalid game ID'})
+            self.delete_game_analysis(user_id, game_id)
+            return self.send_json(200, {'cleared': True})
         if match and method == 'PUT':
             game_id = match.group(1).lower()
             if not GAME_ID_RE.match(game_id):

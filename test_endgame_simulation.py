@@ -119,6 +119,76 @@ class EndgameSimulationTests(unittest.TestCase):
         self.assertEqual(greedy['win'], 0)
         self.assertEqual(result.get('endgamePolicy'), 'crossplay-endgame-v1')
 
+    def test_final_score_reuse_preserves_score_dependent_wins_and_ties(self):
+        result = self.page.evaluate('''grid => {
+          return [[110,100],[210,100],[189,100],[100,110],[110,100]].map(scores=> {
+            const r=testEngine.simulateReviewMove(JSON.stringify(grid),'WEAFTUO',
+              ...scores,15,1,0,2,{action:'pass',position:'',tiles:''},123456789);
+            if(r.error)throw new Error(r.error);
+            return {selected:r.selected,best:r.best};
+          });
+        }''', self.GRID)
+        self.assertEqual([r['selected']['win'] for r in result], [0, 1, 0.5, 0, 0])
+        for row in result:
+            self.assertEqual(row['selected']['equity'], -89)
+            self.assertEqual(row['selected']['terminalSamples'], 1)
+            self.assertEqual(row['best']['tiles'], 'WET')
+            self.assertEqual(row['best']['equity'], -1)
+        self.assertEqual(result[0], result[-1])
+
+
+class NativeCacheTests(unittest.TestCase):
+    def test_native_cache_retains_new_working_set_and_promotes_hits(self):
+        import shutil
+        import subprocess
+        import tempfile
+        from pathlib import Path
+
+        compiler = shutil.which('clang++') or shutil.which('g++') or shutil.which('c++')
+        if not compiler:
+            self.skipTest('A C++17 compiler is needed for the native cache check.')
+        patch = Path(__file__).with_name('tools').joinpath('quackle-review-simulation.patch').read_text()
+        chunk = next(chunk for chunk in patch.split('diff --git ') if chunk.splitlines() and chunk.splitlines()[0].endswith('/crossplaycache.h'))
+        header = '\n'.join(line[1:] for line in chunk.splitlines() if line.startswith('+') and not line.startswith('+++'))
+        source = r"""
+#include "crossplaycache.h"
+#include <cassert>
+#include <string>
+int main() {
+  Quackle::CrossplayLruCache<int> cache(16);
+  for(int i=0;i<16;++i) cache.emplace("old:"+std::to_string(i),i);
+  for(int i=0;i<8;++i) cache.emplace("hot:"+std::to_string(i),100+i);
+  for(int i=0;i<8;++i) {
+    const auto value=cache.find("hot:"+std::to_string(i));
+    assert(value && *value==100+i);
+  }
+  assert(cache.size()==16);
+  Quackle::CrossplayLruCache<int> small(2);
+  small.emplace("a",1); small.emplace("b",2);
+  assert(*small.find("a")==1);
+  small.emplace("c",3);
+  assert(small.find("b")==nullptr && *small.find("a")==1);
+  small.emplace("a",9);
+  assert(small.size()==2 && *small.find("a")==9);
+  Quackle::CrossplayLruCache<int> physical(128);
+  const std::string left("board\0a",7), right("board\0b",7);
+  physical.emplace(left,11); physical.emplace(right,22);
+  for(int i=0;i<100;++i) physical.emplace(std::string(500,'x')+std::to_string(i),i);
+  assert(*physical.find(left)==11 && *physical.find(right)==22);
+  Quackle::CrossplayLruCache<int> disabled(0);
+  disabled.emplace("x",1);
+  assert(disabled.size()==0);
+}
+"""
+        with tempfile.TemporaryDirectory(prefix='crossplay-cache-test-') as directory:
+            root = Path(directory)
+            root.joinpath('crossplaycache.h').write_text(header)
+            root.joinpath('cache-test.cpp').write_text(source)
+            subprocess.run([compiler, '-std=c++17', '-O2', '-I', directory,
+                            str(root / 'cache-test.cpp'), '-o', str(root / 'cache-test')],
+                           check=True, capture_output=True, text=True)
+            subprocess.run([str(root / 'cache-test')], check=True, capture_output=True, text=True)
+
 
 if __name__ == '__main__':
     unittest.main()

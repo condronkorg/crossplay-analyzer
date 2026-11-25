@@ -15,6 +15,7 @@ class AnalysisRestoreBrowserTest(unittest.TestCase):
     start_review = review_browser.ReviewBrowserTest.start_review
     install_review_worker = review_browser.ReviewBrowserTest.install_review_worker
     use_saved_analysis = review_browser.ReviewBrowserTest.use_saved_analysis
+    open_statistics = review_browser.ReviewBrowserTest.open_statistics
 
     def prepare_saved_review(self):
         self.install_review_worker()
@@ -377,6 +378,315 @@ class AnalysisRestoreBrowserTest(unittest.TestCase):
         self.assertEqual(result['state'], 'running')
         self.assertEqual(result['states'], ['pending-preview'] * 6)
         self.assertEqual(result['summaries'], [])
+
+    def test_clear_and_rerun_discards_every_saved_estimate(self):
+        self.install_review_worker()
+        self.open_game()
+        result = self.page.evaluate('''async () => {
+          const context=contextFor(currentReview);
+          context.cache.results={oldFull:{},oldPreview:{},oldDraw:{},oldOpening:{}};
+          context.cache.unsaved={};context.cache.completed={};
+          currentReview.stored_analysis={version:ANALYSIS_VERSION,turn_analyses:context.cache.results};
+          window.resetStarts=[];
+          const originalQueue=getReviewQueue;
+          getReviewQueue=()=>{const queue=originalQueue();queue.concurrency=0;return queue;};
+          startBackgroundAnalysis=review=>resetStarts.push(review.id);
+          const before=structuredClone(currentReview.turns);
+          const success=await restartEntireGameAnalysis(currentReview);
+          const fresh=contextFor(currentReview);
+          return {success,starts:resetStarts,keys:Object.keys(fresh.cache.results),
+            opening:fresh.openingState,states:fresh.states,
+            preserved:JSON.stringify(before)===JSON.stringify(currentReview.turns),
+            saved:await api('games/'+currentReview.id+'/review')};
+        }''')
+        self.assertTrue(result['success'])
+        self.assertEqual(result['starts'], ['mockgame01'])
+        self.assertEqual(result['keys'], [])
+        self.assertEqual(result['opening'], 'pending-preview')
+        self.assertTrue(all(state == 'pending-preview' for state in result['states']))
+        self.assertTrue(result['preserved'])
+        self.assertIsNone(result['saved']['stored_analysis'])
+
+    def test_reset_waits_for_save_ack_and_preserves_other_game_work(self):
+        self.install_review_worker()
+        self.open_game()
+        result = self.page.evaluate('''async () => {
+          const originalQueue=getReviewQueue;
+          getReviewQueue=()=>{const queue=originalQueue();queue.concurrency=0;return queue;};
+          startBackgroundAnalysis=()=>{};
+          const owner=analysisOwner(), review=currentReview, oldQueue=reviewQueue;
+          const otherReview=await api('games/mockgame02/review');
+          const other=makeReviewContext(otherReview,owner);
+          other.paused=true;
+          other.cache.unsaved={pendingOther:{simulated:false,moves:[{tiles:'CAT',equity:1}]}};
+          oldQueue.contexts.set(otherReview.id,other);
+          const requests=[], request=api;
+          api=async(path,options)=>{requests.push({path,method:options?.method||'GET'});return request(path,options);};
+          let acknowledge;
+          analysisSaveQueue=new Promise(resolve=>acknowledge=()=>resolve(null));
+          const pending=restartEntireGameAnalysis(review);
+          const duplicate=await restartEntireGameAnalysis(review);
+          await new Promise(resolve=>setTimeout(resolve,20));
+          const before={deletes:requests.filter(r=>r.method==='DELETE').length,aborted:oldQueue.controller.signal.aborted};
+          acknowledge();
+          const success=await pending;
+          await analysisSaveQueue;
+          const retained=reviewQueue.contexts.get(otherReview.id);
+          return {before,duplicate,success,afterAborted:oldQueue.controller.signal.aborted,
+            sameCache:retained.cache===other.cache,otherPaused:retained.paused,
+            savedOther:(await request('games/mockgame02/review')).stored_analysis,
+            deletes:requests.filter(r=>r.method==='DELETE').length};
+        }''')
+        self.assertEqual(result['before'], {'deletes': 0, 'aborted': False})
+        self.assertFalse(result['duplicate'])
+        self.assertTrue(result['success'])
+        self.assertTrue(result['afterAborted'])
+        self.assertTrue(result['sameCache'])
+        self.assertTrue(result['otherPaused'])
+        self.assertIn('pendingOther', result['savedOther']['turn_analyses'])
+        self.assertEqual(result['deletes'], 1)
+
+    def test_reset_refuses_failed_save_drain(self):
+        self.install_review_worker()
+        self.open_game()
+        result = self.page.evaluate('''async () => {
+          const review=currentReview, oldCache=positionCache;
+          oldCache.results={keep:{moves:[]}};
+          const originalQueue=getReviewQueue;
+          getReviewQueue=()=>{const queue=originalQueue();queue.concurrency=0;return queue;};
+          startBackgroundAnalysis=()=>{};
+          let deletes=0;const request=api;
+          api=async(path,options)=>{if(options?.method==='DELETE')deletes++;return request(path,options);};
+          oldCache.saveError='Synthetic save acknowledgment failure';
+          analysisSaveQueue=Promise.resolve(oldCache.saveError);
+          const success=await restartEntireGameAnalysis(review);
+          return {success,deletes,retained:positionCache===oldCache,
+            keys:Object.keys(positionCache.results),paused:contextFor(currentReview).paused,
+            message:analysisResetState.message};
+        }''')
+        self.assertFalse(result['success'])
+        self.assertEqual(result['deletes'], 0)
+        self.assertTrue(result['retained'])
+        self.assertIn('keep', result['keys'])
+        self.assertTrue(result['paused'])
+        self.assertIn('pending save failed', result['message'])
+
+    def test_uncertain_reset_never_restores_old_estimates_for_save(self):
+        self.install_review_worker()
+        self.open_game()
+        result = self.page.evaluate('''async () => {
+          const review=currentReview, oldCache=positionCache;
+          oldCache.results={oldFull:{}};oldCache.unsaved={oldFull:{moves:[]}};
+          const originalQueue=getReviewQueue;
+          getReviewQueue=()=>{const queue=originalQueue();queue.concurrency=0;return queue;};
+          startBackgroundAnalysis=()=>{};
+          const request=api;
+          api=async(path,options)=>{
+            if(options?.method==='DELETE')throw new Error('Synthetic reset connection failure');
+            return request(path,options);
+          };
+          const success=await restartEntireGameAnalysis(review);
+          return {success,keys:Object.keys(positionCache.results),
+            unsaved:Object.keys(positionCache.unsaved||{}),discarded:oldCache.discarded,
+            paused:contextFor(currentReview).paused,message:analysisResetState.message};
+        }''')
+        self.assertFalse(result['success'])
+        self.assertEqual(result['keys'], [])
+        self.assertEqual(result['unsaved'], [])
+        self.assertTrue(result['discarded'])
+        self.assertTrue(result['paused'])
+        self.assertIn('reset connection failure', result['message'])
+
+    def test_reset_account_change_during_save_wait_cannot_delete(self):
+        self.install_review_worker()
+        self.open_game()
+        result = self.page.evaluate('''async () => {
+          let acknowledge,deletes=0;
+          analysisSaveQueue=new Promise(resolve=>acknowledge=()=>resolve(null));
+          const request=api;
+          api=async(path,options)=>{if(options?.method==='DELETE')deletes++;return request(path,options);};
+          const pending=restartEntireGameAnalysis(currentReview);
+          resetBackgroundAnalysis();
+          acknowledge();
+          return {success:await pending,deletes,contexts:reviewQueue?.contexts.size||0};
+        }''')
+        self.assertFalse(result['success'])
+        self.assertEqual(result['deletes'], 0)
+        self.assertEqual(result['contexts'], 0)
+
+    def test_refresh_waits_for_reset_delete_ack_before_replacing_queue(self):
+        self.install_review_worker()
+        self.open_game()
+        result = self.page.evaluate('''async () => {
+          const review=currentReview, oldCache=positionCache;
+          oldCache.results={oldFull:{}};
+          const originalQueue=getReviewQueue;
+          getReviewQueue=()=>{const queue=originalQueue();queue.concurrency=0;return queue;};
+          startBackgroundAnalysis=()=>{};
+          let releaseDelete,deleteStarted=false,refreshRequests=0;
+          const heldDelete=new Promise(resolve=>releaseDelete=resolve),request=api;
+          api=async(path,options)=>{
+            if(options?.method==='DELETE'){deleteStarted=true;await heldDelete;}
+            if(path==='games' || path.startsWith('games?') || path==='games/refresh')refreshRequests++;
+            return request(path,options);
+          };
+          const pending=restartEntireGameAnalysis(review);
+          while(!deleteStarted)await new Promise(resolve=>setTimeout(resolve,1));
+          const refreshing=refreshGames();
+          await new Promise(resolve=>setTimeout(resolve,20));
+          const before={refreshRequests,manual:Boolean(manualRefreshState),
+            buttonEnabled:!byId('refreshButton').disabled,status:byId('refreshStatus').textContent};
+          releaseDelete();
+          const reset=await pending;
+          await refreshing;
+          const current=contextFor(currentReview);
+          return {before,reset,refreshRequests,newCache:current.cache!==oldCache,
+            discarded:Boolean(current.cache.discarded),keys:Object.keys(current.cache.results),
+            opening:current.openingState,states:current.states};
+        }''')
+        self.assertEqual(result['before']['refreshRequests'], 0)
+        self.assertFalse(result['before']['manual'])
+        self.assertTrue(result['before']['buttonEnabled'])
+        self.assertIn('analysis reset', result['before']['status'])
+        self.assertTrue(result['reset'])
+        self.assertGreater(result['refreshRequests'], 0)
+        self.assertTrue(result['newCache'])
+        self.assertFalse(result['discarded'])
+        self.assertEqual(result['keys'], [])
+        self.assertEqual(result['opening'], 'pending-preview')
+        self.assertTrue(all(state == 'pending-preview' for state in result['states']))
+
+
+    def test_reset_removes_ready_status_before_delete_ack(self):
+        self.prepare_saved_review()
+        self.open_statistics()
+        self.page.evaluate('''() => {
+          window.releaseResetDelete=null;
+          const request=api;
+          api=async(path,options)=>{
+            if(options?.method==='DELETE') await new Promise(resolve=>releaseResetDelete=resolve);
+            return request(path,options);
+          };
+        }''')
+        self.page.get_by_role('button', name='Re-analyze moves', exact=True).click()
+        self.page.wait_for_function('typeof releaseResetDelete === "function"')
+        status = self.page.locator('.quality-panel .trend-status')
+        self.assertNotIn('Your review is ready', status.text_content())
+        self.assertIn('Clearing', status.text_content())
+        self.assertTrue(self.page.get_by_role('button', name='Clearing analysis…', exact=True).first.is_disabled())
+        trend_status = self.page.locator('.trend-panel .trend-status')
+        self.assertIn('Clearing', trend_status.text_content())
+        self.assertTrue(self.page.locator('.trend-panel .trend-controls > .analysis-button').is_disabled())
+        self.page.evaluate('renderReview()')
+        self.assertNotIn('Your review is ready', status.text_content())
+        self.assertIn('Clearing', status.text_content())
+        self.assertIn('Clearing', trend_status.text_content())
+        self.assertTrue(self.page.locator('.trend-panel .trend-controls > .analysis-button').is_disabled())
+        self.page.evaluate('releaseResetDelete()')
+        self.page.wait_for_function('!analysisResetState.busy')
+
+    def test_failed_reset_from_quality_control_is_visible_in_both_panels(self):
+        self.prepare_saved_review()
+        self.open_statistics()
+        self.page.evaluate('''() => {
+          positionCache.saveError='Synthetic failed save acknowledgment';
+          analysisSaveQueue=Promise.resolve(positionCache.saveError);
+        }''')
+        self.page.get_by_role('button', name='Re-analyze moves', exact=True).click()
+        self.page.wait_for_function('analysisResetState && !analysisResetState.busy')
+        self.assertIn('pending save failed', self.page.locator('.quality-panel .trend-status').text_content())
+        self.assertIn('pending save failed', self.page.locator('.trend-panel .trend-status').text_content())
+        self.assertTrue(self.page.locator('.quality-panel .trend-controls > .analysis-button').is_enabled())
+        self.assertIn('Retry', self.page.locator('.quality-panel .trend-controls > .analysis-button').text_content())
+        self.assertTrue(self.page.evaluate('Boolean(moveQualityResults.points.length)'))
+        self.page.evaluate('''() => {
+          positionCache.saveError=null;
+          analysisSaveQueue=Promise.resolve(null);
+          const originalQueue=getReviewQueue;
+          getReviewQueue=()=>{const queue=originalQueue();queue.concurrency=0;return queue;};
+        }''')
+        self.page.locator('.quality-panel .trend-controls > .analysis-button').click()
+        self.page.wait_for_function('analysisResetState && !analysisResetState.busy && !analysisResetState.error')
+        self.assertNotIn('pending save failed', self.page.locator('.quality-panel .trend-status').text_content())
+        self.assertNotIn('pending save failed', self.page.locator('.trend-panel .trend-status').text_content())
+
+    def test_reset_timeout_refuses_delete_and_releases_old_requests(self):
+        self.install_review_worker()
+        self.open_game()
+        result = self.page.evaluate('''async () => {
+          const oldQueue=reviewQueue;
+          const originalQueue=getReviewQueue;
+          getReviewQueue=()=>{const queue=originalQueue();queue.concurrency=0;return queue;};
+          startBackgroundAnalysis=()=>{};
+          const timeout=window.setTimeout;
+          window.setTimeout=(run,delay,...args)=>timeout(run,delay===30000?5:delay,...args);
+          analysisSaveQueue=new Promise(()=>{});
+          let deletes=0;const request=api;
+          api=async(path,options)=>{if(options?.method==='DELETE')deletes++;return request(path,options);};
+          const success=await restartEntireGameAnalysis(currentReview);
+          window.setTimeout=timeout;
+          return {success,deletes,aborted:oldQueue.controller.signal.aborted,
+            busy:analysisResetState.busy,paused:contextFor(currentReview).paused};
+        }''')
+        self.assertFalse(result['success'])
+        self.assertEqual(result['deletes'], 0)
+        self.assertTrue(result['aborted'])
+        self.assertFalse(result['busy'])
+        self.assertTrue(result['paused'])
+
+    def test_unrelated_failed_save_does_not_block_target_reset(self):
+        self.install_review_worker()
+        self.open_game()
+        result = self.page.evaluate('''async () => {
+          const target=currentReview;
+          const other=makeReviewContext(await api('games/mockgame02/review'),analysisOwner());
+          other.paused=true;other.cache.saveError='Other game save failed';
+          reviewQueue.contexts.set(other.review.id,other);
+          const originalQueue=getReviewQueue;
+          getReviewQueue=()=>{const queue=originalQueue();queue.concurrency=0;return queue;};
+          startBackgroundAnalysis=()=>{};
+          analysisSaveQueue=Promise.resolve('Other game save failed');
+          const success=await restartEntireGameAnalysis(target);
+          const retained=reviewQueue.contexts.get(other.review.id);
+          return {success,otherError:retained.cache.saveError,sameCache:retained.cache===other.cache,
+            otherPaused:retained.paused,targetKeys:Object.keys(positionCache.results)};
+        }''')
+        self.assertTrue(result['success'])
+        self.assertEqual(result['otherError'], 'Other game save failed')
+        self.assertTrue(result['sameCache'])
+        self.assertTrue(result['otherPaused'])
+        self.assertEqual(result['targetKeys'], [])
+
+    def test_owner_control_reruns_opening_moves_and_draws_from_empty_cache(self):
+        self.install_review_worker()
+        self.open_game()
+        self.page.evaluate('''async () => {
+          await api('games/'+currentReview.id+'/analysis',{method:'PUT',headers:{'Content-Type':'application/json'},
+            body:JSON.stringify({analysis_version:ANALYSIS_VERSION,turn_analyses:{
+              oldResult:{simulated:false,moves:[{tiles:'CAT'}]}}})});
+          startBackgroundAnalysis=automaticAnalysis;
+        }''')
+        self.page.locator('.overview-method > summary').click()
+        self.page.get_by_role('button', name='Clear and rerun analysis', exact=True).click()
+        self.page.wait_for_function('''() => contextFor(currentReview)?.quality?.state==='done' &&
+          contextFor(currentReview)?.openingState==='done' ''')
+        result = self.page.evaluate('''async () => {
+          await analysisSaveQueue;
+          const context=contextFor(currentReview),cache=context.cache;
+          const saved=(await api('games/'+currentReview.id+'/review')).stored_analysis;
+          const opening=CrossplayOpening.describe(currentReview);
+          return {old:'oldResult' in saved.turn_analyses,state:saved.move_quality.state,
+            moves:currentReview.turns.map(turn=>Boolean(saved.turn_analyses[cache.key(turn,'review')])),
+            draws:currentReview.turns.map((turn,index)=>({complete:drawWorkComplete(context,index),
+              saved:Boolean(saved.turn_analyses[cache.key(turn,'draw')])})),
+            opening:Boolean(saved.turn_analyses[CrossplayOpening.key(opening,SIMULATION_ITERATIONS)])};
+        }''')
+        self.assertFalse(result['old'])
+        self.assertEqual(result['state'], 'done')
+        self.assertTrue(all(result['moves']))
+        self.assertTrue(all(draw['complete'] for draw in result['draws']))
+        self.assertTrue(any(draw['saved'] for draw in result['draws']))
+        self.assertTrue(result['opening'])
 
 
 if __name__ == '__main__':

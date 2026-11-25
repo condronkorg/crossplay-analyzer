@@ -479,6 +479,33 @@ class BackgroundAnalysisTest(unittest.TestCase):
             'analysis_version': ANALYSIS_VERSION, 'win_trend': {'state': 'done', 'points': []}})
         self.assertNotIn('move_quality', self.handler.supabase_data_request.call_args.kwargs['payload']['snapshot'])
 
+    def test_reset_deletes_only_owner_game_analysis_for_all_versions(self):
+        self.handler.delete_game_analysis('account-a', 'game0001')
+        self.handler.saved_review_status.assert_called_once_with('account-a', 'game0001')
+        self.handler.supabase_data_request.assert_called_once_with(
+            'DELETE', 'game_analyses', {'user_id': 'eq.account-a', 'nyt_game_id': 'eq.game0001'})
+
+    def test_reset_route_uses_verified_account_and_requires_authentication(self):
+        self.handler.current_supabase_user = Mock(return_value={'id': 'account-a'})
+        self.handler.delete_game_analysis = Mock()
+        self.handler.send_json = Mock()
+        self.handler.handle_persistent_api('DELETE', 'games/game0001/analysis')
+        self.handler.current_supabase_user.assert_called_once_with(required=True)
+        self.handler.delete_game_analysis.assert_called_once_with('account-a', 'game0001')
+        self.handler.send_json.assert_called_once_with(200, {'cleared': True})
+        self.handler.delete_game_analysis.reset_mock()
+        self.handler.current_supabase_user.side_effect = CrossplayError('Sign in', 401)
+        with self.assertRaises(CrossplayError):
+            self.handler.handle_persistent_api('DELETE', 'games/game0001/analysis')
+        self.handler.delete_game_analysis.assert_not_called()
+
+    def test_reset_requires_an_owned_finished_review(self):
+        for status in (None, 'active'):
+            self.handler.saved_review_status.return_value = status
+            with self.assertRaises(CrossplayError):
+                self.handler.delete_game_analysis('account-b', 'game0001')
+        self.handler.supabase_data_request.assert_not_called()
+
     def test_missing_or_unfinished_game_cannot_save_results(self):
         for status in (None, 'active'):
             self.handler.saved_review_status.return_value = status
