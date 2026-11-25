@@ -17,7 +17,7 @@ Artifact SHA-256 values:
 
 ```text
 quackle.js    3d0a388e0e53d937e7a5629a7f4602643994401b700a107dd7fd196c0babd319
-quackle.wasm  9cbb06be7ccb480590b8f10c7f6e6d38b163a6b558be5b412670928369dffb59
+quackle.wasm  38d66677106dff6616b251214da274dd26c283802f1ab250152d353a0407813c
 quackle.data  0f7b4e8cdcf4cb743c5423d6befe23ea77691c588f7c7dfb603bf475c1fbf8f3
 ```
 
@@ -184,3 +184,13 @@ Run `node --test test_bag_emptying_analysis.js test_quackle_pool.js` for compact
 results, coverage, coalescing and resume checks, and
 `python3 -m unittest -v test_bag_emptying_simulation` for real browser/WASM
 coverage and sample-offset checks. The data artifact is unchanged.
+
+## Exact final-reply optimization
+
+The final solver keeps a bounded maximum-score move cache keyed by the physical board, blank flags, and the acting rack. The cache is used only for empty-bag Crossplay positions, where static equity equals move score. Score-dependent two-turn choices keep their separate full-information key.
+
+After the existing reply bound, an alternative cannot improve the current result if any legal final reply reaches `next.spread(actor) - bestSpread`. The generator can stop at that witness. If no witness exists, it completes the normal search and supplies the exact maximum-score move with the original tie order. Witnesses are never stored as exact maxima. Candidate coverage, sample seeds, sample counts, and the move policy are unchanged.
+
+Focused real-WASM checks include score changes, wins, ties, physical blank identity, and partitioned equity. A cold subset comparison preserved every result and sufficient statistic. Full user-workload timings are recorded in the work-item report.
+
+The final, preempty, and maximum-score caches use bounded LRU eviction with the existing 32,768-entry limits. A shared utility owns keys once in stable list nodes and uses string views for lookup. This preserves a new working set after earlier game positions fill the cache; arbitrary unordered-map iteration is not an eviction policy. A native C++ regression compiles the exact header from the source patch and checks working-set retention, hit promotion, bounded capacity, and physical binary keys.

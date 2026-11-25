@@ -86,27 +86,61 @@
         this.partial.set(key, state);
         while (this.partial.size > 16) this.partial.delete(this.partial.keys().next().value);
       }
-      while (state.sums.some((sum) => sum.samples < 277)) {
+      // Reserve whole candidate groups. Each group keeps its sample order while
+      // independent groups use the workers already allowed by the device budget.
+      const reserved = new Set();
+      let failure = null;
+      const claimGroup = () => {
         active();
-        const start = state.sums.findIndex((sum) => sum.samples < 277);
+        const start = state.sums.findIndex((sum, index) =>
+          sum.samples < 277 && !reserved.has(index));
+        if (start < 0) return null;
         const offset = state.sums[start].samples;
         let end = start + 1;
-        while (end < state.sums.length && end - start < 8 && state.sums[end].samples === offset)
-          end++;
-        const batch = await this.runSingle(
-          'simulateCandidateBatch',
-          {
-            ...payload,
-            candidates: state.plan.moves.slice(start, end),
-            seed: state.plan.seed,
-            offset,
-            count: Math.min(16, 277 - offset),
-          },
-          { ...options, onStart: undefined },
-        );
-        if (generation !== this.generation) throw abortError();
-        Bag.incorporate(state, { ...batch, start });
-      }
+        while (end < state.sums.length && end - start < 8 &&
+            state.sums[end].samples === offset && !reserved.has(end)) end++;
+        for (let index = start; index < end; index++) reserved.add(index);
+        return {start, end};
+      };
+      const runLane = async () => {
+        while (!failure) {
+          let group;
+          try {
+            group = claimGroup();
+            if (!group) return;
+            const {start, end} = group;
+            while (!failure && state.sums[start].samples < 277) {
+              active();
+              const offset = state.sums[start].samples;
+              const batch = await this.runSingle(
+                'simulateCandidateBatch',
+                {
+                  ...payload,
+                  candidates: state.plan.moves.slice(start, end),
+                  seed: state.plan.seed,
+                  offset,
+                  count: Math.min(16, 277 - offset),
+                },
+                { ...options, onStart: undefined },
+              );
+              if (generation !== this.generation) throw abortError();
+              Bag.incorporate(state, { ...batch, start });
+            }
+          } catch (error) {
+            failure ||= error;
+          } finally {
+            if (group) {
+              for (let index = group.start; index < group.end; index++) reserved.delete(index);
+            }
+          }
+        }
+      };
+      const lanes = Math.min(this.size, Math.ceil(state.sums.length / 8));
+      // A failed lane must settle its siblings before a retry can reuse state.
+      await Promise.all(Array.from({length: lanes}, () => runLane()));
+      if (generation !== this.generation) throw abortError();
+      if (failure) throw failure;
+      active();
       const result = Bag.finish(state, 277);
       this.partial.delete(key);
       return result;
@@ -144,9 +178,9 @@
     promote(taskKey, priority) {
       const expanded = this.expandedOptions.get(taskKey);
       if (expanded) expanded.priority = Math.max(expanded.priority || 0, priority);
-      const task = this.queue.find((task) => task.taskKey === taskKey);
-      if (!task || !taskKey) return Boolean(expanded);
-      task.priority = Math.max(task.priority, priority);
+      const tasks = taskKey ? this.queue.filter((task) => task.taskKey === taskKey) : [];
+      if (!tasks.length) return Boolean(expanded);
+      for (const task of tasks) task.priority = Math.max(task.priority, priority);
       this.schedule();
       return true;
     }

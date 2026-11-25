@@ -195,3 +195,25 @@ test('non-move opening identities share work and restore without a turn key', as
   assert.equal(calls, 1);
   assert.equal(cache.get(turn, 'review'), null);
 });
+
+test('a viewed turn promotes remaining batches after expanded analysis has started', async () => {
+  const cache = new AnalysisCache();
+  let finish;
+  const priorities = [];
+  let calls = 0;
+  const first = cache.request(turn, 'review', onStart => {
+    calls++;
+    onStart();
+    return new Promise(resolve => { finish = resolve; });
+  }, undefined, {priority: 1, onPromote: priority => priorities.push(priority)});
+  await Promise.resolve();
+  const viewed = cache.request(turn, 'review', () => {
+    calls++;
+    throw new Error('The viewed turn must share the existing job.');
+  }, undefined, {priority: 100});
+  await Promise.resolve();
+  finish({moves: []});
+  assert.equal(await viewed, await first);
+  assert.equal(calls, 1);
+  assert.deepEqual(priorities, [100]);
+});

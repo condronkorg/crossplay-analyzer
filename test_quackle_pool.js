@@ -205,3 +205,192 @@ test('stopping shared expanded jobs cannot restart workers or save late checkpoi
     assert.equal(log.workers.length,1);
   }
 });
+
+function expandedPlan(count) {
+  const moves = Array.from({length: count}, (_, index) => ({
+    action: 'place', position: '1A', tiles: 'M' + index, equity: count - index,
+    score: index, leave: ''
+  }));
+  return {moves, equityMoves: moves.slice(0, 15), actualIndex: 0,
+    bagEmptyingIndices: moves.map((_, index) => index), seed: 17,
+    bagCount: 5, finalTurnsRemaining: 0};
+}
+
+function expandedBatch(request) {
+  const {offset, count, candidates} = request.payload;
+  return {offset, completed: count, moves: candidates.map(move => {
+    const index = Number(move.tiles.slice(1));
+    let wins = 0;
+    for (let trial = offset; trial < offset + count; trial++) wins += (index + trial) % 2;
+    return {win: wins / count, equity: index, samples: count, terminalSamples: count};
+  })};
+}
+
+async function completeExpanded(log, coverage = new Map()) {
+  while (log.requests.length) {
+    const requests = [...log.requests].reverse();
+    const outstanding = requests.flatMap(request => request.payload.candidates.map(move => move.tiles));
+    assert.equal(new Set(outstanding).size, outstanding.length, 'candidate lanes must be disjoint');
+    for (const request of requests) {
+      for (const move of request.payload.candidates) {
+        const next = coverage.get(move.tiles) || 0;
+        assert.equal(request.payload.offset, next, 'sample offsets must be contiguous');
+        coverage.set(move.tiles, next + request.payload.count);
+      }
+      reply(log, request, expandedBatch(request));
+    }
+    await settle();
+  }
+  return coverage;
+}
+
+test('one expanded job uses available workers with identical results after out-of-order batches', async () => {
+  const run = async size => {
+    const {pool, log} = makePool(size);
+    const job = pool.run('simulateReview', {bagCount: 5, iterations: 277, seed: 17});
+    job.catch(() => {});
+    try {
+      await settle();
+      reply(log, log.requests[0], expandedPlan(25));
+      await settle();
+      assert.equal(log.requests.length, size);
+      assert.equal(log.workers.length, size);
+      const coverage = await completeExpanded(log);
+      assert.equal(coverage.size, 25);
+      assert.ok([...coverage.values()].every(samples => samples === 277));
+      return await job;
+    } finally {
+      pool.stop();
+      await job.catch(() => {});
+    }
+  };
+  assert.deepEqual(await run(3), await run(1));
+});
+
+test('expanded failure waits for other lanes before retry resumes their checkpoints', async () => {
+  const {pool, log} = makePool(3);
+  const payload = {bagCount: 5, iterations: 277, seed: 17};
+  const first = pool.run('simulateReview', payload);
+  let rejected = false;
+  first.catch(() => { rejected = true; });
+  try {
+    await settle();
+    reply(log, log.requests[0], expandedPlan(24));
+    await settle();
+    assert.equal(log.requests.length, 3);
+    const failed = log.requests.shift();
+    failed.worker.emit({id: failed.id, error: 'Transient lane failure'});
+    await settle();
+    assert.equal(rejected, false, 'a retry must not overlap active old lanes');
+    assert.equal(log.requests.length, 2);
+    for (const request of [...log.requests]) reply(log, request, expandedBatch(request));
+    await assert.rejects(first, /Transient lane failure/);
+    const state = [...pool.partial.values()][0];
+    assert.deepEqual(state.sums.map(sum => sum.samples), Array(8).fill(0).concat(Array(16).fill(16)));
+    const retry = pool.run('simulateReview', payload);
+    retry.catch(() => {});
+    await settle();
+    const coverage = new Map(state.plan.moves.map((move, index) => [move.tiles, state.sums[index].samples]));
+    await completeExpanded(log, coverage);
+    assert.equal((await retry).searchedCandidateCount, 24);
+    assert.equal(pool.partial.size, 0);
+  } finally {
+    pool.stop();
+    await first.catch(() => {});
+  }
+});
+
+test('promoting an expanded job promotes every queued lane', async () => {
+  const {pool, log} = makePool(3);
+  const busy = [pool.run('kibitz', {name: 'first'}), pool.run('kibitz', {name: 'second'})];
+  busy.forEach(job => job.catch(() => {}));
+  const expanded = pool.run('simulateReview', {bagCount: 5, iterations: 277, seed: 17},
+    {priority: 1, taskKey: 'expanded'});
+  expanded.catch(() => {});
+  try {
+    await settle();
+    reply(log, log.requests.find(request => request.type === 'planBagEmptying'), expandedPlan(24));
+    await settle();
+    assert.equal(pool.queue.filter(task => task.taskKey === 'expanded').length, 2);
+    assert.equal(pool.promote('expanded', 99), true);
+    assert.ok(pool.queue.filter(task => task.taskKey === 'expanded').every(task => task.priority === 99));
+  } finally {
+    pool.stop();
+    await Promise.allSettled([...busy, expanded]);
+  }
+});
+
+test('expanded lanes finish when extra workers fail to start', async () => {
+  const log = {workers: [], requests: []};
+  const pool = new QuackleWorkerPool({size: 3,
+    createWorker: () => new FakeWorker(log, {failInit: log.workers.length > 0})});
+  const job = pool.run('simulateReview', {bagCount: 5, iterations: 277, seed: 17});
+  job.catch(() => {});
+  try {
+    await settle();
+    reply(log, log.requests[0], expandedPlan(24));
+    await settle();
+    assert.equal(pool.size, 1);
+    assert.equal(log.workers.filter(worker => worker.terminated).length, 2);
+    await completeExpanded(log);
+    assert.equal((await job).searchedCandidateCount, 24);
+  } finally {
+    pool.stop();
+    await job.catch(() => {});
+  }
+});
+
+test('cancelling parallel lanes checkpoints completed work before a clean resume', async () => {
+  const {pool, log} = makePool(3);
+  const controller = new AbortController();
+  const payload = {bagCount: 5, iterations: 277, seed: 17};
+  const first = pool.run('simulateReview', payload, {signal: controller.signal});
+  first.catch(() => {});
+  try {
+    await settle();
+    reply(log, log.requests[0], expandedPlan(24));
+    await settle();
+    assert.equal(log.requests.length, 3);
+    controller.abort();
+    for (const request of [...log.requests].reverse()) reply(log, request, expandedBatch(request));
+    await assert.rejects(first, {name: 'AbortError'});
+    const state = [...pool.partial.values()][0];
+    assert.ok(state.sums.every(sum => sum.samples === 16));
+    const retry = pool.run('simulateReview', payload);
+    retry.catch(() => {});
+    await settle();
+    assert.ok(log.requests.every(request => request.payload.offset === 16));
+    const coverage = new Map(state.plan.moves.map(move => [move.tiles, 16]));
+    await completeExpanded(log, coverage);
+    assert.equal((await retry).iterationsCompleted, 277);
+  } finally {
+    pool.stop();
+    await first.catch(() => {});
+  }
+});
+
+test('stopping shared parallel lanes cannot retain or restart obsolete work', async () => {
+  const {pool, log} = makePool(3);
+  const payload = {bagCount: 5, iterations: 277, seed: 17};
+  const first = pool.run('simulateReview', payload);
+  const joined = pool.run('simulateReview', payload);
+  first.catch(() => {});
+  joined.catch(() => {});
+  await settle();
+  reply(log, log.requests[0], expandedPlan(24));
+  await settle();
+  const obsolete = [...log.requests];
+  assert.equal(obsolete.length, 3);
+  // A completed result can already be queued in the microtask pipeline when
+  // refresh stops the pool. It must not become a new saved checkpoint.
+  reply(log, obsolete[2], expandedBatch(obsolete[2]));
+  pool.stop(Object.assign(new Error('Refresh cancelled'), {name: 'AbortError'}));
+  await assert.rejects(first, {name: 'AbortError'});
+  await assert.rejects(joined, {name: 'AbortError'});
+  for (const request of obsolete.slice(0, 2)) request.worker.emit({id: request.id, result: expandedBatch(request)});
+  await settle();
+  assert.equal(pool.partial.size, 0);
+  assert.equal(pool.slots.length, 0);
+  assert.equal(log.workers.length, 3);
+  assert.ok(log.workers.every(worker => worker.terminated));
+});

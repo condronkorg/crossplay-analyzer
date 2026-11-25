@@ -67,9 +67,10 @@
       if (this.results[key]) return this.results[key];
       const existing = this.pending.get(key);
       if (existing && (!existing.signal?.aborted || existing.started)) {
-        if (!existing.started && priority > existing.priority) {
+        if (priority > existing.priority) {
           existing.priority = priority;
-          // The initial compute callback can still be waiting for its microtask.
+          // Expanded work can still have queued batches after it has started.
+          // The initial compute callback may also be waiting for its microtask.
           queueMicrotask(() => existing.onPromote?.(existing.priority));
         }
         return existing.promise;
