@@ -1,7 +1,9 @@
 /* Position results are shared by grading, turn details, and the win trend. */
 (function(root) {
   'use strict';
-  const ENDGAME_POLICY = 'crossplay-endgame-v1';
+  const samples = (bag, configured) => (typeof module !== 'undefined' && module.exports
+    ? require('./bag-emptying-analysis.js') : root.CrossplayBagEmptying).fullIterations(Number(bag), configured);
+  const ENDGAME_POLICY = 'crossplay-endgame-v2';
   class AnalysisCache {
     constructor(saved = {}, parameters = {}) {
       this.results = { ...saved };
@@ -19,7 +21,7 @@
         const values = ['quackle-rack-draw-v1', kind, turn.grid, turn.rack,
           Number(turn.mover_score) || 0, Number(turn.other_score) || 0,
           Number(turn.bag_count), Number(turn.bag_count) === 0 ? Number(turn.final_turns_remaining) : 0,
-          kind === 'draw-preview' ? p.previewIterations : p.iterations, p.plies, p.terminalBagLimit,
+          kind === 'draw-preview' ? p.previewIterations : samples(turn.bag_count, p.iterations), p.plies, p.terminalBagLimit,
           String(turn.action || ''), String(turn.swapped_tiles || ''), turn.rack_after ?? null, 'rack-draw-v1'];
         if (Number(turn.bag_count) <= 21) values.push(ENDGAME_POLICY);
         return JSON.stringify(values);
@@ -30,12 +32,12 @@
         Number(turn.mover_score) || 0, Number(turn.other_score) || 0,
         Number(turn.bag_count), Number(turn.bag_count) === 0 ? Number(turn.final_turns_remaining) : 0,
         kind === 'preview' ? p.previewMoveCount : kind === 'trend' ? p.trendMoveCount : p.moveCount,
-        kind === 'preview' ? p.previewIterations : kind === 'simulation' || kind === 'review' ? p.iterations : kind === 'trend' ? p.trendIterations : 0,
+        kind === 'preview' ? p.previewIterations : kind === 'simulation' || kind === 'review' ? samples(turn.bag_count, p.iterations) : kind === 'trend' ? p.trendIterations : 0,
         sampled ? p.plies : 0, sampled ? p.terminalBagLimit : 0];
       if (review) values.push(String(turn.action || ''), String(turn.swapped_tiles || ''), 'paired-review-v1');
       if (sampled && Number(turn.bag_count) <= 21) values.push(ENDGAME_POLICY);
       if (['review', 'simulation'].includes(kind) && Number(turn.bag_count) >= 1 &&
-          Number(turn.bag_count) <= 7) values.push('bag-emptying-v1');
+          Number(turn.bag_count) <= 7) values.push('crossplay-low-bag-equity-v1');
       return JSON.stringify(values);
     }
 
@@ -43,8 +45,9 @@
     seed(turn) {
       // Keep the same sampled worlds when the endgame policy changes.
       const identity = JSON.parse(this.key(turn, 'review'));
-      if (identity.at(-1) === 'bag-emptying-v1') identity.pop();
+      if (identity.at(-1) === 'crossplay-low-bag-equity-v1') identity.pop();
       if (identity.at(-1) === ENDGAME_POLICY) identity.pop();
+      if (this.parameters.iterations === 277 && Number(turn.bag_count) >= 1 && Number(turn.bag_count) <= 21) identity[9] = 277;
       let hash = 2166136261;
       for (const character of JSON.stringify(identity)) {
         hash ^= character.charCodeAt(0);

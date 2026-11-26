@@ -161,8 +161,8 @@ test('endgame policy invalidates only sampled low-bag caches and keeps paired se
       action: 'CAT 8G 10', rack_after: 'ERSTUAE'};
     for (const kind of ['review', 'preview', 'draw', 'draw-preview', 'simulation', 'trend']) {
       const identity = JSON.parse(cache.key(played, kind));
-      if (identity.at(-1)==='bag-emptying-v1') identity.pop();
-      assert.equal(identity.at(-1) === 'crossplay-endgame-v1', bag_count <= 21, kind + ':' + bag_count);
+      if (identity.at(-1)==='crossplay-low-bag-equity-v1') identity.pop();
+      assert.equal(identity.at(-1) === 'crossplay-endgame-v2', bag_count <= 21, kind + ':' + bag_count);
       if (bag_count <= 21) {
         const legacyKey = JSON.stringify(identity.slice(0, -1));
         const saved = new AnalysisCache({[legacyKey]: {legacy: true}});
@@ -170,10 +170,11 @@ test('endgame policy invalidates only sampled low-bag caches and keeps paired se
         assert.deepEqual(saved.results[legacyKey], {legacy: true});
       }
     }
-    assert.equal(JSON.parse(cache.key(played, 'candidates')).includes('crossplay-endgame-v1'), false);
+    assert.equal(JSON.parse(cache.key(played, 'candidates')).includes('crossplay-endgame-v2'), false);
     const legacyReview = JSON.parse(cache.key(played, 'review'));
-    if (legacyReview.at(-1) === 'bag-emptying-v1') legacyReview.pop();
-    if (legacyReview.at(-1) === 'crossplay-endgame-v1') legacyReview.pop();
+    if (legacyReview.at(-1) === 'crossplay-low-bag-equity-v1') legacyReview.pop();
+    if (legacyReview.at(-1) === 'crossplay-endgame-v2') legacyReview.pop();
+    if (bag_count >= 8 && bag_count <= 21) legacyReview[9] = 277;
     let expectedSeed = 2166136261;
     for (const character of JSON.stringify(legacyReview)) expectedSeed = Math.imul(expectedSeed ^ character.charCodeAt(0), 16777619);
     assert.equal(cache.seed(played), expectedSeed >>> 0);
@@ -216,4 +217,59 @@ test('a viewed turn promotes remaining batches after expanded analysis has start
   assert.equal(await viewed, await first);
   assert.equal(calls, 1);
   assert.deepEqual(priorities, [100]);
+});
+
+
+test('v2 terminal policy rejects v1 cached results without changing paired worlds', () => {
+  const turn = {grid: Array(15).fill('.'.repeat(15)),rack:'AEIRST?',mover_score:110,
+    other_score:100,bag_count:5,final_turns_remaining:0,action:'AT 8G 4'};
+  const current = new AnalysisCache();
+  const key = current.key(turn,'review');
+  const oldKey = key.replace('crossplay-endgame-v2','crossplay-endgame-v1')
+    .replace('crossplay-low-bag-equity-v1','bag-emptying-v1');
+  const restored = new AnalysisCache({[oldKey]:{simulated:true}});
+  assert.equal(restored.get(turn,'review'),null);
+  assert.deepEqual(restored.results[oldKey],{simulated:true});
+  assert.equal(restored.seed(turn),current.seed(turn));
+});
+
+
+test('full late-game profiles use128 paired samples without changing legacy seeds', () => {
+  const Bag=require('./bag-emptying-analysis.js');
+  for(const bag of [0,7,8,21,22,86]){
+    const t={...turn,bag_count:bag,final_turns_remaining:bag===0?2:0};
+    const c=new AnalysisCache(), n=bag>=8&&bag<=21?128:277;
+    assert.equal(Bag.fullIterations(bag),n);
+    assert.equal(JSON.parse(c.key(t,'review'))[9],n);
+    assert.equal(JSON.parse(c.key(t,'draw'))[8],n);
+    assert.equal(JSON.parse(c.key(t,'preview'))[9],64);
+    const identity=JSON.parse(c.key(t,'review'));
+    if(identity.at(-1)===Bag.POLICY)identity.pop();
+    if(identity.at(-1)==='crossplay-endgame-v2')identity.pop();
+    identity[9]=277;
+    let seed=2166136261;for(const ch of JSON.stringify(identity))seed=Math.imul(seed^ch.charCodeAt(0),16777619);
+    assert.equal(c.seed(t),seed>>>0);
+    assert.equal(JSON.parse(new AnalysisCache({}, {iterations:32}).key(t,'review'))[9],32);
+  }
+});
+
+
+test('device worker budgets select matching full profiles and preserve paired worlds', () => {
+  const fs=require('fs'),vm=require('vm');
+  for(const workers of [1,2,3]){
+    const context={navigator:{hardwareConcurrency:workers+1,deviceMemory:8},matchMedia:()=>({matches:false})};
+    vm.createContext(context);
+    for(const name of ['bag-emptying-analysis.js','quackle-pool.js','analysis-cache.js'])
+      vm.runInContext(fs.readFileSync(name,'utf8'),context);
+    assert.equal(vm.runInContext('QuackleWorkerPool.browserSize()',context),workers);
+    for(const bag of [0,1,7,8,21,22]){
+      context.t={...turn,bag_count:bag,final_turns_remaining:bag===0?2:0};
+      const n=bag>=1&&bag<=7?(workers<=2?192:277):bag>=8&&bag<=21?(workers===1?80:128):277;
+      const identity=JSON.parse(vm.runInContext('new AnalysisCache().key(t,"review")',context));
+      assert.equal(identity[9],n,workers+':'+bag);
+      assert.equal(JSON.parse(vm.runInContext('new AnalysisCache().key(t,"draw")',context))[8],n);
+      assert.equal(vm.runInContext('new AnalysisCache().seed(t)',context),new AnalysisCache().seed(context.t));
+      assert.equal(vm.runInContext('CrossplayBagEmptying.fullIterations(t.bag_count,32)',context),32);
+    }
+  }
 });

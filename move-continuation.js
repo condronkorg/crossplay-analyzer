@@ -124,7 +124,8 @@
       gridJson: JSON.stringify(position.grid), rack: position.racks[actor],
       playerScore: position.scores[actor], opponentScore: position.scores[1 - actor],
       bagCount: position.bag.length, finalTurnsRemaining: position.finalTurns || 0,
-      numMoves: 15, iterations: 277, seed: position.seed,
+      numMoves: 15, iterations: (typeof module !== 'undefined' && module.exports
+        ? require('./bag-emptying-analysis.js') : root.CrossplayBagEmptying).fullIterations(position.bag.length), seed: position.seed,
       played: { action: 'pass', position: '', tiles: '' }
     };
     // Include pass even when it falls outside the static shortlist. This uses

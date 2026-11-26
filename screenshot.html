@@ -2225,8 +2225,9 @@ async function findBestMoves() {
   const runToken = ++quackleRunToken;
   quackleBusy = true;
   let statusTimer = null;
-  const iterationLabel = `${QUACKLE_SIMULATION_ITERATIONS} ` +
-    (QUACKLE_SIMULATION_ITERATIONS === 1 ? 'round' : 'rounds');
+  const iterations = CrossplayBagEmptying.fullIterations(lastParsed?.bag_count, QUACKLE_SIMULATION_ITERATIONS);
+  const iterationLabel = `${iterations} ` +
+    (iterations === 1 ? 'round' : 'rounds');
   btn.disabled = true;
   btn.textContent = 'Loading engine...';
 
@@ -2270,7 +2271,7 @@ async function findBestMoves() {
       playerScore: lastParsed.player_score || 0,
       opponentScore: lastParsed.opponent_score || 0,
       numMoves: QUACKLE_MOVE_COUNT,
-      iterations: QUACKLE_SIMULATION_ITERATIONS,
+      iterations: iterations,
       bagCount,
       finalTurnsRemaining,
     });
@@ -2279,14 +2280,14 @@ async function findBestMoves() {
     if (result.error) throw new Error(result.error);
     const moves = Array.isArray(result.moves) ? result.moves : [];
     const hasCompleteMoves = moves.length > 0 && moves.every(move =>
-      move.samples === QUACKLE_SIMULATION_ITERATIONS &&
-      (!expectsTerminal || move.terminalSamples === QUACKLE_SIMULATION_ITERATIONS) &&
+      move.samples === iterations &&
+      (!expectsTerminal || move.terminalSamples === iterations) &&
       Number.isFinite(move.win) && move.win >= 0 && move.win <= 1
     );
     const expanded = bagCount >= 1 && bagCount <= 7;
     const hasCoverage = expanded
-      ? CrossplayBagEmptying.validCoverage(result, bagCount, QUACKLE_SIMULATION_ITERATIONS)
-      : result.totalPlayaheads === QUACKLE_SIMULATION_ITERATIONS * moves.length;
+      ? CrossplayBagEmptying.validCoverage(result, bagCount, iterations)
+      : result.totalPlayaheads === iterations * moves.length;
     if (result.simulated !== true ||
         result.plies !== (expectsTerminal ? -1 : QUACKLE_SIMULATION_PLIES) ||
         result.playToEnd !== expectsTerminal ||
@@ -2294,8 +2295,8 @@ async function findBestMoves() {
         result.winModel !== (expectsTerminal ? 'terminal' : 'bogowin') ||
         result.bagCount !== bagCount ||
         result.finalTurnsRemaining !== finalTurnsRemaining ||
-        result.iterationsRequested !== QUACKLE_SIMULATION_ITERATIONS ||
-        result.iterationsCompleted !== QUACKLE_SIMULATION_ITERATIONS ||
+        result.iterationsRequested !== iterations ||
+        result.iterationsCompleted !== iterations ||
         result.candidateCount !== moves.length ||
         !hasCoverage ||
         !hasCompleteMoves) {
@@ -2344,11 +2345,13 @@ function renderMoves(moves, result) {
   }
 
   html += '</table></div>';
-  const hint = result && result.playToEnd
-    ? `Estimated Win% uses ${QUACKLE_SIMULATION_ITERATIONS} sampled hidden racks and draws per move. ` +
+  const hint = (result && result.playToEnd
+    ? `Estimated Win% uses ${result.iterationsCompleted} sampled hidden racks and draws per move. ` +
       `Each sample follows the official Crossplay final-turn rules to the finish.`
     : `Estimated Win% is Quackle's two-ply Bogowin estimate from ` +
-      `${QUACKLE_SIMULATION_ITERATIONS} samples per move.`;
+      `${result.iterationsCompleted} samples per move.`) +
+    (CrossplayBagEmptying.coverageNote(result) ? ' ' + CrossplayBagEmptying.coverageNote(result) : '') +
+    (CrossplayBagEmptying.precisionNote(result) ? ' ' + CrossplayBagEmptying.precisionNote(result) : '');
   container.innerHTML = html + `<p class="hint">${hint}</p>`;
 }
 const customMoveController = new CustomMove(document.getElementById('customMoveContainer'), () => {

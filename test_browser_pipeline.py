@@ -490,7 +490,40 @@ class BrowserPipelineTest(unittest.TestCase):
                 self.assertEqual(page_errors, [])
                 page.close()
 
-    def test_standalone_terminal_analysis_uses_complete_expanded_coverage(self):
+    def test_standalone_8_to_21_bag_one_worker_profile_uses_80_samples(self):
+        grid=[list(row) for row in endgame.EndgameSimulationTests.GRID]
+        removed=0
+        for row in grid:
+            for col,tile in enumerate(row):
+                if tile!='.' and removed<21:
+                    row[col]='.'
+                    removed+=1
+        grid=[''.join(row) for row in grid]
+        for entry in ('manual.html','screenshot.html'):
+            with self.subTest(entry=entry):
+                page=self.browser.new_page()
+                self.addCleanup(page.close)
+                page.goto(f'{self.base_url}/{entry}',wait_until='domcontentloaded')
+                trace_quackle_workers(page)
+                page.evaluate("""({entry,grid})=>{
+                  Object.defineProperty(navigator,'hardwareConcurrency',{value:2});
+                  const data={grid,rack:'WEAFTUO',player_score:110,opponent_score:100,
+                    bag_count:21,tile_values_complete:true,final_turns_remaining:0};
+                  if(entry==='manual.html')buildJSON=()=>data;
+                  else{lastParsed=data;renderResult(data);}
+                }""",{'entry':entry,'grid':grid})
+                page.locator('#kibitzBtn').click()
+                expect(page.locator('#engineStatus')).to_have_text(re.compile(r'^Found '),timeout=120_000)
+                samples=page.locator('#movesContainer td[data-samples]').evaluate_all('cells=>cells.map(c=>c.dataset.samples)')
+                self.assertTrue(samples)
+                self.assertTrue(all(n=='80' for n in samples))
+                expect(page.locator('#movesContainer')).to_contain_text('more sampling uncertainty')
+                requests=page.evaluate('workerTrace.requests')
+                plan=next(r for r in requests if r['type']=='planReviewSimulation')
+                self.assertEqual(plan['payload']['iterations'],80)
+                page.close()
+
+    def test_standalone_terminal_analysis_reports_selected_coverage(self):
         grid = list(endgame.EndgameSimulationTests.GRID)
         grid[0] = '..........G....'
         for entry in ('manual.html', 'screenshot.html'):
@@ -519,10 +552,17 @@ class BrowserPipelineTest(unittest.TestCase):
                 expect(status).to_have_text(re.compile(r'^Found '), timeout=120_000)
                 win_cells = page.locator('#movesContainer td[data-samples]')
                 self.assertGreater(win_cells.count(), 0)
-                self.assertTrue(all(samples == '277' for samples in win_cells.evaluate_all(
+                self.assertTrue(all(samples == '192' for samples in win_cells.evaluate_all(
                     'cells => cells.map(cell => cell.dataset.samples)')))
                 total = int(re.search(r'\(([\d,]+) playouts total\)', status.inner_text())[1].replace(',', ''))
-                self.assertGreater(total, 277 * win_cells.count())
+                self.assertGreater(total, 192 * win_cells.count())
+                coverage = re.search(r'Compared (\d+) selected moves, including (\d+) of (\d+) legal bag-emptying placements.',
+                                     page.locator('#movesContainer').inner_text())
+                self.assertIsNotNone(coverage)
+                selected, selected_emptying, legal_emptying = map(int, coverage.groups())
+                self.assertEqual(selected, total // 192)
+                self.assertLessEqual(selected, 31)
+                self.assertLess(selected_emptying, legal_emptying)
 
                 page.get_by_role('textbox', name='Custom move word').fill('FET')
                 page.get_by_role('textbox', name='Custom move start square').fill('B15')
@@ -534,7 +574,8 @@ class BrowserPipelineTest(unittest.TestCase):
                 page.get_by_role('button', name='Estimate win% (slower)', exact=True).click()
                 expect(page.locator('.custom-move-status')).to_have_text('Win simulation complete.', timeout=120_000)
                 expect(output.locator('tbody tr').first).to_contain_text('Your move: 15B FET')
-                expect(output).to_contain_text(f'Compared {total // 277} moves with 277 samples each')
+                expect(output).to_contain_text(f'Compared {total // 192} moves with 192 samples each')
+                expect(output).to_contain_text(f'including {selected_emptying} of {legal_emptying} legal bag-emptying placements.')
                 trace = page.evaluate('workerTrace')
                 self.assertEqual(trace['count'], 1)
                 self.assertEqual([r['payload']['requestType'] for r in trace['requests']

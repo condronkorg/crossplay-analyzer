@@ -91,7 +91,7 @@ window.CustomMove = class CustomMove {
       if (!simulateWin) {
         const position = this.getPosition();
         if (!position) throw new Error('Analyze a board first.');
-        this.payload = { ...position, iterations: 277, customMove: {
+        this.payload = { ...position, iterations: CrossplayBagEmptying.fullIterations(position.bagCount), customMove: {
           action: this.form.elements.action.value,
           tiles: this.form.elements.tiles.value.trim(),
           word: this.form.elements.word.value.trim(),
@@ -145,8 +145,11 @@ window.CustomMove = class CustomMove {
     if (!result.simulated) append(this.output, 'p', loss.toFixed(1) + ' equity points behind the best static move.', 'custom-move-comparison');
     append(this.output, 'p', 'Static rank #' + result.staticRank + ' of ' + result.legalMoveCount + ' legal moves.', 'custom-move-help');
     if (result.simulated) {
+      const precision = CrossplayBagEmptying.precisionNote(result);
+      if (precision) append(this.output, 'p', precision, 'custom-move-help');
       const wpLoss = Math.max(0, result.best.win - result.selected.win) * 100;
       append(this.output, 'p', 'WP loss: ' + wpLoss.toFixed(1) + ' pp versus the best among analyzed moves.', 'custom-move-comparison');
+      if (CrossplayBagEmptying.coverageNote(result)) append(this.output, 'p', CrossplayBagEmptying.coverageNote(result), 'custom-move-help');
       append(this.output, 'p', 'Compared ' + (result.searchedCandidateCount ?? result.candidateCount) + ' moves with ' + result.iterationsCompleted +
         ' samples each. ' + (result.playToEnd ? 'Samples follow Crossplay’s final-turn rules to the finish.' :
           'Win chances use Quackle’s two-ply estimate.'), 'custom-move-help');

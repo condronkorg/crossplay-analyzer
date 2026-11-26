@@ -1,7 +1,22 @@
 /* Combines bounded, paired-sample batches without hiding incomplete coverage. */
 (function (root) {
   'use strict';
-  const POLICY = 'bag-emptying-v1';
+  const POLICY = 'crossplay-low-bag-equity-v1';
+  function browserWorkerBudget() {
+    if (typeof navigator === 'undefined' || typeof matchMedia !== 'function') return 3;
+    const cores = navigator.hardwareConcurrency || 2;
+    const constrained = matchMedia('(pointer: coarse)').matches || (navigator.deviceMemory || 8) <= 4;
+    return Math.max(1, Math.min(constrained ? 2 : 3, cores - 1));
+  }
+  function fullIterations(bag, configured = 277, workers = browserWorkerBudget()) {
+    if (configured !== 277 || !Number.isInteger(bag) || bag < 1 || bag > 21) return configured;
+    if (bag <= 7) return workers <= 2 ? 192 : 277;
+    return workers <= 1 ? 80 : 128;
+  }
+  function precisionNote(result) {
+    return [80, 128, 192].includes(result?.iterationsCompleted) && result.bagCount >= 1 && result.bagCount <= 21
+      ? 'Late-game estimates use ' + result.iterationsCompleted + ' samples per move. Small differences have more sampling uncertainty.' : '';
+  }
   function create(plan) {
     if (!Array.isArray(plan.moves) || !plan.moves.length || !Array.isArray(plan.bagEmptyingIndices) ||
         !Number.isInteger(plan.actualIndex) || plan.actualIndex < -1 || plan.actualIndex >= plan.moves.length)
@@ -147,12 +162,14 @@
       playToEnd: true,
       simulationMode: 'play-to-end',
       winModel: 'terminal',
-      endgamePolicy: 'crossplay-endgame-v1',
+      endgamePolicy: 'crossplay-endgame-v2',
     };
     if (expanded) Object.assign(result, {
       equityMoves: plan.equityMoves,
       candidatePolicy: POLICY,
       searchedCandidateCount: all.length,
+      generatedCandidateCount: plan.generatedCandidateCount,
+      totalBagEmptyingCount: plan.totalBagEmptyingCount,
       requiredBagEmptyingCount: plan.bagEmptyingIndices.length,
       evaluatedBagEmptyingCount: plan.bagEmptyingIndices.length,
     });
@@ -189,7 +206,7 @@
       (knownBeforeWin === -1 || batch.beforeWin === knownBeforeWin));
   }
   function validCoverage(result, bag, iterations) {
-    const required = bag >= 1 && bag <= 7 && iterations === 277;
+    const required = bag >= 1 && bag <= 7 && [192, 277].includes(iterations);
     if (!required) return result.candidatePolicy === undefined;
     return (
       result.candidatePolicy === POLICY &&
@@ -199,7 +216,13 @@
       result.equityMoves.every((move) => Number.isFinite(move.equity)) &&
       Number.isInteger(result.searchedCandidateCount) &&
       result.searchedCandidateCount >= result.moves?.length &&
-      result.searchedCandidateCount <= 1000000 &&
+      result.searchedCandidateCount <= 31 &&
+      Number.isInteger(result.generatedCandidateCount) &&
+      result.generatedCandidateCount >= result.searchedCandidateCount &&
+      result.generatedCandidateCount <= 1000000 &&
+      Number.isInteger(result.totalBagEmptyingCount) &&
+      result.totalBagEmptyingCount >= result.requiredBagEmptyingCount &&
+      result.totalBagEmptyingCount <= result.generatedCandidateCount &&
       Number.isInteger(result.requiredBagEmptyingCount) &&
       result.requiredBagEmptyingCount >= 0 &&
       result.requiredBagEmptyingCount <= result.searchedCandidateCount &&
@@ -207,10 +230,16 @@
       result.totalPlayaheads === iterations * result.searchedCandidateCount
     );
   }
+  function coverageNote(result) {
+    if (result?.candidatePolicy !== POLICY) return '';
+    return 'Compared ' + result.searchedCandidateCount + ' selected moves, including ' +
+      result.evaluatedBagEmptyingCount + ' of ' + result.totalBagEmptyingCount +
+      ' legal bag-emptying placements.';
+  }
   function equityCandidates(result) {
     return result.equityMoves || result.staticMoves;
   }
-  const api = { POLICY, create, incorporate, finish, validWinSum, drawTurn, validDrawBatch, validCoverage, equityCandidates };
+  const api = { POLICY, create, incorporate, finish, validWinSum, drawTurn, validDrawBatch, validCoverage, equityCandidates, coverageNote, fullIterations, precisionNote, browserWorkerBudget };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.CrossplayBagEmptying = api;
 })(typeof self !== 'undefined' ? self : globalThis);

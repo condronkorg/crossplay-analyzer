@@ -14,6 +14,8 @@ test('complete search retains a winner outside the display shortlist and static 
   const plan = {
     moves,
     equityMoves: moves.slice(0, 15),
+    generatedCandidateCount: 200,
+    totalBagEmptyingCount: 100,
     actualIndex: 0,
     bagEmptyingIndices: [19],
     seed: 4,
@@ -38,6 +40,9 @@ test('complete search retains a winner outside the display shortlist and static 
   assert.equal(result.requiredBagEmptyingCount, 1);
   assert.equal(result.evaluatedBagEmptyingCount, 1);
   assert.equal(result.totalPlayaheads, 5540);
+  assert.equal(result.generatedCandidateCount, 200);
+  assert.equal(result.totalBagEmptyingCount, 100);
+  assert.equal(result.candidatePolicy, 'crossplay-low-bag-equity-v1');
   assert.ok(result.moves.length <= 17);
 });
 
@@ -67,6 +72,8 @@ test('coverage validation rejects an omitted policy, partial coverage, and false
     equityMoves: [{ equity: 0 }],
     candidatePolicy: Bag.POLICY,
     searchedCandidateCount: 3,
+    generatedCandidateCount: 100,
+    totalBagEmptyingCount: 90,
     requiredBagEmptyingCount: 2,
     evaluatedBagEmptyingCount: 2,
     totalPlayaheads: 831,
@@ -78,6 +85,11 @@ test('coverage validation rejects an omitted policy, partial coverage, and false
     { searchedCandidateCount: 0 },
     { requiredBagEmptyingCount: 4 },
     { totalPlayaheads: 277 },
+    { generatedCandidateCount: 2 },
+    { totalBagEmptyingCount: 1 },
+    { totalBagEmptyingCount: 101 },
+    { generatedCandidateCount: undefined },
+    { candidatePolicy: "bag-emptying-v1" },
   ]) {
     assert.equal(Bag.validCoverage({ ...result, ...changes }, 5, 277), false);
   }
@@ -96,6 +108,8 @@ test('common-word equity opportunity keeps the original static list after displa
   const state = Bag.create({
     moves,
     equityMoves: moves.slice(0, 15),
+    generatedCandidateCount: 200,
+    totalBagEmptyingCount: 100,
     actualIndex: 0,
     bagEmptyingIndices: [19],
     seed: 1,
@@ -196,4 +210,22 @@ test('generic terminal results apply native tie order and retain the full raw st
   assert.equal(result.candidatePolicy, undefined);
   assert.equal(result.equityMoves, undefined);
   assert.deepEqual(result.staticMoves, moves);
+});
+
+
+test('shortlist coverage distinguishes selected placements from all generated placements', () => {
+  assert.equal(Bag.coverageNote({candidatePolicy: Bag.POLICY, searchedCandidateCount:25,
+    evaluatedBagEmptyingCount:10,totalBagEmptyingCount:352}),
+    'Compared 25 selected moves, including 10 of 352 legal bag-emptying placements.');
+  assert.equal(Bag.coverageNote({}), '');
+});
+
+
+test('192sample lowbag full profile requires selected coverage just like277', () => {
+ const r={moves:[{}],equityMoves:[{equity:0}],candidatePolicy:Bag.POLICY,
+   searchedCandidateCount:25,generatedCandidateCount:500,totalBagEmptyingCount:352,
+   requiredBagEmptyingCount:10,evaluatedBagEmptyingCount:10,totalPlayaheads:25*192};
+ assert.equal(Bag.validCoverage(r,5,192),true);
+ assert.equal(Bag.validCoverage({...r,evaluatedBagEmptyingCount:9},5,192),false);
+ assert.equal(Bag.validCoverage({...r,candidatePolicy:undefined},5,192),false);
 });

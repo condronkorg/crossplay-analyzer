@@ -16,9 +16,9 @@ repository (SHA-256
 Artifact SHA-256 values:
 
 ```text
-quackle.js    865a555e856374c545e95f2899a81e2588bd41548dd97bb239427566607815e0
-quackle.wasm  54defd6db78cf827db3bab8e50bd6d85484fbaa5b80aa6623c97a842cfe07494
-quackle.data  0f7b4e8cdcf4cb743c5423d6befe23ea77691c588f7c7dfb603bf475c1fbf8f3
+quackle.js   865a555e856374c545e95f2899a81e2588bd41548dd97bb239427566607815e0
+quackle.wasm 3fad789bee7e0ead153179334ea51601ef177b89edba60d0ed045d0e27fbfb80
+quackle.data 0f7b4e8cdcf4cb743c5423d6befe23ea77691c588f7c7dfb603bf475c1fbf8f3
 ```
 
 The worker passes the observed bag count and explicit empty-bag final-turn
@@ -76,11 +76,11 @@ also include the opening-deal API below.
 
 ## Endgame policy
 
-Low-bag results include `endgamePolicy: "crossplay-endgame-v1"`. The existing
-64/277 outer samples and terminal-result metadata remain in use. A100% result
+Low-bag results include `endgamePolicy: "crossplay-endgame-v2"`. The existing
+64-sample previews and the full sample profiles and terminal-result metadata remain in use. A100% result
 means every sampled continuation won; it is not a proof under hidden tiles.
 
-When the bag is empty, future moves use an exact Crossplay win-utility search:
+When the root bag is empty, candidate selection uses an exact Crossplay win-utility search:
 all legal first actions, including pass, followed by the opponent's maximum
 score on the last turn. A proved winning action can stop the search. The solver first checks the static best move and the bound from an opponent
 pass before it records all legal actions. It does not promise the largest
@@ -88,24 +88,28 @@ winning margin. Empty-bag root candidate lists
 include that winning action even when it falls outside the static shortlist.
 The existing two-final-turn countdown and no-rack-penalty rule are unchanged.
 
-With one or two tiles in the bag, future decisions compare the top four static
-placements and the best static placement for each physical tile count. If a
-legal placement exists, future policy decisions use placements so the bag count
-falls. Recorded root passes and exchanges remain legal, and the exact empty-bag
-search still includes pass. Each decision
-uses at most two deterministic weighted hidden-tile worlds, drawn from the
-acting player's unseen pool. One action is selected across these worlds. The
-policy key uses the board, physical blank flags, the actor's rack, scores, bag
-count, and final-turn state. It excludes the sampled true opponent rack and bag.
+With one through seven tiles in the bag, future decisions rank legal moves by
+`effective score + 0.5 * rack-leave value + 10` for placements that empty the
+bag. Other actions receive no bag-emptying term. This replaces the generic
+Scrabble timing table and the earlier nested hidden-world simulations. The
+coefficients are a heuristic, not an exact value of playing last. If a legal
+placement exists, the future policy uses a placement so the bag count falls.
+Recorded root passes and exchanges remain legal. Larger bags use the existing
+static continuation until they reach this phase. The policy uses only the
+actor's board, rack, and bag count. It does not inspect the sampled hidden rack
+or consume the outer paired random stream.
 
-This preempty policy is bounded. Candidate evaluation uses a static continuation
-for at most12 moves. Its internal two-turn screening uses one static first
-move and an exact maximum-score last reply; unfinished continuations
-use Bogowin. Actual empty-bag decisions always use the full exact search. Larger
-bags retain the static continuation until they reach this policy. Local chance
-sampling does not consume the outer paired random stream. Separate, bounded
-thread-local caches prevent repeated decisions and keep estimated inner choices
-separate from exact final-phase choices.
+In sampled future play, both empty-bag turns retain the exact solver described
+above. The bounded first-final-turn experiment did not meet the latency goal
+and is not used. Policy version v2 instead replaces nested preempty sampling
+with direct phase-equity selection. The generator retains only its best
+placement and caches leave values by the remaining physical rack for that
+position. It avoids recording/sorting all placements or evaluating each leave
+twice. The scalar formula and exhaustive phase-policy tie order are preserved.
+Policy version v2 invalidates prior terminal move, preview, and draw results through their cache
+identities. The paired seed excludes policy suffixes, so the sampled physical
+worlds remain comparable. All reported terminal candidates must still finish
+all requested samples; partial batches cannot become full results.
 
 Run `python3 -m unittest -v test_endgame_simulation` for the synthetic winning-block,
 root shortlist, blank identity, and paired-sample cache regressions.
@@ -151,12 +155,12 @@ draw, exception, low-bag exchange, and 1000-ply finish-bound changes.
 
 The worker pool uses `planBagEmptying` for full 277-sample recorded/custom
 comparisons and continuation alternatives with one through seven bag tiles.
-The shared native plan includes the top15 static actions and every legal,
-physically distinct placement whose refill empties the bag, plus the supplied
-recorded action. Existing board letters do not count as newly placed tiles.
-Exchanges do not empty the bag. Early64-sample previews retain their bounded
-shortlist and remain provisional. Empty-bag solving and future-play policy
-are unchanged; these remain estimates before the bag empties.
+The shared native plan combines the original top15 static actions with the
+leading15 actions under the endgame equity estimate above, plus the supplied
+recorded action. Physical duplicates are removed (at most31 candidates).
+Existing board letters do not count as newly placed tiles. Exchanges do not
+empty the bag. Early64-sample previews retain their smaller shortlist and
+remain provisional. This search does not assess every legal bag-emptying move.
 
 The worker pool submits the plan through `simulateReviewBatch`. It retains
 completed sums across transient failures, yields between requests, and
@@ -164,12 +168,16 @@ coalesces matching jobs. The 120-second worker deadline still applies.
 
 Full results retain the top15 sampled alternatives, the recorded action, and
 the highest static-equity action, with duplicates removed (at most17 moves).
-`candidateCount` is the retained count; `searchedCandidateCount` is the full
-search count. `requiredBagEmptyingCount` and `evaluatedBagEmptyingCount` must
-match before completion. `totalPlayaheads` counts all searched candidates.
+`candidateCount` is the retained count; `searchedCandidateCount` is the number
+of selected candidates assessed. `generatedCandidateCount` counts all generated
+legal actions, and `totalBagEmptyingCount` counts all legal placements that
+empty the bag. `requiredBagEmptyingCount` and `evaluatedBagEmptyingCount` count
+the selected bag-emptying placements and must match before completion. These
+counts do not claim exhaustive coverage. `totalPlayaheads` counts all selected
+candidates times their completed samples.
 `equityMoves` preserves the original static shortlist plus the recorded action
 for word-commonness and adjusted-performance calculations. These metrics do
-not use the compact win-ranked display list. Results and affected cache identities carry `candidatePolicy: bag-emptying-v1`.
+not use the compact win-ranked display list. Results and affected cache identities carry `candidatePolicy: crossplay-low-bag-equity-v1`.
 The cache policy does not change the paired seed. The legacy
 `simulateCandidateBatch` export still accepts explicit candidates for bags
 with one through seven tiles.
@@ -215,8 +223,25 @@ cooperative budget in real browser WASM.
 
 The final solver keeps a bounded maximum-score move cache keyed by the physical board, blank flags, and the acting rack. The cache is used only for empty-bag Crossplay positions, where static equity equals move score. Score-dependent two-turn choices keep their separate full-information key.
 
-After the existing reply bound, an alternative cannot improve the current result if any legal final reply reaches `next.spread(actor) - bestSpread`. The generator can stop at that witness. If no witness exists, it completes the normal search and supplies the exact maximum-score move with the original tie order. Witnesses are never stored as exact maxima. Candidate coverage, sample seeds, sample counts, and the move policy are unchanged.
+After the existing reply bound, an alternative cannot improve the current result if any legal final reply reaches `next.spread(actor) - bestSpread`. The generator can stop at that witness. If no witness exists, it completes the normal search and supplies the exact maximum-score move with the original tie order. Witnesses are never stored as exact maxima. These reply bounds preserve the score returned for a searched reply. Earlier future choices use the approximate policy described above.
 
 Focused real-WASM checks include score changes, wins, ties, physical blank identity, and partitioned equity. A cold subset comparison preserved every result and sufficient statistic. Full user-workload timings are recorded in the work-item report.
 
 The final, preempty, and maximum-score caches use bounded LRU eviction with the existing 32,768-entry limits. A shared utility owns keys once in stable list nodes and uses string views for lookup. This preserves a new working set after earlier game positions fill the cache; arbitrary unordered-map iteration is not an eviction policy. A native C++ regression compiles the exact header from the source patch and checks working-set retention, hit promotion, bounded capacity, and physical binary keys.
+
+## Late-game sample profile
+
+Full analysis selects a fixed paired-sample profile from the starting bag and
+existing browser worker budget. With1–7 bag tiles, three-worker devices use277
+samples and one- or two-worker devices use192. With8–21 bag tiles, one-worker
+devices use80 and two- or three-worker devices use128. Empty bags and bags above21
+retain277. Previews retain64 on all devices. Every chosen move and its draw
+comparison uses the actual profile count and must reach the official terminal
+state in every terminal trial. A smaller full result is complete for its
+profile, not an incomplete277-sample result. Its sampling uncertainty is larger.
+
+Cache identities contain the actual count. Review-seed hashing normalizes
+public full profiles for bags1–21 back to277 to preserve the prior sample-world
+prefix. Explicit configured sample overrides and native diagnostic requests
+remain available. Saved full results must use one of the supported counts for
+their bag range. The server does not infer the user's device budget.

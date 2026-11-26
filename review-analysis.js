@@ -2,7 +2,7 @@
 (function(root) {
   'use strict';
   const Bag = typeof module !== 'undefined' && module.exports ? require('./bag-emptying-analysis.js') : root.CrossplayBagEmptying;
-  const ENDGAME_POLICY = 'crossplay-endgame-v1';
+  const ENDGAME_POLICY = 'crossplay-endgame-v2';
   function playedMove(turn) {
     const action = String(turn.action || '').trim();
     if (/^PASS(?:\s+(?:--\s+)?-?\d+)?$/i.test(action)) return { action: 'pass', position: '', tiles: '' };
@@ -87,7 +87,7 @@
     return { rackAfter, drawCount, drawn: drawn.join(''), retained: retained.join('') };
   }
 
-  function validDrawResult(result, turn, seed, iterations = 277) {
+  function validDrawResult(result, turn, seed, iterations = Bag.fullIterations(Number(turn.bag_count))) {
     let draw, move;
     try { draw = rackDraw(turn); move = playedMove(turn); } catch (_) { return false; }
     const bag = turn.bag_count, end = bag <= 21;
@@ -171,10 +171,10 @@
     return key === null ? -1 : moves.findIndex(move => placementKey(move, turn.grid) === key);
   }
 
-  function validResult(result, turn, seed, iterations = 277, moveCount = 15) {
+  function validResult(result, turn, seed, iterations = Bag.fullIterations(Number(turn.bag_count)), moveCount = 15) {
     if (!Array.isArray(turn.grid) || turn.grid.length !== 15 || !turn.grid.every(row => typeof row === 'string' && /^[A-Za-z.]{15}$/.test(row))) return false;
     const bag = Number(turn.bag_count), end = bag <= 21;
-    const expanded = bag >= 1 && bag <= 7 && iterations === 277;
+    const expanded = bag >= 1 && bag <= 7 && [192, 277].includes(iterations);
     let played;
     try { played = playedMove(turn); } catch (_) { return false; }
     if (!result || result.error || !Array.isArray(result.moves) || !result.moves.length || result.moves.length > (expanded ? 17 : moveCount + 1) ||

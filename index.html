@@ -1072,7 +1072,7 @@ function drawPoint(result) {
   return {beforeWin: result.beforeWin, afterWin: result.afterWin,
     luck: (result.afterWin - result.beforeWin) * 100, drawCount: result.drawCount,
     rackAfter: result.rackAfter, samples: result.iterationsCompleted,
-    provisional: result.iterationsCompleted !== SIMULATION_ITERATIONS};
+    provisional: result.iterationsCompleted !== CrossplayBagEmptying.fullIterations(result.bagCount)};
 }
 function savedFailureMatches(failure, key, preview) {
   return failure?.analysisKey === key || (!failure?.analysisKey && Boolean(preview));
@@ -1142,13 +1142,13 @@ function makeReviewContext(review, owner, shared = false) {
       const key = cache.key(turn, kind);
       const result = stored.turn_analyses?.[key];
       if (CrossplayReview.validResult(result, turn, cache.seed(turn),
-        kind === 'preview' ? PREVIEW_ITERATIONS : SIMULATION_ITERATIONS,
+        kind === 'preview' ? PREVIEW_ITERATIONS : CrossplayBagEmptying.fullIterations(Number(turn.bag_count)),
         kind === 'preview' ? PREVIEW_MOVE_COUNT : MOVE_COUNT)) cache.results[key] = result;
     }
     for (const kind of ['draw', 'draw-preview']) {
       const key = cache.key(turn, kind), result = stored.turn_analyses?.[key];
       if (CrossplayReview.validDrawResult(result, turn, cache.seed(turn),
-        kind === 'draw-preview' ? PREVIEW_ITERATIONS : SIMULATION_ITERATIONS)) cache.results[key] = result;
+        kind === 'draw-preview' ? PREVIEW_ITERATIONS : CrossplayBagEmptying.fullIterations(Number(turn.bag_count)))) cache.results[key] = result;
     }
   }
   const openingInput = CrossplayOpening.describe(review);
@@ -1192,9 +1192,10 @@ function makeReviewContext(review, owner, shared = false) {
       if (point.retryable && !cache.get(turn, 'review') &&
           savedTurnFailureMatches(point, cache, turn, 'review')) return true;
       const result = cache.get(turn, 'review');
-      return point.endgamePolicy === 'crossplay-endgame-v1' &&
+      return point.endgamePolicy === 'crossplay-endgame-v2' &&
         result?.endgamePolicy === point.endgamePolicy &&
-        result.selected.win === point.playedWin && result.best.win === point.bestWin;
+        result.selected.win === point.playedWin && result.best.win === point.bestWin &&
+        point.samples === result.iterationsCompleted;
     });
     if (points.length !== quality.points.length) quality = {...quality, points,
       current: points.length, state: 'running', message: 'Refreshing saved endgame analysis.'};
@@ -1210,7 +1211,8 @@ function makeReviewContext(review, owner, shared = false) {
     const result = cache.get(turn, 'review');
     let point = restored.get(index);
     if (result && (!point || point.provisional || point.retryable ||
-        point.playedWin !== result.selected.win || point.bestWin !== result.best.win)) {
+        point.playedWin !== result.selected.win || point.bestWin !== result.best.win ||
+        point.samples !== result.iterationsCompleted)) {
       const drawFailure = point?.draw;
       point = qualityPointFromResult(index, turn, result);
       if (drawFailure?.retryable) point.draw = drawFailure;
@@ -1512,7 +1514,7 @@ async function openGame(gameId, { shareToken = null, preloadedReview = null } = 
 function recordEngineResult(review, cache, key, result) {
   if (cache.shared || cache.discarded || cache.owner !== analysisOwner()) return;
   cache.unsaved = { ...cache.unsaved, [key]: result };
-  if (result.simulated === true && result.iterationsCompleted === SIMULATION_ITERATIONS) {
+  if (result.simulated === true && result.iterationsCompleted === CrossplayBagEmptying.fullIterations(result.bagCount)) {
     // Full simulations are expensive. Start their save before displaying them.
     void flushAnalysisSave(review, cache);
   } else if (!cache.saveTimer) cache.saveTimer = setTimeout(() => flushAnalysisSave(review, cache), ANALYSIS_SAVE_DELAY);
@@ -1793,7 +1795,7 @@ function currentMovePreview(turn, point) {
     const latest = result?.moves.find(candidate => candidateKey(candidate) === candidateKey(previewCandidate));
     move = latest || previewCandidate;
     win = result?.simulated === true ? latest?.win : null;
-    provisional = result?.provisional || result?.iterationsCompleted < SIMULATION_ITERATIONS;
+    provisional = result?.provisional || result?.iterationsCompleted < CrossplayBagEmptying.fullIterations(Number(turn.bag_count));
   }
   const board = move && candidatePreview(turn, move);
   return board ? { ...board, move, win, provisional } : null;
@@ -2398,6 +2400,8 @@ function makeTurnCoach(turn, point) {
   const explanation = makeReviewDetails('coach', 'coach-details', 'How this move is rated');
   explanation.append(makeElement('p', 'analysis-note', 'Grades compare estimated win chances for the recorded move and the best sampled alternative. ' +
     (Number.isFinite(point.samples) ? 'This estimate uses ' + point.samples + ' samples per move. ' : '') +
+    (CrossplayBagEmptying.coverageNote(point) ? CrossplayBagEmptying.coverageNote(point) + ' ' : '') +
+    (CrossplayBagEmptying.precisionNote({bagCount:turn.bag_count,iterationsCompleted:point.samples}) + ' ') +
     'Small differences can be sampling noise.' + (point.provisional ? ' The grade can change when the full estimate is ready.' : '')));
   panel.append(explanation);
   return panel;
@@ -2763,7 +2767,7 @@ function makeMoveQualityPanel(review) {
   }
   panel.append(makeElement('p', 'analysis-note', 'Loss is measured in percentage points (pp) of estimated win chance. For example, 60% versus 45% is a loss of 15 pp. Lower is better.'));
   const methodology = makeReviewDetails('quality-method', 'estimate-details', 'How move quality is measured');
-  methodology.append(makeElement('p', 'analysis-note', 'Only your turns are shown here; both players are analyzed. Loss compares the recorded move with the highest win estimate among the sampled alternatives. Early estimates use fewer alternatives and samples, then full estimates compare Quackle’s top ' + MOVE_COUNT + ' static candidates plus the recorded move with ' + SIMULATION_ITERATIONS + ' samples each. Bands: Best <2 pp; Inaccuracy 2–<5; Mistake 5–<10; Blunder ≥10. Placements, passes, and legal exchanges are included. Missing or invalid moves remain unrated. Alternatives use the same initial hidden rack and bag samples. Above 21 bag tiles the engine uses two-ply play and its win model; at 21 or fewer it plays to the Crossplay finish. Near an empty bag, the engine compares moves that can change who plays last, then searches both final turns. Earlier choices and hidden tiles remain sampled, so these are estimates, not a proof of perfect play. Ties count as half a win.'));
+  methodology.append(makeElement('p', 'analysis-note', 'Only your turns are shown here; both players are analyzed. Loss compares the recorded move with the highest win estimate among the sampled alternatives. Early estimates use fewer alternatives and samples, then full estimates compare Quackle’s top ' + MOVE_COUNT + ' static candidates plus the recorded move with ' + '277 samples each outside the late game and with an empty bag. Late-game full estimates use 80, 128, 192, or 277 samples based on the bag size and device worker budget. Smaller sample counts have more sampling uncertainty. The actual sample count appears with each estimate. Bands: Best <2 pp; Inaccuracy 2–<5; Mistake 5–<10; Blunder ≥10. Placements, passes, and legal exchanges are included. Missing or invalid moves remain unrated. Alternatives use the same initial hidden rack and bag samples. Above 21 bag tiles the engine uses two-ply play and its win model; at 21 or fewer it plays to the Crossplay finish. Near an empty bag, the engine combines the original static shortlist with an endgame-equity shortlist. Future choices follow an approximate policy; every sample reaches the official finish. Earlier choices and hidden tiles remain sampled, so these are estimates, not a proof of perfect play. Ties count as half a win.'));
   panel.append(methodology);
   return panel;
 }
@@ -3825,11 +3829,15 @@ function qualityPointFromResult(index, turn, result) {
     turnIndex: index, turn: index + 1, mine: Boolean(turn.mine), action: turn.action,
     evaluation: MOVE_QUALITY_EVALUATION, category: qualityBand(loss), loss,
     playedWin: result.selected.win, bestWin: result.best.win, samples: result.iterationsCompleted,
-    provisional: result.iterationsCompleted !== SIMULATION_ITERATIONS,
+    provisional: result.iterationsCompleted !== CrossplayBagEmptying.fullIterations(result.bagCount),
     equityLoss: result.selected.action === 'place' ? staticLoss : null,
     playedEquity: result.selected.staticEquity, bestEquity: result.bestStaticEquity,
     playedMove: reviewMove(turn, result.selected), bestMove: reviewMove(turn, result.best),
     candidateCount: result.searchedCandidateCount || result.moves.length,
+    ...(result.candidatePolicy ? {candidatePolicy: result.candidatePolicy,
+      searchedCandidateCount: result.searchedCandidateCount,
+      evaluatedBagEmptyingCount: result.evaluatedBagEmptyingCount,
+      totalBagEmptyingCount: result.totalBagEmptyingCount} : {}),
     ...(result.endgamePolicy ? {endgamePolicy: result.endgamePolicy} : {})
   };
 }
@@ -3916,7 +3924,7 @@ async function ensureRackDrawAnalysis(context, turn, phase, options = {}) {
   if (context.cancelled || owner !== analysisOwner()) throw accountChanged();
   if (cache.get(turn, 'draw')) return cache.get(turn, 'draw');
   const kind = phase === 'preview' ? 'draw-preview' : 'draw';
-  const iterations = kind === 'draw-preview' ? PREVIEW_ITERATIONS : SIMULATION_ITERATIONS;
+  const iterations = kind === 'draw-preview' ? PREVIEW_ITERATIONS : CrossplayBagEmptying.fullIterations(Number(turn.bag_count));
   const key = cache.key(turn, kind), taskKey = owner + ':' + review.id + ':' + key;
   const priority = options.priority || (currentReview === review ? 5 : 1);
   const signal = reviewQueue.controller.signal;
@@ -3947,7 +3955,7 @@ async function ensurePositionAnalysis(review, turn, kind, options = {}) {
   kind = ['candidates', 'preview'].includes(kind) ? kind : 'review';
   if (kind === 'preview' && cache.get(turn, 'review')) return cache.get(turn, 'review');
   const moveCount = kind === 'preview' ? PREVIEW_MOVE_COUNT : MOVE_COUNT;
-  const iterations = kind === 'preview' ? PREVIEW_ITERATIONS : SIMULATION_ITERATIONS;
+  const iterations = kind === 'preview' ? PREVIEW_ITERATIONS : CrossplayBagEmptying.fullIterations(Number(turn.bag_count));
   const key = cache.key(turn, kind);
   const taskKey = context.owner + ':' + review.id + ':' + key;
   const priority = options.priority || 0;
@@ -4086,12 +4094,14 @@ function renderMoves(moves, result, output, turn) {
   }
   table.append(body);
   output.append(table);
-  const early = result.provisional || result.iterationsCompleted < SIMULATION_ITERATIONS;
+  const early = result.provisional || result.iterationsCompleted < CrossplayBagEmptying.fullIterations(Number(turn.bag_count));
   const note = result.simulated !== true
     ? 'Static alternatives for the board and rack before this turn. Win estimates are unavailable for these candidates.'
     : (early ? 'Early estimate. ' : 'Full estimate. ') + (result.playToEnd
       ? 'Win estimates use ' + result.iterationsCompleted + ' sampled hidden racks and draws per move, played to the Crossplay finish.'
       : 'Win estimates use Quackle’s two-ply model with ' + result.iterationsCompleted + ' samples per move.') +
+      (CrossplayBagEmptying.coverageNote(result) ? ' ' + CrossplayBagEmptying.coverageNote(result) : '') +
+      (CrossplayBagEmptying.precisionNote(result) ? ' ' + CrossplayBagEmptying.precisionNote(result) : '') +
       (early ? ' Values and grades can change when full analysis finishes.' : '');
   output.append(makeElement('p', 'analysis-note', note));
   renderWordInsight(turn, moves, output);

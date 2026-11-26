@@ -493,13 +493,13 @@ test('low-bag move and draw validation requires the current endgame policy', () 
     bagCount:6, finalTurnsRemaining:0, playToEnd:true, plies:-1, simulationMode:'play-to-end', winModel:'terminal'};
   const review = {...common, samplingVersion:'paired-review-v1', moves:[move], selected:move, best:move,
     staticMoves:[move], bestStaticEquity:0, candidateCount:1, totalPlayaheads:277,
-    equityMoves:[move],candidatePolicy:'bag-emptying-v1',searchedCandidateCount:1,requiredBagEmptyingCount:0,evaluatedBagEmptyingCount:0};
+    generatedCandidateCount:10,totalBagEmptyingCount:5,equityMoves:[move],candidatePolicy:'crossplay-low-bag-equity-v1',searchedCandidateCount:1,requiredBagEmptyingCount:0,evaluatedBagEmptyingCount:0};
   const draw = {...common, samplingVersion:'rack-draw-v1', rackAfter:rack, drawCount:0,
     beforeWin:.4, afterWin:.4, selected:move};
   for (const [result, validate] of [[review, validResult], [draw, validDrawResult]]) {
     assert.equal(validate(result, turn, 123), false);
     assert.equal(validate({...result, endgamePolicy:'old-policy'}, turn, 123), false);
-    assert.equal(validate({...result, endgamePolicy:'crossplay-endgame-v1'}, turn, 123), true);
+    assert.equal(validate({...result, endgamePolicy:'crossplay-endgame-v2'}, turn, 123), true);
   }
 });
 
@@ -575,4 +575,20 @@ test('opening work respects pause and cancelled work cannot complete a review', 
   assert.equal(calls,0);
   queue.retry('one');await tick();assert.equal(calls,1);
   queue.close();release();await tick();assert.equal(completes,0);
+});
+
+
+test('late full result defaults to128 while explicit diagnostic277 remains supported', () => {
+  const {validResult}=require('./review-analysis.js');
+  const turn={grid:Array(15).fill('.'.repeat(15)),rack:'AEIRST?',action:'PASS 0',bag_count:21,final_turns_remaining:0};
+  const resultFor=n=>{const move={action:'pass',position:'',tiles:'',score:0,equity:0,staticEquity:0,
+    win:.5,samples:n,terminalSamples:n};return{simulated:true,plies:-1,playToEnd:true,simulationMode:'play-to-end',
+    winModel:'terminal',endgamePolicy:'crossplay-endgame-v2',bagCount:21,finalTurnsRemaining:0,
+    samplingVersion:'paired-review-v1',seed:42,iterationsRequested:n,iterationsCompleted:n,
+    candidateCount:1,totalPlayaheads:n,selected:move,best:move,moves:[move],staticMoves:[move],bestStaticEquity:0};};
+  assert.equal(validResult(resultFor(128),turn,42),true);
+  assert.equal(validResult(resultFor(277),turn,42),false);
+  assert.equal(validResult(resultFor(277),turn,42,277),true);
+  const incomplete=resultFor(128);incomplete.moves[0].terminalSamples=127;
+  assert.equal(validResult(incomplete,turn,42),false);
 });

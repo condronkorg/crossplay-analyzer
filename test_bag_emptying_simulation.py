@@ -8,6 +8,44 @@ class BagEmptyingSimulationTests(unittest.TestCase):
     setUpClass = classmethod(endgame.EndgameSimulationTests.setUpClass.__func__)
     tearDownClass = classmethod(endgame.EndgameSimulationTests.tearDownClass.__func__)
 
+    def test_phase_equity_shortlist_is_bounded_and_preserves_static_moves(self):
+        grid = list(endgame.EndgameSimulationTests.GRID)
+        grid[0] = '..........G....'
+        result = self.page.evaluate("""grid => {
+          const args=[JSON.stringify(grid),'WEAFTUO',110,100];
+          const all=testEngine.kibitz(...args,1000000).moves;
+          const plan=testEngine.planBagEmptying(...args,null,123456789);
+          return {all,plan};
+        }""", grid)
+        plan = result['plan']
+        self.assertFalse(plan.get('error'), plan)
+        self.assertLessEqual(len(plan['moves']), 30)
+        self.assertEqual(plan['generatedCandidateCount'], len(result['all']))
+        self.assertEqual(plan['totalBagEmptyingCount'], sum(
+            move['action'] == 'place' and 7 - len(move['leave']) >= 2
+            for move in result['all']))
+        key = lambda move: (move['action'], move['position'], move['tiles'])
+        included = set(map(key, plan['moves']))
+        self.assertTrue(set(map(key, result['all'][:15])).issubset(included))
+        self.assertIn(('place', '15B', 'FET'), included)
+
+    def test_short_rack_counts_only_tiles_physically_placed(self):
+        grid = list(endgame.EndgameSimulationTests.GRID)
+        grid[0] = '..........G....'
+        result = self.page.evaluate("""grid => {
+          const rack='WEAFTO', args=[JSON.stringify(grid),rack,110,100];
+          return {rack,all:testEngine.kibitz(...args,1000000).moves,
+            plan:testEngine.planBagEmptying(...args,null,123456789)};
+        }""", grid)
+        plan = result['plan']
+        self.assertFalse(plan.get('error'), plan)
+        rack_size = len(result['rack'])
+        drains = lambda move: (move['action'] == 'place' and
+                               rack_size - len(move['leave']) >= plan['bagCount'])
+        self.assertEqual(plan['totalBagEmptyingCount'], sum(map(drains, result['all'])))
+        self.assertEqual(plan['bagEmptyingIndices'], [
+            index for index, move in enumerate(plan['moves']) if drains(move)])
+
     def test_all_emptying_moves_and_sample_offsets(self):
         grid = list(endgame.EndgameSimulationTests.GRID)
         grid[0] = '..........G....'
@@ -28,7 +66,8 @@ class BagEmptyingSimulationTests(unittest.TestCase):
         self.assertEqual(plan['equityMoves'], result['legacyStatic'])
         required = {(m['position'], m['tiles']) for m in result['required']}
         planned = {(plan['moves'][i]['position'], plan['moves'][i]['tiles']) for i in plan['bagEmptyingIndices']}
-        self.assertEqual(required, planned)
+        self.assertTrue(planned.issubset(required))
+        self.assertEqual(plan['totalBagEmptyingCount'], len(required))
         self.assertEqual(plan['moves'][plan['actualIndex']]['action'], 'pass')
         for i, whole in enumerate(result['whole']['moves']):
             self.assertEqual(whole['win'], (result['a']['moves'][i]['win'] + result['b']['moves'][i]['win']) / 2)
@@ -78,7 +117,7 @@ class BagEmptyingSimulationTests(unittest.TestCase):
                     self.assertIn('error', case)
                 else:
                     self.assertEqual(case['observed'], case['bag'])
-                    self.assertEqual(case['actual'], case['expected'])
+                    self.assertTrue(set(case['actual']).issubset(case['expected']))
 
     def test_partitioned_equity_matches_legacy_with_variable_game_lengths(self):
         grid = list(endgame.EndgameSimulationTests.GRID)

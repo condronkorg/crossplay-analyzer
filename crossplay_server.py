@@ -850,12 +850,12 @@ class Handler(SimpleHTTPRequestHandler):
         expanded = (1 <= identity[6] <= 7 and len(identity) > 1
                     and identity[1] in ('review', 'simulation'))
         if expanded:
-            if identity[-1] != 'bag-emptying-v1' or result.get('candidatePolicy') != 'bag-emptying-v1':
+            if identity[-1] != 'crossplay-low-bag-equity-v1' or result.get('candidatePolicy') != 'crossplay-low-bag-equity-v1':
                 return False
             identity = identity[:-1]
         if identity[6] <= 21:
-            return (len(identity) == base_length + 1 and identity[-1] == 'crossplay-endgame-v1'
-                    and result.get('endgamePolicy') == 'crossplay-endgame-v1')
+            return (len(identity) == base_length + 1 and identity[-1] == 'crossplay-endgame-v2'
+                    and result.get('endgamePolicy') == 'crossplay-endgame-v2')
         return len(identity) == base_length
 
     @staticmethod
@@ -868,7 +868,10 @@ class Handler(SimpleHTTPRequestHandler):
                 or identity[14] != 'paired-review-v1'
                 or not all(isinstance(value, str) for value in identity[12:14])):
             invalid()
-        move_count, iterations = (5, 64) if identity[1] == 'preview' else (15, 277)
+        allowed = (192, 277) if 1 <= identity[6] <= 7 else (80, 128) if 8 <= identity[6] <= 21 else (277,)
+        if identity[1] == 'review' and (type(identity[9]) is not int or identity[9] not in allowed):
+            invalid()
+        move_count, iterations = (5, 64) if identity[1] == 'preview' else (15, identity[9])
         if identity[8:12] != [move_count, iterations, 2, 21]:
             invalid()
         grid, rack, score, other, bag, final = identity[2:8]
@@ -880,15 +883,19 @@ class Handler(SimpleHTTPRequestHandler):
                 or (final not in (1, 2) if bag == 0 else final != 0)):
             invalid()
         play_to_end = bag <= 21
-        expanded = 1 <= bag <= 7 and iterations == 277
+        expanded = 1 <= bag <= 7 and iterations in (192, 277)
         searched = result.get('searchedCandidateCount') if expanded else (len(result['moves']) if isinstance(result.get('moves'), list) else 0)
         equity_moves = result.get('equityMoves')
         if expanded and (not isinstance(equity_moves, list) or not 1 <= len(equity_moves) <= 16
                          or not all(isinstance(move, dict) and Handler.finite_number(move.get('equity'))
                                     for move in equity_moves)
-                         or type(searched) is not int or not 1 <= searched <= 1000000
+                         or type(searched) is not int or not 1 <= searched <= 31
+                         or type(result.get('generatedCandidateCount')) is not int
+                         or not searched <= result['generatedCandidateCount'] <= 1000000
+                         or type(result.get('totalBagEmptyingCount')) is not int
+                         or not 0 <= result['totalBagEmptyingCount'] <= result['generatedCandidateCount']
                          or type(result.get('requiredBagEmptyingCount')) is not int
-                         or not 0 <= result['requiredBagEmptyingCount'] <= searched
+                         or not 0 <= result['requiredBagEmptyingCount'] <= min(searched, result['totalBagEmptyingCount'])
                          or type(result.get('evaluatedBagEmptyingCount')) is not int
                          or result.get('evaluatedBagEmptyingCount') != result['requiredBagEmptyingCount']):
             invalid()
@@ -949,7 +956,10 @@ class Handler(SimpleHTTPRequestHandler):
                 or identity[14] != 'rack-draw-v1'
                 or not all(isinstance(value, str) for value in identity[11:14])):
             invalid()
-        iterations = 64 if identity[1] == 'draw-preview' else 277
+        allowed = (192, 277) if 1 <= identity[6] <= 7 else (80, 128) if 8 <= identity[6] <= 21 else (277,)
+        if identity[1] == 'draw' and (type(identity[8]) is not int or identity[8] not in allowed):
+            invalid()
+        iterations = 64 if identity[1] == 'draw-preview' else identity[8]
         if (not all(type(value) is int for value in identity[4:11])
                 or identity[8:11] != [iterations, 2, 21]):
             invalid()

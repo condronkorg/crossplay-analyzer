@@ -492,7 +492,7 @@ function drawBatch(request, completed = request.payload.count, win = .75) {
     beforeWin: win, afterWin: win, beforeWinSum: win * completed, afterWinSum: win * completed,
     selected: drawPayload.played, drawCount: 0, rackAfter: drawPayload.rackAfter,
     seed: drawPayload.seed, bagCount: drawPayload.bagCount, finalTurnsRemaining: 0, plies: -1,
-    playToEnd: true, endgamePolicy: 'crossplay-endgame-v1', simulationMode: 'play-to-end', winModel: 'terminal'};
+    playToEnd: true, endgamePolicy: 'crossplay-endgame-v2', simulationMode: 'play-to-end', winModel: 'terminal'};
 }
 
 test('terminal draw retries the missing offset and reuses a matching baseline', async () => {
@@ -733,4 +733,24 @@ test('terminal full draw sums each partial conditioned estimate and completes 27
     pool.stop();
     await job.catch(() => {});
   }
+});
+
+
+test('128sample terminal draws reuse the matching128sample move baseline', async () => {
+  const {pool,log}=makePool(3);
+  const job=pool.run('simulateDraw',{...drawPayload,iterations:128,beforeWin:{win:.75,samples:128,seed:33}});
+  try{
+    await settle();
+    for(let offset=0;offset<128;offset+=16){
+      assert.equal(log.requests.length,1);
+      assert.equal(log.requests[0].payload.offset,offset);
+      assert.equal(log.requests[0].payload.knownBeforeWin,.75);
+      reply(log,log.requests[0],drawBatch(log.requests[0]));
+      await settle();
+    }
+    const result=await job;
+    assert.equal(result.iterationsCompleted,128);
+    assert.equal(result.iterationsRequested,128);
+    assert.equal(result.beforeWin,.75);
+  }finally{pool.stop();await job.catch(()=>{});}
 });

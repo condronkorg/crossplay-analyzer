@@ -650,6 +650,7 @@ async function findBestMoves() {
     if (!ready || runToken !== quackleRunToken) return;
 
     const data = buildJSON();
+    const iterations = CrossplayBagEmptying.fullIterations(data.bag_count, QUACKLE_SIMULATION_ITERATIONS);
     if (!/^[A-Z?]{1,7}$/.test(data.rack)) {
       throw new Error('Enter a rack with 1 to 7 letters or blanks');
     }
@@ -665,13 +666,13 @@ async function findBestMoves() {
 
     const container = document.getElementById('movesContainer');
     container.innerHTML = '';
-    btn.textContent = `Simulating ${QUACKLE_SIMULATION_ITERATIONS} rounds...`;
-    statusEl.textContent = `Generating moves and running ${QUACKLE_SIMULATION_ITERATIONS} rounds...`;
+    btn.textContent = `Simulating ${iterations} rounds...`;
+    statusEl.textContent = `Generating moves and running ${iterations} rounds...`;
     const startedAt = performance.now();
     statusTimer = setInterval(() => {
       if (runToken !== quackleRunToken) return;
       const elapsed = Math.floor((performance.now() - startedAt) / 1000);
-      statusEl.textContent = `Generating moves and running ${QUACKLE_SIMULATION_ITERATIONS} rounds... ${elapsed}s`;
+      statusEl.textContent = `Generating moves and running ${iterations} rounds... ${elapsed}s`;
     }, 1000);
 
     const result = await callQuackleWorker('simulateKibitz', {
@@ -680,7 +681,7 @@ async function findBestMoves() {
       playerScore: data.player_score,
       opponentScore: data.opponent_score,
       numMoves: QUACKLE_MOVE_COUNT,
-      iterations: QUACKLE_SIMULATION_ITERATIONS,
+      iterations: iterations,
       bagCount: data.bag_count,
       finalTurnsRemaining: data.final_turns_remaining,
     });
@@ -689,16 +690,16 @@ async function findBestMoves() {
     if (result.error) throw new Error(result.error);
     const moves = Array.isArray(result.moves) ? result.moves : [];
     const hasCompleteMoves = moves.length > 0 && moves.every(move =>
-      move.samples === QUACKLE_SIMULATION_ITERATIONS &&
+      move.samples === iterations &&
       (data.bag_count > QUACKLE_TERMINAL_BAG_LIMIT ||
-        move.terminalSamples === QUACKLE_SIMULATION_ITERATIONS) &&
+        move.terminalSamples === iterations) &&
       Number.isFinite(move.win) && move.win >= 0 && move.win <= 1
     );
     const expectsTerminal = data.bag_count <= QUACKLE_TERMINAL_BAG_LIMIT;
     const expanded = data.bag_count >= 1 && data.bag_count <= 7;
     const hasCoverage = expanded
-      ? CrossplayBagEmptying.validCoverage(result, data.bag_count, QUACKLE_SIMULATION_ITERATIONS)
-      : result.totalPlayaheads === QUACKLE_SIMULATION_ITERATIONS * moves.length;
+      ? CrossplayBagEmptying.validCoverage(result, data.bag_count, iterations)
+      : result.totalPlayaheads === iterations * moves.length;
     if (result.simulated !== true ||
         result.plies !== (expectsTerminal ? -1 : QUACKLE_SIMULATION_PLIES) ||
         result.playToEnd !== expectsTerminal ||
@@ -706,8 +707,8 @@ async function findBestMoves() {
         result.winModel !== (expectsTerminal ? 'terminal' : 'bogowin') ||
         result.bagCount !== data.bag_count ||
         result.finalTurnsRemaining !== data.final_turns_remaining ||
-        result.iterationsRequested !== QUACKLE_SIMULATION_ITERATIONS ||
-        result.iterationsCompleted !== QUACKLE_SIMULATION_ITERATIONS ||
+        result.iterationsRequested !== iterations ||
+        result.iterationsCompleted !== iterations ||
         result.candidateCount !== moves.length ||
         !hasCoverage ||
         !hasCompleteMoves) {
@@ -724,9 +725,11 @@ async function findBestMoves() {
       const winPct = `${(m.win * 100).toFixed(1)}%`;
       html += `<tr><td style="padding:4px 8px;${style}"><b>${moveStr}</b></td><td style="padding:4px 8px;${style}">${m.score}</td><td style="padding:4px 8px;${style}">${m.leave||''}</td><td data-samples="${m.samples}" style="padding:4px 8px;${style}">${winPct}</td><td style="padding:4px 8px;${style}">${m.equity.toFixed(1)}</td></tr>`;
     }
-    const hint = result.playToEnd
+    const hint = (result.playToEnd
       ? `Estimated Win% follows the official Crossplay final-turn rules to the finish for each sampled hidden rack and draw.`
-      : `Estimated Win% is Quackle's two-ply Bogowin estimate from ${QUACKLE_SIMULATION_ITERATIONS} samples per move.`;
+      : `Estimated Win% is Quackle's two-ply Bogowin estimate from ${iterations} samples per move.`) +
+      (CrossplayBagEmptying.coverageNote(result) ? ' ' + CrossplayBagEmptying.coverageNote(result) : '') +
+      (CrossplayBagEmptying.precisionNote(result) ? ' ' + CrossplayBagEmptying.precisionNote(result) : '');
     html += `</table><p style="color:#777;font-size:0.75rem;margin-top:8px;">${hint}</p>`;
     container.innerHTML = html;
     const elapsed = ((performance.now() - startedAt) / 1000).toFixed(1);
