@@ -264,7 +264,7 @@ test('device worker budgets select matching full profiles and preserve paired wo
     assert.equal(vm.runInContext('QuackleWorkerPool.browserSize()',context),workers);
     for(const bag of [0,1,7,8,21,22]){
       context.t={...turn,bag_count:bag,final_turns_remaining:bag===0?2:0};
-      const n=bag>=1&&bag<=7?192:bag>=8&&bag<=21?(workers===1?96:192):277;
+      const n=bag>=1&&bag<=7?192:bag>=8&&bag<=21?(workers===1?128:192):277;
       const identity=JSON.parse(vm.runInContext('new AnalysisCache().key(t,"review")',context));
       assert.equal(identity[9],n,workers+':'+bag);
       assert.equal(JSON.parse(vm.runInContext('new AnalysisCache().key(t,"draw")',context))[8],n);

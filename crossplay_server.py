@@ -868,7 +868,7 @@ class Handler(SimpleHTTPRequestHandler):
                 or identity[14] != 'paired-review-v1'
                 or not all(isinstance(value, str) for value in identity[12:14])):
             invalid()
-        allowed = (192, 277) if 1 <= identity[6] <= 7 else (96, 192) if 8 <= identity[6] <= 21 else (277,)
+        allowed = (192, 277) if 1 <= identity[6] <= 7 else (128, 192) if 8 <= identity[6] <= 21 else (277,)
         if identity[1] == 'review' and (type(identity[9]) is not int or identity[9] not in allowed):
             invalid()
         move_count, iterations = (5, 64) if identity[1] == 'preview' else (15, identity[9])
@@ -962,7 +962,7 @@ class Handler(SimpleHTTPRequestHandler):
                 or identity[14] != 'rack-draw-v1'
                 or not all(isinstance(value, str) for value in identity[11:14])):
             invalid()
-        allowed = (192, 277) if 1 <= identity[6] <= 7 else (96, 192) if 8 <= identity[6] <= 21 else (277,)
+        allowed = (192, 277) if 1 <= identity[6] <= 7 else (128, 192) if 8 <= identity[6] <= 21 else (277,)
         if identity[1] == 'draw' and (type(identity[8]) is not int or identity[8] not in allowed):
             invalid()
         iterations = 64 if identity[1] == 'draw-preview' else identity[8]
