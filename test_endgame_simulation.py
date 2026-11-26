@@ -19,6 +19,35 @@ class EndgameSimulationTests(unittest.TestCase):
         '...R.O..D.V....', '..RENT.LITER...', '.....H..T......',
     ]
 
+    def test_terminal_leave_cache_preserves_frozen_synthetic_results(self):
+        # Frozen from the uncached 91ab engine. Includes bag22's ordinary two-ply
+        # path, which must not enable the terminal-only cache.
+        expected = [
+            {'bag': 8, 'selected': {'win': 0, 'equity': -69.125},
+             'best': {'tiles': 'OUTWEAR', 'position': 'D1', 'win': 0.375, 'equity': -35.5}},
+            {'bag': 14, 'selected': {'win': 0.25, 'equity': -24.958333333333336},
+             'best': {'tiles': 'WAFT', 'position': 'O1', 'win': 1, 'equity': 62.54166666666666}},
+            {'bag': 21, 'selected': {'win': 0.25, 'equity': -57.30357142857143},
+             'best': {'tiles': 'OUTWEAR', 'position': 'D1', 'win': 0.875, 'equity': 10.357142857142854}},
+            {'bag': 22, 'selected': {'win': 0.12583012500000001, 'equity': -39.611328125},
+             'best': {'tiles': 'OUTWEAR', 'position': 'D1', 'win': 0.603998175, 'equity': 21.95751953125}},
+        ]
+        actual = self.page.evaluate("""base => [8,14,21,22].map(bag => {
+          const grid=[...base];let removed=0;
+          for(let row=0;row<15&&removed<bag;row++) {
+            const letters=[...grid[row]];
+            for(let col=0;col<15&&removed<bag;col++)if(letters[col]!=='.'){letters[col]='.';removed++;}
+            grid[row]=letters.join('');
+          }
+          const result=testEngine.simulateReviewMove(JSON.stringify(grid),'WEAFTUO',110,100,
+            1,8,bag,0,{action:'pass',position:'',tiles:''},123456789);
+          if(result.error)throw Error(result.error);
+          return {bag,selected:{win:result.selected.win,equity:result.selected.equity},
+            best:{tiles:result.best.tiles,position:result.best.position,
+              win:result.best.win,equity:result.best.equity}};
+        })""", self.GRID)
+        self.assertEqual(actual, expected)
+
     def test_last_draw_accounts_for_opponents_winning_block(self):
         grid = list(self.GRID)
         grid[0] = 'CD.............'

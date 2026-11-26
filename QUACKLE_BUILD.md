@@ -17,7 +17,7 @@ Artifact SHA-256 values:
 
 ```text
 quackle.js   865a555e856374c545e95f2899a81e2588bd41548dd97bb239427566607815e0
-quackle.wasm 91ab80c4e735449265e6486844825a3d57f81c7fc1545ce1ca88de20a2dd4e82
+quackle.wasm 8ed435458c1a293e5004356a0b5a3530d34e421d2a53dc462ac1ff295de695c5
 quackle.data 0f7b4e8cdcf4cb743c5423d6befe23ea77691c588f7c7dfb603bf475c1fbf8f3
 ```
 
@@ -114,7 +114,21 @@ remaining physical rack, then uses the same score-plus-adjustment grouping.
 The cache is cleared at every generation and position change. It cannot retain
 strategy values across separate generations. Its seven-tile input bounds the
 number of rack/action keys. No second scoring formula is implemented there.
-Ordinary native tie order is used throughout. Version v3 invalidates prior
+Ordinary native tie order is used throughout.
+
+During play-to-end future moves with more than seven bag tiles, the generator
+also caches the authoritative player-consideration component by the remaining
+physical rack. The shared evaluator helper keeps the original arithmetic
+order `(player + shared + effective score) + timing`; the cache does not
+subtract a score or combine the timing term with the rack value. It clears on
+every generation and position change, with at most 128 physical subsets for a
+seven-tile rack. Both static helper caches require the exact CatchallEvaluator
+type; custom evaluator subclasses keep ordinary virtual evaluation. The
+play-to-end flag is captured before the negative-ply request becomes a bound
+of 1,000 moves. Ordinary root generation and normal two-ply future calls do not
+enable this new cache. Generic pass defaults (score 0 and equity -999) are unchanged.
+There are no profiling timers, diagnostic exports, or model-policy changes.
+Version v3 invalidates prior
 terminal move, preview, and draw results through their cache
 identities. The paired seed excludes policy suffixes, so the sampled physical
 worlds remain comparable. All reported terminal candidates must still finish
