@@ -119,7 +119,10 @@ class LowBagBrowserTest(unittest.TestCase):
         self.assertEqual(result['owner']['state'], 'running')
         self.assertEqual(result['owner']['current'], 1)
         self.assertEqual(result['owner']['trend']['state'], 'running')
-        self.assertEqual([point['x'] for point in result['owner']['trend']['points']], [0])
+        self.assertEqual(result['owner']['trend']['informationModel'], 'hindsight-state-v1')
+        self.assertEqual([(point['x'],point['phase']) for point in result['owner']['trend']['points']],
+                         [(0,'before-draw'),(0,'after-draw'),(1,'before-draw')])
+        self.assertTrue(all(point['mine'] is None for point in result['owner']['trend']['points']))
         self.assertEqual(result['owner']['states'], ['pending-preview', 'pending-preview'])
         self.assertEqual([point['turnIndex'] for point in result['guest']['points']], [0])
         self.assertTrue(result['guest']['shared'])

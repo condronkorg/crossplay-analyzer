@@ -30,6 +30,8 @@ class AnalysisRestoreBrowserTest(unittest.TestCase):
             await analyzeReviewTurn(context, index, 'review');
           }
           await finishReviewAnalysis(context);
+          // Fully saved fixtures include the independent known-rack pipeline.
+          await runHindsightTimeline(context);
           await flushAnalysisSave(currentReview, context.cache);
           window.restoreSaved = structuredClone({...currentReview, stored_analysis:{
             version:ANALYSIS_VERSION, turn_analyses:context.cache.results,
@@ -37,9 +39,13 @@ class AnalysisRestoreBrowserTest(unittest.TestCase):
           window.restoreCalls = [];
           const request = workerRequest;
           workerRequest = (type, payload, options) => {
-            const index = currentReview.turns.findIndex(turn => turn.rack === payload.rack &&
-              JSON.stringify(turn.grid) === payload.gridJson &&
-              (Number(turn.mover_score) || 0) === payload.playerScore);
+            const index = type === 'evaluateKnownState'
+              ? currentReview.turns.findIndex((_, i) => Object.values(CrossplayHindsight.turnStates(currentReview,i))
+                  .some(state => state && typeof state === 'object' && state.grid &&
+                    CrossplayHindsight.stateId(state) === CrossplayHindsight.stateId(payload.state)))
+              : currentReview.turns.findIndex(turn => turn.rack === payload.rack &&
+                  JSON.stringify(turn.grid) === payload.gridJson &&
+                  (Number(turn.mover_score) || 0) === payload.playerScore);
             restoreCalls.push({type, index, iterations:payload.iterations});
             return request(type, payload, options);
           };
@@ -109,7 +115,9 @@ class AnalysisRestoreBrowserTest(unittest.TestCase):
             return context;
           };
           window.restoreDrain = async () => {
-            while (reviewQueue.running || reviewQueue.loading.size) await new Promise(resolve => setTimeout(resolve, 0));
+            while (reviewQueue.running || reviewQueue.loading.size ||
+              [...reviewQueue.contexts.values()].some(context => context.hindsightRunning || context.cache.pending.size))
+              await new Promise(resolve => setTimeout(resolve, 0));
             await Promise.resolve();
           };
         }''')
@@ -331,7 +339,7 @@ class AnalysisRestoreBrowserTest(unittest.TestCase):
         self.assertEqual(result['attempts'], 1)
         self.assertEqual(result['state'], 'error')
         self.assertEqual(result['quality'], 'error')
-        self.assertEqual(result['trend'], 'error')
+        self.assertEqual(result['trend'], 'done')
         self.assertEqual(result['savedQuality'], 'error')
         self.assertEqual(result['restored'], 'error')
         self.assertEqual(result['point'].get('executionPolicy'), 'bounded-terminal-v1')
@@ -544,7 +552,9 @@ class AnalysisRestoreBrowserTest(unittest.TestCase):
     def test_queued_completion_saves_an_immutable_summary_after_turn_retry(self):
         self.prepare_saved_review()
         result = self.page.evaluate('''async () => {
-          const review=structuredClone(restoreSaved), context=restoreInstall(review);
+          const review=structuredClone(restoreSaved);
+          delete review.stored_analysis.win_trend;
+          const context=restoreInstall(review);
           let releaseSave;
           analysisSaveQueue=new Promise(resolve=>releaseSave=resolve);
           const writes=[], request=api;
@@ -552,7 +562,11 @@ class AnalysisRestoreBrowserTest(unittest.TestCase):
             if(path.endsWith('/analysis')) writes.push(JSON.parse(options.body));
             return request(path,options);
           };
-          const finishing=finishReviewAnalysis(context);
+          const finishing=finishReviewAnalysis(context), positioning=runHindsightTimeline(context);
+          const summaryDeadline=performance.now()+5000;
+          while (!context.cache.completed?.win_trend && performance.now()<summaryDeadline)
+            await new Promise(resolve=>setTimeout(resolve,0));
+          if (!context.cache.completed?.win_trend) throw new Error('The position summary was not queued.');
           const originalWord=context.quality.points[0].playedMove.word, originalMine=context.trend.points[0].mine;
           context.cache.saveError='Synthetic previous save interruption.';
           currentTurnIndex=0; renderReview();
@@ -561,11 +575,11 @@ class AnalysisRestoreBrowserTest(unittest.TestCase):
           context.quality.points[0].playedMove.word='Changed after the save was queued';
           context.trend.points[0].mine=-1;
           releaseSave();
-          await finishing; await analysisSaveQueue;
-          const saved=writes.find(body=>body.move_quality);
-          return {liveState,quality:saved.move_quality.state,trend:saved.win_trend.state,
+          await finishing; await positioning; await analysisSaveQueue;
+          const saved=writes.find(body=>body.move_quality), positionSaved=writes.find(body=>body.win_trend);
+          return {liveState,quality:saved.move_quality.state,trend:positionSaved.win_trend.state,
             savedWord:saved.move_quality.points[0].playedMove.word,originalWord,
-            savedMine:saved.win_trend.points[0].mine,originalMine};
+            savedMine:positionSaved.win_trend.points[0].mine,originalMine};
         }''')
         self.assertEqual(result['liveState'], 'running')
         self.assertEqual(result['quality'], 'done')
