@@ -247,6 +247,14 @@
     .win-history-comparison-row { font-size: 11px; gap: 6px; }
     .win-history-inspector h4 { font-size: 20px; }
   }
+  @container (max-width: 599px) {
+    .win-history-inspector[data-final="false"] .position-wp-comparison,
+    .overview-chart .win-history-inspector[data-inspected-phase="after-draw"] .position-wp-comparison {
+      grid-column: 1 / -1; grid-row: auto; margin-top: 10px; padding-top: 8px; border-top: 1px solid var(--line);
+    }
+    .position-wp-table th, .position-wp-table td { overflow-wrap: normal; word-break: normal; }
+    .position-wp-table th:first-child { min-width: 64px; }
+  }
   .win-history-legend { display: flex; flex-wrap: wrap; gap: 3px 12px; margin: 2px 0 4px; color: var(--muted); font-size: 11px; }
   .win-history-scroll { width: 100%; overflow-x: auto; overscroll-behavior-x: contain; }
   .win-history svg { display: block; width: 100%; height: auto; margin: 0 auto; }
@@ -262,7 +270,7 @@
   .win-history-annotation { pointer-events: all; }
   .win-history-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-bottom: 6px; }
   .win-history-controls button, .win-history-controls select { min-width: 44px; min-height: 44px; margin: 0; padding: 6px 9px; font-size: 12px; }
-  .win-history-controls select { flex: 1 1 76px; width: 76px; max-width: 100%; border: 1px solid var(--line); border-radius: 8px; background: #fff; }
+  .win-history-controls select { flex: 1 0 96px; width: 96px; min-width: 96px; max-width: 100%; border: 1px solid var(--line); border-radius: 8px; background: #fff; }
   .win-history-phases { display: flex; gap: 4px; }
   .win-history-phase-button[aria-pressed="true"] { background: #e0ede5; border-color: #256b4a; color: #174c38; }
   .win-history-controls button:disabled { cursor: default; opacity: .55; }
@@ -2967,7 +2975,7 @@ function makeWinHistoryInspector(point, review, sweep) {
     heading.append(makeElement('p','',first?.rack || '—'),makeElement('p','',other ?? '—'));
   } else if(point.phase==='after-draw')heading.append(makeRackDrawTiles(turn));
   inspector.append(heading);
-  const comparison=makeElement('div','win-history-comparison');
+  const comparison=makeElement('div','win-history-comparison position-wp-comparison');
   const table=makeElement('table','position-wp-table');
   const labels=point.opening?[['before','Opening']]:[['before','Before'],['move','After move'],['draw','After draw']];
   const head=document.createElement('tr');head.append(makeElement('th','',''));

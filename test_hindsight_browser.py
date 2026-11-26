@@ -101,6 +101,43 @@ class HindsightBrowserTest(unittest.TestCase):
         self.assertTrue(self.page.evaluate('resumedKnownContext !== testHindsightContext'))
         self.assertTrue(self.page.evaluate('trendResults.points.every(p=>p.mine===100 && !p.provisional)'))
 
+    def test_phone_position_table_uses_full_width_without_split_words(self):
+        self.install_review()
+        self.page.evaluate("currentReview.opponent='fcsadboys'")
+        self.page.evaluate('runHindsightTimeline(testHindsightContext)')
+        for width in (320,390):
+            self.page.set_viewport_size({'width':width,'height':900})
+            for summary in (False,True):
+                if summary:
+                    self.page.get_by_role('button',name='Game summary',exact=True).click()
+                self.page.locator('[data-chart-control="turn"]').select_option('0')
+                dropdown=self.page.locator('[data-chart-control="turn"]').evaluate("""node=>{
+                  node.options[node.selectedIndex].textContent='Turn 24';
+                  const style=getComputedStyle(node),ctx=document.createElement('canvas').getContext('2d');
+                  ctx.font=style.font;
+                  return {width:node.clientWidth,needed:ctx.measureText('Turn 24').width+
+                    parseFloat(style.paddingLeft)+parseFloat(style.paddingRight)+24};
+                }""")
+                self.assertGreaterEqual(dropdown['width'],dropdown['needed'])
+                for phase in ('move','draw'):
+                    self.page.locator('[data-chart-control="'+phase+'"]').click()
+                    result=self.page.locator('.win-history-inspector').evaluate("""node=>{
+                      const table=node.querySelector('.position-wp-table'),style=getComputedStyle(node);
+                      const contentWidth=node.clientWidth-parseFloat(style.paddingLeft)-parseFloat(style.paddingRight);
+                      const split=[];
+                      for(const cell of table.querySelectorAll('th,td'))for(const match of cell.textContent.matchAll(/\\S+/g)){
+                        const range=document.createRange();range.setStart(cell.firstChild,match.index);
+                        range.setEnd(cell.firstChild,match.index+match[0].length);
+                        if(range.getClientRects().length!==1)split.push(match[0]);
+                      }
+                      return {width:table.getBoundingClientRect().width,contentWidth,split};
+                    }""")
+                    self.assertGreaterEqual(result['width'],result['contentWidth']-2)
+                    self.assertEqual(result['split'],[])
+                    self.assertTrue(self.page.evaluate('document.documentElement.scrollWidth<=innerWidth'))
+                if summary:
+                    self.page.get_by_role('button',name='Start Review',exact=True).click()
+
     def test_preview_completion_stays_running_and_pause_can_resume_full_work(self):
         self.install_review()
         self.page.evaluate("""()=>{
@@ -125,6 +162,31 @@ class HindsightBrowserTest(unittest.TestCase):
         self.assertEqual(self.page.evaluate('resumedGradePumps'),1)
         self.assertEqual(self.page.evaluate('trendResults.state'),'done')
         self.assertTrue(self.page.evaluate('trendResults.points.every(p=>!p.provisional)'))
+
+    def test_phone_position_table_wraps_long_player_names_without_overflow(self):
+        self.install_review()
+        self.page.evaluate('runHindsightTimeline(testHindsightContext)')
+        for width in (320,390):
+            self.page.set_viewport_size({'width':width,'height':900})
+            for summary in (False,True):
+                if summary:
+                    self.page.get_by_role('button',name='Game summary',exact=True).click()
+                self.page.locator('[data-chart-control="turn"]').select_option('0')
+                for phase in ('move','draw'):
+                    self.page.locator('[data-chart-control="'+phase+'"]').click()
+                    bounds=self.page.locator('.win-history-inspector').evaluate("""node=>{
+                      const table=node.querySelector('.position-wp-table'),name=table.rows[2].cells[0];
+                      name.textContent='ABCDEFGHIJKLMNOPQRSTUVWXYZ'.repeat(3);
+                      const range=document.createRange();range.selectNodeContents(name);
+                      return {inspector:node.getBoundingClientRect().right,table:table.getBoundingClientRect().right,
+                        lines:range.getClientRects().length,overflow:table.scrollWidth-table.clientWidth};
+                    }""")
+                    self.assertLessEqual(bounds['table'],bounds['inspector'])
+                    self.assertLessEqual(bounds['overflow'],1)
+                    self.assertGreater(bounds['lines'],1)
+                    self.assertTrue(self.page.evaluate('document.documentElement.scrollWidth<=innerWidth'))
+                if summary:
+                    self.page.get_by_role('button',name='Start Review',exact=True).click()
 
     def test_real_worker_runs_known_state_batches_without_move_grading(self):
         self.open_game()
