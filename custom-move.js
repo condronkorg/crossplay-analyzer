@@ -1,5 +1,5 @@
 window.CustomMove = class CustomMove {
-  constructor(container, getPosition, request, note = '') {
+  constructor(container, getPosition, request) {
     this.getPosition = getPosition;
     this.request = request;
     this.controller = null;
@@ -8,7 +8,6 @@ window.CustomMove = class CustomMove {
     this.root.className = 'custom-move';
     this.root.innerHTML = `
       <h3>Try a custom move</h3>
-      <p class="custom-move-note"></p>
       <form class="custom-move-form">
         <label>Action<select name="action" aria-label="Custom move action"><option value="place">Play a word</option><option value="exchange">Swap tiles</option></select></label>
         <label hidden>Tiles to swap<input name="tiles" aria-label="Tiles to swap" maxlength="7" placeholder="ABC?" autocomplete="off" spellcheck="false"></label>
@@ -17,12 +16,9 @@ window.CustomMove = class CustomMove {
         <label>Direction<select name="direction" aria-label="Custom move direction"><option value="across">Across →</option><option value="down">Down ↓</option></select></label>
         <button type="submit">Evaluate move</button>
       </form>
-      <p class="custom-move-help">Include existing letters, or use . for them. Use uppercase for regular tiles and lowercase for blanks (e.g. CAt).</p>
       <div class="custom-move-status" role="status" aria-live="polite"></div>
       <button type="button" class="custom-move-cancel" hidden>Cancel evaluation</button>
       <div class="custom-move-result"></div>`;
-    this.root.querySelector('.custom-move-note').textContent = note ||
-      'Evaluate a move even when it is outside Quackle’s suggested moves.';
     this.form = this.root.querySelector('form');
     this.status = this.root.querySelector('.custom-move-status');
     this.output = this.root.querySelector('.custom-move-result');
@@ -41,9 +37,6 @@ window.CustomMove = class CustomMove {
         input.closest('label').hidden = !visible;
         input.required = visible && name !== 'direction';
       }
-      this.root.querySelector('.custom-move-help').textContent = swapping
-        ? 'Enter the tiles to return to the bag. Use ? for a blank. The bag must contain at least as many tiles as you swap.'
-        : 'Include existing letters, or use . for them. Use uppercase for regular tiles and lowercase for blanks (e.g. CAt).';
     });
     this.cancelButton.addEventListener('click', () => {
       this.stop();
@@ -91,7 +84,7 @@ window.CustomMove = class CustomMove {
       if (!simulateWin) {
         const position = this.getPosition();
         if (!position) throw new Error('Analyze a board first.');
-        this.payload = { ...position, iterations: 277, customMove: {
+        this.payload = { ...position, iterations: CrossplayBagEmptying.fullIterations(position.bagCount), customMove: {
           action: this.form.elements.action.value,
           tiles: this.form.elements.tiles.value.trim(),
           word: this.form.elements.word.value.trim(),
@@ -131,7 +124,7 @@ window.CustomMove = class CustomMove {
     if (result.simulated) labels.push('Win%');
     for (const label of labels) append(head, 'th', label);
     const body = table.createTBody();
-    for (const [label, move] of [['Your move', result.selected], [result.simulated ? 'Best among analyzed moves' : 'Best static move', result.best]]) {
+    for (const [label, move] of [['Your move', result.selected], [result.simulated ? 'Best analyzed' : 'Best static move', result.best]]) {
       const row = body.insertRow();
       append(row, 'td', label + ': ' + (move.action === 'exchange' ? 'Swap ' + move.tiles
         : move.action === 'pass' ? 'Pass' : (move.position ? move.position + ' ' : '') + move.tiles));
@@ -142,16 +135,14 @@ window.CustomMove = class CustomMove {
     }
     this.output.append(table);
     const loss = Math.max(0, result.best.equity - result.selected.equity);
-    if (!result.simulated) append(this.output, 'p', loss.toFixed(1) + ' equity points behind the best static move.', 'custom-move-comparison');
-    append(this.output, 'p', 'Static rank #' + result.staticRank + ' of ' + result.legalMoveCount + ' legal moves.', 'custom-move-help');
+    if (!result.simulated) append(this.output, 'p', 'Equity loss: ' + loss.toFixed(1), 'custom-move-comparison');
+    append(this.output, 'p', 'Static rank #' + result.staticRank + ' / ' + result.legalMoveCount, 'custom-move-help');
     if (result.simulated) {
       const wpLoss = Math.max(0, result.best.win - result.selected.win) * 100;
-      append(this.output, 'p', 'WP loss: ' + wpLoss.toFixed(1) + ' pp versus the best among analyzed moves.', 'custom-move-comparison');
-      append(this.output, 'p', 'Compared ' + (result.searchedCandidateCount ?? result.candidateCount) + ' moves with ' + result.iterationsCompleted +
-        ' samples each. ' + (result.playToEnd ? 'Samples follow Crossplay’s final-turn rules to the finish.' :
-          'Win chances use Quackle’s two-ply estimate.'), 'custom-move-help');
+      append(this.output, 'p', 'WP loss: ' + wpLoss.toFixed(1) + ' pp', 'custom-move-comparison');
+      append(this.output, 'p', (result.searchedCandidateCount ?? result.candidateCount) + ' moves · ' +
+        result.iterationsCompleted + ' samples', 'custom-move-help custom-move-counts');
     } else {
-      append(this.output, 'p', 'Static equity evaluates score and rack leave without a win simulation.', 'custom-move-help');
       const button = append(this.output, 'button', 'Estimate win% (slower)');
       button.type = 'button';
       button.addEventListener('click', () => this.evaluate(true));

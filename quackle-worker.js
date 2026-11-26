@@ -3,7 +3,7 @@ importScripts('bag-emptying-analysis.js', 'luck-analysis.js', 'review-analysis.j
 
 const integerBetween = (value, min, max) => Number.isInteger(value) && value >= min && value <= max;
 const DEFAULT_REVIEW_SEED = 123456789;
-const ENDGAME_POLICY = 'crossplay-endgame-v1';
+const ENDGAME_POLICY = 'crossplay-endgame-v2';
 let modulePromise = null;
 
 async function getModule() {
@@ -209,7 +209,7 @@ function planTerminalReview(module, payload, expanded) {
     requestType === 'simulateKibitz' ? payload.seed ?? DEFAULT_REVIEW_SEED : payload.seed;
   if (!validTerminalPosition(payload) || !integerBetween(seed, 0, 0xffffffff) ||
       !integerBetween(payload.iterations, 1, 277) ||
-      (expanded && !(integerBetween(bagCount, 1, 7) && payload.iterations === 277))) {
+      (expanded && !(integerBetween(bagCount, 1, 7) && [192, 277].includes(payload.iterations)))) {
     throw new Error('Candidate search requires valid scores, seed, samples, and bag state.');
   }
   let played = null, evaluation;

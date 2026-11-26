@@ -13,6 +13,78 @@ class LowBagBrowserTest(unittest.TestCase):
     open_game = review_browser.ReviewBrowserTest.open_game
     start_review = review_browser.ReviewBrowserTest.start_review
 
+    def test_shortlist_count_reaches_the_move_result(self):
+        self.open_game()
+        text = self.page.evaluate("""() => {
+          const turn=currentReview.turns[0];
+          const move={action:'pass',position:'',tiles:'',score:0,leave:turn.rack,
+            equity:0,staticEquity:0,win:.5};
+          const point=qualityPointFromResult(0,turn,{selected:move,best:move,
+            bestStaticEquity:0,moves:[move],iterationsCompleted:277,
+            searchedCandidateCount:25,candidatePolicy:CrossplayBagEmptying.POLICY,
+            evaluatedBagEmptyingCount:10,totalBagEmptyingCount:352});
+          return makeTurnCoach(turn,point).textContent;
+        }""")
+        self.assertIn('277 samples · 25 moves', text)
+        self.assertIn('Best analyzed', text)
+        self.assertNotIn('How this move is rated', text)
+
+    def test_late_full_profile_is_final_and_shows_actual_samples(self):
+        self.open_game()
+        result=self.page.evaluate("""() => {
+          Object.defineProperty(navigator,'hardwareConcurrency',{value:2,configurable:true});
+          const turn={...currentReview.turns[0],bag_count:21};
+          const move={action:'pass',position:'',tiles:'',score:0,leave:turn.rack,
+            equity:0,staticEquity:0,win:.5};
+          const samples=CrossplayBagEmptying.fullIterations(21);
+          const raw={selected:move,best:move,bestStaticEquity:0,moves:[move],
+            iterationsCompleted:samples,bagCount:21};
+          const point=qualityPointFromResult(0,turn,raw);
+          const draw=drawPoint({...raw,beforeWin:.5,afterWin:.5,drawCount:0,rackAfter:turn.rack});
+          return{point,draw,samples,text:makeTurnCoach(turn,point).textContent};
+        }""")
+        self.assertFalse(result['point']['provisional'])
+        self.assertFalse(result['draw']['provisional'])
+        self.assertEqual(result['point']['samples'],result['samples'])
+        self.assertGreater(result['samples'],64)
+        self.assertLess(result['samples'],277)
+        self.assertIn('Full estimate',result['text'])
+        self.assertIn(f"{result['samples']} samples",result['text'])
+        self.assertNotIn('sampling uncertainty',result['text'])
+
+    def test_device_profile_restore_rebuilds_equal_win_summary_with_actual_samples(self):
+        self.open_game()
+        result=self.page.evaluate("""() => {
+          Object.defineProperty(navigator,'hardwareConcurrency',{value:2,configurable:true});
+          const turn={...currentReview.turns[0],index:0,rack:'WEAFTUO',rack_after:'WEAFTUO',
+            action:'PASS 0',bag_count:2,final_turns_remaining:0};
+          const cache=new AnalysisCache({},POSITION_PARAMETERS);
+          const move={action:'pass',position:'',tiles:'',leave:turn.rack,score:0,equity:0,
+            staticEquity:0,win:1,samples:192,terminalSamples:192};
+          const raw={simulated:true,endgamePolicy:'crossplay-endgame-v2',
+            samplingVersion:'paired-review-v1',seed:cache.seed(turn),
+            moves:[move],selected:move,best:move,staticMoves:[move],bestStaticEquity:0,
+            candidateCount:1,totalPlayaheads:192,plies:-1,playToEnd:true,
+            simulationMode:'play-to-end',winModel:'terminal',bagCount:2,finalTurnsRemaining:0,
+            iterationsRequested:192,iterationsCompleted:192,candidatePolicy:CrossplayBagEmptying.POLICY,
+            equityMoves:[move],generatedCandidateCount:100,totalBagEmptyingCount:90,
+            searchedCandidateCount:1,requiredBagEmptyingCount:0,evaluatedBagEmptyingCount:0};
+          const point={...qualityPointFromResult(0,turn,raw),samples:277};
+          const review={...currentReview,turns:[turn],stored_analysis:{version:ANALYSIS_VERSION,
+            turn_analyses:{[cache.key(turn,'review')]:raw},
+            move_quality:{evaluation:MOVE_QUALITY_EVALUATION,state:'done',current:1,points:[point]}}};
+          const context=makeReviewContext(review,analysisOwner());
+          const restored=context.quality.points[0];
+          return{restored,text:makeTurnCoach(turn,restored).textContent};
+        }""")
+        self.assertEqual(result['restored']['playedWin'],1)
+        self.assertEqual(result['restored']['bestWin'],1)
+        self.assertEqual(result['restored']['samples'],192)
+        self.assertFalse(result['restored']['provisional'])
+        self.assertIn('192 samples',result['text'])
+        self.assertNotIn('sampling uncertainty',result['text'])
+        self.assertNotIn('277 samples',result['text'])
+
     def test_old_exchange_rules_are_not_reused(self):
         self.open_game()
         result = self.page.evaluate("""() => makeReviewContext({...currentReview, stored_analysis: {
@@ -100,7 +172,7 @@ class LowBagBrowserTest(unittest.TestCase):
           const cache = new AnalysisCache({},POSITION_PARAMETERS);
           const move = {action:'pass', position:'', tiles:'', leave:'WEAFTUO',
             score:0, equity:0, staticEquity:0, win:1, samples:277, terminalSamples:277};
-          const raw = {simulated:true, endgamePolicy:'crossplay-endgame-v1',
+          const raw = {simulated:true, endgamePolicy:'crossplay-endgame-v2',
             samplingVersion:'paired-review-v1', seed:cache.seed(turn),
             moves:[move], selected:move, best:move, staticMoves:[{...move,equity:0}],
             bestStaticEquity:0, candidateCount:1, totalPlayaheads:277,
@@ -108,7 +180,7 @@ class LowBagBrowserTest(unittest.TestCase):
             bagCount:0, finalTurnsRemaining:1, iterationsRequested:277,iterationsCompleted:277};
           const point = {turnIndex:0, turn:1, mine:true, action:'PASS',
             evaluation:MOVE_QUALITY_EVALUATION, playedWin:1,bestWin:1,loss:0,
-            category:'best',samples:277,provisional:false,endgamePolicy:'crossplay-endgame-v1'};
+            category:'best',samples:277,provisional:false,endgamePolicy:'crossplay-endgame-v2'};
           const saved = {...currentReview,turns:[turn],stored_analysis:{
             version:ANALYSIS_VERSION,turn_analyses:{[cache.key(turn,'review')]:raw},
             move_quality:{evaluation:MOVE_QUALITY_EVALUATION,state:'done',current:1,points:[point]}}};
@@ -133,7 +205,7 @@ class LowBagBrowserTest(unittest.TestCase):
             self.assertEqual(len(repaired['points']), 1)
             self.assertEqual(repaired['points'][0]['playedWin'], 1)
             self.assertEqual(repaired['points'][0]['bestWin'], 1)
-            self.assertEqual(repaired['points'][0]['endgamePolicy'], 'crossplay-endgame-v1')
+            self.assertEqual(repaired['points'][0]['endgamePolicy'], 'crossplay-endgame-v2')
         self.assertEqual(result['oldPolicy']['points'], [])
         self.assertEqual(result['oldPolicy']['state'], 'running')
 

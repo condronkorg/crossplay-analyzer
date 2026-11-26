@@ -95,7 +95,7 @@ function simulated(payload) {
     equity: 20, staticEquity: 25, win: .4 };
   const moves = [placement, pass];
   return { moves, selected: pass, best: pass, simulated: true,
-    ...(end ? {endgamePolicy:'crossplay-endgame-v1'} : {}),
+    ...(end ? {endgamePolicy:'crossplay-endgame-v2'} : {}),
     seed: payload.seed, samplingVersion: 'paired-review-v1',
     iterationsRequested: payload.iterations, iterationsCompleted: payload.iterations,
     candidateCount: moves.length, totalPlayaheads: moves.length * payload.iterations,
@@ -188,4 +188,15 @@ test('low-bag continuation swaps preserve all tiles and reject overdraws', () =>
   assert.equal(inventory(next),inventory(initial));
   assert.deepEqual(next.grid,initial.grid);
   assert.throws(()=>play(initial,{action:'exchange',tiles:'AAEIRT?',score:0}),/bag/);
+});
+
+
+test('continuation chooses the192 full profile only for8to21 bag tiles', async () => {
+  const position=play(start(turn,'AEINRST',123),move);
+  position.bag=position.bag.slice(0,21);
+  const result=await analyze(position,async(type,payload)=>{
+    assert.equal(payload.iterations,192);
+    return simulated(payload);
+  });
+  assert.equal(result.iterationsCompleted,192);
 });

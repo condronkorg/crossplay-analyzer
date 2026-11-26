@@ -284,7 +284,7 @@ class ReviewBrowserTest(unittest.TestCase):
         expect(cards.nth(1)).to_contain_text('2 of your 3 turns rated')
         expect(cards.nth(2).locator('strong')).to_have_text('—')
         # The known swap in this legacy result must resume instead of staying unrated.
-        expect(panel).to_contain_text('Analysis is running. Performance will appear as eligible turns are rated.')
+        expect(panel).to_contain_text('Performance analysis running…')
         self.assertEqual(self.page.evaluate('moveQualityResults.state'), 'running')
         panel.locator('.luck-breakdown summary').click()
         expect(panel.locator('tbody tr')).to_have_count(3)
@@ -292,7 +292,7 @@ class ReviewBrowserTest(unittest.TestCase):
         expect(self.page.get_by_role('combobox', name='Select game turn')).to_have_value('2')
         self.page.get_by_role('button', name='Review game against Demo River').click()
         self.start_review()
-        expect(self.page.locator('.luck-panel')).to_contain_text('Use Analyze move quality above')
+        expect(self.page.locator('.luck-panel')).to_contain_text('Performance unavailable')
         expect(self.page.locator('.luck-stat').nth(1).locator('strong')).to_have_text('—')
 
     def test_saved_word_opportunities_weight_only_eligible_personal_turns(self):
@@ -312,7 +312,7 @@ class ReviewBrowserTest(unittest.TestCase):
         expect(panel.locator('.luck-stat').nth(1).locator('strong')).to_have_text('50 / 100')
         expect(panel.locator('.luck-stat').nth(2).locator('strong')).to_have_text('63 / 100')
         expect(panel).to_contain_text('1 of your 3 turns weighted · partial analysis')
-        expect(panel).to_contain_text('Word frequency available for 2 of 3 candidate entries')
+        expect(panel.locator('.frequency-source')).to_have_text('wordfreq · CC BY-SA 4.0')
         panel.locator('.luck-breakdown summary').click()
         expect(panel.locator('tbody tr').first).to_contain_text('QAT · Less common')
         expect(panel.locator('tbody tr').first).to_contain_text('6.0 eq')
@@ -567,9 +567,9 @@ class ReviewBrowserTest(unittest.TestCase):
         panel = self.page.get_by_role('region', name='Hypothetical continuation')
         replies = panel.locator('.continuation-moves tbody tr')
         expect(replies.first).to_be_visible(timeout=120_000)
-        expect(panel).to_contain_text('Future draws are sampled')
+        expect(panel).not_to_contain_text('Future draws are sampled')
         expect(panel).to_contain_text('Demo Cedar to move')
-        expect(panel).to_contain_text('277 simulations per reply')
+        expect(panel).to_contain_text('277 samples')
         expect(panel.get_by_role('columnheader', name='Win % (Demo Cedar)', exact=True)).to_be_visible()
         wins = replies.locator('td:nth-child(4)').all_text_contents()
         self.assertTrue(all(value.endswith('%') for value in wins))
@@ -1632,11 +1632,11 @@ class ReviewBrowserTest(unittest.TestCase):
         # Retrying starts a fresh worker and includes a move far outside the shortlist.
         self.page.get_by_role('button', name='Estimate win% (slower)', exact=True).click()
         expect(self.page.locator('.custom-move-status')).to_have_text('Win simulation complete.', timeout=120_000)
-        expect(self.page.locator('.custom-move-result')).to_contain_text('277 samples each')
+        expect(self.page.locator('.custom-move-result')).to_contain_text('277 samples')
         expect(self.page.locator('.custom-move-result')).to_contain_text('Sim. equity')
         expect(self.page.locator('.custom-move-result tbody tr').first).to_contain_text('8G CAT')
         self.assertRegex(self.page.locator('.custom-move-result tbody tr').first.locator('td').last.inner_text(), r'^\d+\.\d%$')
-        compared = re.search(r'Compared (\d+) moves', self.page.locator('.custom-move-result').inner_text())
+        compared = re.search(r'(\d+) moves ·', self.page.locator('.custom-move-result').inner_text())
         self.assertIsNotNone(compared)
         self.assertLessEqual(int(compared.group(1)), 16)
         self.page.get_by_role('combobox', name='Select game turn').select_option('1')
@@ -1689,9 +1689,9 @@ class ReviewBrowserTest(unittest.TestCase):
         row = self.page.locator('.custom-move-result tbody tr').first
         expect(row).to_contain_text('Your move: Swap CT')
         self.assertRegex(row.locator('td').last.inner_text(), r'^\d+\.\d%$')
-        expect(self.page.locator('.custom-move-result')).to_contain_text('277 samples each')
+        expect(self.page.locator('.custom-move-result')).to_contain_text('277 samples')
         expect(self.page.locator('.custom-move-result')).to_contain_text('WP loss')
-        compared = re.search(r'Compared (\d+) moves', self.page.locator('.custom-move-result').inner_text())
+        compared = re.search(r'(\d+) moves ·', self.page.locator('.custom-move-result').inner_text())
         self.assertIsNotNone(compared)
         self.assertLessEqual(int(compared.group(1)), 16)
         self.assertLessEqual(self.page.locator('.custom-move-result').evaluate('el => el.scrollWidth'),
@@ -1710,11 +1710,11 @@ class ReviewBrowserTest(unittest.TestCase):
         }""")
         self.assertEqual(result['best']['win'], max(move['win'] for move in result['moves']))
         rows = self.page.locator('.custom-move-result tbody tr')
-        expect(rows.nth(1)).to_contain_text('Best among analyzed moves:')
+        expect(rows.nth(1)).to_contain_text('Best analyzed:')
         expect(rows.nth(1).locator('td').last).to_have_text(f"{100 * result['best']['win']:.1f}%")
         loss = max(0, result['best']['win'] - result['selected']['win']) * 100
         expect(self.page.locator('.custom-move-result')).to_contain_text(
-            f'WP loss: {loss:.1f} pp versus the best among analyzed moves.')
+            f'WP loss: {loss:.1f} pp')
 
     def set_terminal_custom_turn(self):
         return self.page.evaluate("""() => {
@@ -1762,9 +1762,12 @@ class ReviewBrowserTest(unittest.TestCase):
         expect(self.page.locator('.custom-move-status')).to_have_text('Win simulation complete.')
         expect(row).to_contain_text('Your move: Swap AEFW')
         self.assertRegex(row.locator('td').last.inner_text(), r'^\d+\.\d%$')
-        expect(self.page.locator('.custom-move-result')).to_contain_text('277 samples each')
+        samples = self.page.evaluate('CrossplayBagEmptying.fullIterations(6)')
+        expect(self.page.locator('.custom-move-result')).to_contain_text(f'{samples} samples')
         trace = self.page.evaluate('workerTrace')
         self.assertEqual(trace['count'], 1)
+        plan = next(request for request in trace['requests'] if request['type'] == 'planBagEmptying')
+        self.assertEqual(plan['payload']['iterations'], samples)
         self.assertTrue(any(r['type'] == 'simulateReviewBatch' for r in trace['requests']))
         self.assertNotIn('simulateMove', [r['type'] for r in trace['requests']])
 

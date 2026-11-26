@@ -124,7 +124,8 @@
       gridJson: JSON.stringify(position.grid), rack: position.racks[actor],
       playerScore: position.scores[actor], opponentScore: position.scores[1 - actor],
       bagCount: position.bag.length, finalTurnsRemaining: position.finalTurns || 0,
-      numMoves: 15, iterations: 277, seed: position.seed,
+      numMoves: 15, iterations: (typeof module !== 'undefined' && module.exports
+        ? require('./bag-emptying-analysis.js') : root.CrossplayBagEmptying).fullIterations(position.bag.length), seed: position.seed,
       played: { action: 'pass', position: '', tiles: '' }
     };
     // Include pass even when it falls outside the static shortlist. This uses
@@ -219,7 +220,6 @@
       this.root.replaceChildren();
       if (focused) this.root.focus({ preventScroll: true });
       add(this.root, 'h3', 'Explore this line');
-      add(this.root, 'p', 'Future draws are sampled from the remaining Crossplay tiles. This is one possible continuation. Replies are ranked by simulated win chance for the player to move. Win estimates sample hidden opponent racks and future draws independently of the displayed line; ties count as half a win.', 'analysis-note');
       const position = this.history.at(-1);
       if (!position) {
         add(this.root, 'p', this.error, 'analysis-status').setAttribute('role', 'status');
@@ -237,16 +237,14 @@
         (position.finalTurns !== null ? ' · Final turns left: ' + position.finalTurns : ''), 'analysis-note');
       this.root.append(this.renderBoard(position.grid, position.action));
       add(this.root, 'p', this.names.map((name, index) => name + ' rack: ' + (position.racks[index] || '(empty)')).join(' · '), 'continuation-racks');
-      if (position.sampledOpponent) add(this.root, 'p', 'The starting opponent rack was also sampled because it was unavailable in the review.', 'analysis-note');
       const status = add(this.root, 'p', this.error || (position.finished ? 'Line complete · ' + scores
-        : this.busy ? 'Simulating reply win chances…' : this.names[position.actor] + ' to move. Select a reply to continue.'), 'analysis-status');
+        : this.busy ? 'Simulating reply win chances…' : this.names[position.actor] + ' to move.'), 'analysis-status');
       status.setAttribute('role', 'status');
       if (this.error) button(this.root, 'Retry replies', () => this.load());
       if (position.finished || this.busy || this.error) return;
-      add(this.root, 'p', position.analysis.forcedPass ? 'Empty rack · pass is the only reply.'
-        : position.analysis.iterationsCompleted + ' simulations per reply · ' +
-          (position.analysis.playToEnd ? 'Played to the Crossplay finish.' : 'Two-ply play with Quackle’s win model.') +
-          ' Engine estimates can change with more samples.', 'analysis-note');
+      const searched = position.analysis.searchedCandidateCount ?? position.analysis.candidateCount ?? position.moves.length;
+      add(this.root, 'p', position.analysis.forcedPass ? 'Pass only'
+        : position.analysis.iterationsCompleted + ' samples · ' + searched + ' moves', 'analysis-counts');
       const table = add(this.root, 'table', '', 'moves-table continuation-moves');
       const header = table.createTHead().insertRow();
       for (const label of ['Reply', 'Score', 'Leave', 'Win % (' + this.names[position.actor] + ')', 'Static equity']) add(header, 'th', label);

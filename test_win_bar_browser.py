@@ -100,7 +100,7 @@ class WinBarBrowserTest(unittest.TestCase):
         for selector, refresh in [
                 ('.trend-settings > summary', 'refreshTrendPanel()'),
                 ('.trend-settings .analysis-button', 'refreshTrendPanel()'),
-                ('.coach-details > summary', 'refreshMoveQualityPanel()'),
+                ('.reset-analysis-button', 'refreshMoveQualityPanel()'),
                 ('.review-lesson button', 'refreshMoveQualityPanel()')]:
             with self.subTest(control=selector):
                 control = self.page.locator(selector)
@@ -159,7 +159,7 @@ class WinBarBrowserTest(unittest.TestCase):
         panel = self.page.locator('.trend-panel')
         expect(panel.locator('.win-estimate-state')).to_have_text('Early estimate')
         expect(panel.locator('.win-you strong')).to_have_text('62.5%')
-        expect(self.page.locator('.turn-coach')).to_contain_text('64 samples per move')
+        expect(self.page.locator('.turn-coach')).to_contain_text('64 samples')
         expect(self.page.locator('.quality-panel .estimate-level')).to_contain_text('Includes early estimates')
         self.page.evaluate('''() => {
           moveQualityResults.points[0] = {...moveQualityResults.points[0], playedWin: 0.7, provisional: false, samples: 277};
@@ -169,7 +169,7 @@ class WinBarBrowserTest(unittest.TestCase):
         }''')
         expect(panel.locator('.win-estimate-state')).to_have_text('Full estimate')
         expect(panel.locator('.win-you strong')).to_have_text('70.0%')
-        expect(self.page.locator('.turn-coach')).to_contain_text('277 samples per move')
+        expect(self.page.locator('.turn-coach')).to_contain_text('277 samples')
         expect(self.page.locator('.quality-panel .estimate-level')).to_have_count(0)
 
     def test_best_move_preview_uses_alternative_odds_for_both_players(self):
@@ -678,7 +678,7 @@ class WinBarBrowserTest(unittest.TestCase):
           refreshPositionPanel();
         }''')
         expect(self.page.locator('#engineStatus')).to_contain_text('Early estimate · 64 simulations per move')
-        expect(self.page.locator('.position-output')).to_contain_text('64 samples per move')
+        expect(self.page.locator('.position-output')).to_contain_text('64 samples')
         expect(self.page.locator('.moves-table')).to_contain_text('62.5%')
         self.page.evaluate('''() => {
           positionCache.errors.set(positionCache.key(currentReview.turns[0], 'review'), 'Engine unavailable');
@@ -696,7 +696,7 @@ class WinBarBrowserTest(unittest.TestCase):
           refreshPositionPanel();
         }''')
         expect(self.page.locator('#engineStatus')).to_have_text('Full estimate · 277 simulations per move.')
-        expect(self.page.locator('.position-output')).to_contain_text('277 samples per move')
+        expect(self.page.locator('.position-output')).to_contain_text('277 samples')
         expect(self.page.locator('.moves-table')).to_contain_text('70.0%')
         expect(self.page.get_by_role('button', name='Retry this turn')).to_be_hidden()
 

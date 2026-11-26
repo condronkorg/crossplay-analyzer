@@ -32,7 +32,7 @@ class EndgameSimulationTests(unittest.TestCase):
         # The opponent can play WET for44, blocking the89-point reply.
         # Greedy OUTWEAR scores51 but loses. Before the fix this returns1.
         self.assertEqual(result['afterWin'], 0)
-        self.assertEqual(result.get('endgamePolicy'), 'crossplay-endgame-v1')
+        self.assertEqual(result.get('endgamePolicy'), 'crossplay-endgame-v2')
 
     def test_every_low_bag_candidate_finishes_after_recorded_pass_or_swap(self):
         for bag_count in (1, 2):
@@ -117,7 +117,7 @@ class EndgameSimulationTests(unittest.TestCase):
         greedy = next(move for move in result['moves']
                       if move['position'] == 'D1' and move['tiles'] == 'OUTWEAR')
         self.assertEqual(greedy['win'], 0)
-        self.assertEqual(result.get('endgamePolicy'), 'crossplay-endgame-v1')
+        self.assertEqual(result.get('endgamePolicy'), 'crossplay-endgame-v2')
 
     def test_final_score_reuse_preserves_score_dependent_wins_and_ties(self):
         result = self.page.evaluate('''grid => {

@@ -13,9 +13,7 @@
 
   class QuackleWorkerPool {
     static browserSize() {
-      const cores = navigator.hardwareConcurrency || 2;
-      const constrained = matchMedia('(pointer: coarse)').matches || (navigator.deviceMemory || 8) <= 4;
-      return Math.max(1, Math.min(constrained ? 2 : 3, cores - 1));
+      return Bag.browserWorkerBudget();
     }
 
     static forBrowser() {
@@ -103,7 +101,7 @@
 
     async computeReview(key, type, payload, options, generation, active) {
       const {bagCount, iterations} = payload;
-      const expanded = bagCount >= 1 && bagCount <= 7 && iterations === 277;
+      const expanded = bagCount >= 1 && bagCount <= 7 && [192, 277].includes(iterations);
       let state = this.partial.get(key);
       active();
       if (!state) {
@@ -183,7 +181,7 @@
 
     async computeDraw(key, payload, options, generation, active) {
       const {iterations, seed, beforeWin} = payload;
-      const knownBeforeWin = [64, 277].includes(iterations) && beforeWin?.samples === iterations &&
+      const knownBeforeWin = [64, 96, 128, 192, 277].includes(iterations) && beforeWin?.samples === iterations &&
         beforeWin.seed === seed && Number.isFinite(beforeWin.win) && beforeWin.win >= 0 && beforeWin.win <= 1
         ? beforeWin.win : -1;
       const state = this.partial.get(key) || {samples: 0, beforeWinSum: 0, afterWinSum: 0};
