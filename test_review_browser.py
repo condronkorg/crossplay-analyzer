@@ -1762,9 +1762,12 @@ class ReviewBrowserTest(unittest.TestCase):
         expect(self.page.locator('.custom-move-status')).to_have_text('Win simulation complete.')
         expect(row).to_contain_text('Your move: Swap AEFW')
         self.assertRegex(row.locator('td').last.inner_text(), r'^\d+\.\d%$')
-        expect(self.page.locator('.custom-move-result')).to_contain_text('277 samples each')
+        samples = self.page.evaluate('CrossplayBagEmptying.fullIterations(6)')
+        expect(self.page.locator('.custom-move-result')).to_contain_text(f'{samples} samples each')
         trace = self.page.evaluate('workerTrace')
         self.assertEqual(trace['count'], 1)
+        plan = next(request for request in trace['requests'] if request['type'] == 'planBagEmptying')
+        self.assertEqual(plan['payload']['iterations'], samples)
         self.assertTrue(any(r['type'] == 'simulateReviewBatch' for r in trace['requests']))
         self.assertNotIn('simulateMove', [r['type'] for r in trace['requests']])
 
