@@ -83,14 +83,13 @@
   .moves-list td { color: #e0e0e0; }
   .moves-list tr:first-child td { color: #2ecc71; font-weight: 700; }
   #engineStatus { font-size: 0.8rem; color: #888; margin-top: 4px; }
-  .hint { color: #777; font-size: 0.75rem; margin-top: 8px; }
+  .analysis-counts { color: #777; font-size: 0.75rem; margin-top: 8px; }
 </style>
 </head>
 <body>
 <div class="container">
   <nav class="site-nav"><a href="index.html">Game Review</a> · <span>Screenshot Analyzer</span> · <a href="manual.html">Manual Board</a> · <a href="privacy.html">Privacy</a> · <a href="terms.html">Terms</a></nav>
   <h1>Crossplay Board Analyzer</h1>
-  <p class="subtitle">Choose a screenshot, paste a URL, or drop an image to parse the board and find all words.</p>
 
 
   <div class="input-row">
@@ -117,7 +116,6 @@
   <div class="tile-pool hidden" id="tilePool">
     <div class="tile-pool-summary" id="tilePoolSummary"></div>
     <div class="tile-pool-list" id="unseenTiles"></div>
-    <div class="tile-pool-note">Unseen tiles include the hidden computer rack and the bag.</div>
   </div>
 
   <div class="final-turn-panel hidden" id="finalTurnPanel">
@@ -125,7 +123,6 @@
       <legend>Crossplay final-turn state</legend>
       <label><input type="radio" name="finalTurnState" value="2">The computer emptied the bag on its last move — 2 final turns remain</label>
       <label><input type="radio" name="finalTurnState" value="1">The bag was already empty before the computer's last move — 1 final turn remains</label>
-      <p class="tile-pool-note">A screenshot cannot show which final turn is next. Select the state before running Quackle.</p>
     </fieldset>
   </div>
 
@@ -2331,7 +2328,7 @@ function renderMoves(moves, result) {
   const container = document.getElementById('movesContainer');
   container.classList.remove('hidden');
 
-  let html = `<h3>Best Moves (${moves.length})</h3><div class="moves-list"><table>`;
+  let html = `<h3>Best analyzed (${moves.length})</h3><div class="moves-list"><table>`;
   html += '<tr><th>Move</th><th>Score</th><th>Leave</th><th>Estimated Win%</th><th>Valuation</th></tr>';
 
   for (let i = 0; i < moves.length; i++) {
@@ -2345,14 +2342,8 @@ function renderMoves(moves, result) {
   }
 
   html += '</table></div>';
-  const hint = (result && result.playToEnd
-    ? `Estimated Win% uses ${result.iterationsCompleted} sampled hidden racks and draws per move. ` +
-      `Each sample follows the official Crossplay final-turn rules to the finish.`
-    : `Estimated Win% is Quackle's two-ply Bogowin estimate from ` +
-      `${result.iterationsCompleted} samples per move.`) +
-    (CrossplayBagEmptying.coverageNote(result) ? ' ' + CrossplayBagEmptying.coverageNote(result) : '') +
-    (CrossplayBagEmptying.precisionNote(result) ? ' ' + CrossplayBagEmptying.precisionNote(result) : '');
-  container.innerHTML = html + `<p class="hint">${hint}</p>`;
+  const counts = `${result.searchedCandidateCount ?? result.candidateCount ?? moves.length} moves · ${result.iterationsCompleted} samples`;
+  container.innerHTML = html + `<p class="analysis-counts">${counts}</p>`;
 }
 const customMoveController = new CustomMove(document.getElementById('customMoveContainer'), () => {
   if (!lastParsed) return null;

@@ -524,6 +524,50 @@ class BrowserPipelineTest(unittest.TestCase):
                 self.assertEqual(plan['payload']['iterations'],expected)
                 page.close()
 
+    def test_desktop_low_bag_full_profile_uses_192_samples(self):
+        grid=list(endgame.EndgameSimulationTests.GRID)
+        grid[0]='..........G....'
+        page=self.browser.new_page()
+        self.addCleanup(page.close)
+        page.goto(f'{self.base_url}/manual.html',wait_until='domcontentloaded')
+        trace_quackle_workers(page)
+        page.evaluate("""grid=>{
+          Object.defineProperty(navigator,'hardwareConcurrency',{value:4});
+          buildJSON=()=>({grid,rack:'WEAFTUO',player_score:110,opponent_score:100,
+            bag_count:2,tile_values_complete:true,final_turns_remaining:0});
+        }""",grid)
+        self.assertEqual(page.evaluate('QuackleWorkerPool.browserSize()'),3)
+        page.locator('#kibitzBtn').click()
+        expect(page.locator('#engineStatus')).to_have_text(re.compile(r'^Found '),timeout=120_000)
+        samples=page.locator('#movesContainer td[data-samples]').evaluate_all('cells=>cells.map(c=>c.dataset.samples)')
+        self.assertTrue(samples)
+        self.assertTrue(all(n=='192' for n in samples))
+        plan=page.evaluate("workerTrace.requests.find(r=>r.type==='planBagEmptying')")
+        self.assertEqual(plan['payload']['iterations'],192)
+        expect(page.locator('#movesContainer')).to_contain_text('192 samples')
+        page.close()
+
+    def test_standalone_pages_keep_inputs_without_explanation_paragraphs(self):
+        for entry in ('manual.html', 'screenshot.html'):
+            with self.subTest(entry=entry):
+                page = self.browser.new_page()
+                self.addCleanup(page.close)
+                page.goto(f'{self.base_url}/{entry}', wait_until='domcontentloaded')
+                expect(page.locator('.custom-move-note, .custom-move > .custom-move-help, '
+                                    '.tile-pool-note')).to_have_count(0)
+                expect(page.get_by_role('textbox', name='Custom move word')).to_be_visible()
+                expect(page.get_by_role('button', name='Evaluate move', exact=True)).to_be_visible()
+                page.get_by_role('combobox', name='Custom move action').select_option('exchange')
+                expect(page.get_by_role('textbox', name='Tiles to swap')).to_be_visible()
+                expect(page.get_by_role('textbox', name='Custom move word')).to_be_hidden()
+                if entry == 'manual.html':
+                    expect(page.locator('#rackInput')).to_be_visible()
+                    expect(page.locator('#finalTurnsRemaining')).to_be_visible()
+                else:
+                    expect(page.locator('#imageUrlInput')).to_be_visible()
+                    expect(page.locator('#analyzeBtn')).to_be_visible()
+                page.close()
+
     def test_standalone_terminal_analysis_reports_selected_coverage(self):
         grid = list(endgame.EndgameSimulationTests.GRID)
         grid[0] = '..........G....'
@@ -535,6 +579,12 @@ class BrowserPipelineTest(unittest.TestCase):
                 trace_quackle_workers(page)
                 page.evaluate("""({entry, grid}) => {
                   Object.defineProperty(navigator, 'hardwareConcurrency', {value: 2});
+                  const request = callQuackleWorker;
+                  callQuackleWorker = async (...args) => {
+                    const result = await request(...args);
+                    if (args[0] === 'simulateKibitz') window.lastStandaloneResult = result;
+                    return result;
+                  };
                   const data = {grid, rack: 'WEAFTUO', player_score: 110, opponent_score: 100,
                     bag_count: 2, tile_values_complete: true, final_turns_remaining: 0};
                   if (entry === 'manual.html') {
@@ -557,10 +607,12 @@ class BrowserPipelineTest(unittest.TestCase):
                     'cells => cells.map(cell => cell.dataset.samples)')))
                 total = int(re.search(r'\(([\d,]+) playouts total\)', status.inner_text())[1].replace(',', ''))
                 self.assertGreater(total, 192 * win_cells.count())
-                coverage = re.search(r'Compared (\d+) selected moves, including (\d+) of (\d+) legal bag-emptying placements.',
-                                     page.locator('#movesContainer').inner_text())
-                self.assertIsNotNone(coverage)
-                selected, selected_emptying, legal_emptying = map(int, coverage.groups())
+                result = page.evaluate('window.lastStandaloneResult')
+                selected = result['searchedCandidateCount']
+                selected_emptying = result['evaluatedBagEmptyingCount']
+                legal_emptying = result['totalBagEmptyingCount']
+                expect(page.locator('#movesContainer')).to_contain_text(f'{selected} moves · 192 samples')
+                expect(page.locator('#movesContainer')).not_to_contain_text('official Crossplay final-turn rules')
                 self.assertEqual(selected, total // 192)
                 self.assertLessEqual(selected, 31)
                 self.assertLess(selected_emptying, legal_emptying)
@@ -575,8 +627,9 @@ class BrowserPipelineTest(unittest.TestCase):
                 page.get_by_role('button', name='Estimate win% (slower)', exact=True).click()
                 expect(page.locator('.custom-move-status')).to_have_text('Win simulation complete.', timeout=120_000)
                 expect(output.locator('tbody tr').first).to_contain_text('Your move: 15B FET')
-                expect(output).to_contain_text(f'Compared {total // 192} moves with 192 samples each')
-                expect(output).to_contain_text(f'including {selected_emptying} of {legal_emptying} legal bag-emptying placements.')
+                expect(output).to_contain_text(f'{total // 192} moves · 192 samples')
+                expect(output).to_contain_text('Best analyzed')
+                expect(output).not_to_contain_text('Samples follow')
                 trace = page.evaluate('workerTrace')
                 self.assertEqual(trace['count'], 1)
                 self.assertEqual([r['payload']['requestType'] for r in trace['requests']

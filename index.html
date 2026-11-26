@@ -49,7 +49,6 @@
   .remember-cookie input { flex: 0 0 auto; min-width: 0; margin: 0; accent-color: var(--green); }
   .account-help, .muted { color: var(--muted); font-size: 12px; line-height: 1.6; }
   .account-help { margin-top: 10px; }
-  .account-help ol { margin: 6px 0 10px; padding-left: 21px; }
   .danger-button { color: #975547; }
   .workspace { display: grid; grid-template-columns: 235px minmax(0, 1fr); gap: 26px; align-items: start; }
   .games-panel { padding: 17px 0; background: transparent; border: 0; }
@@ -116,8 +115,6 @@
   .game-overview .start-review { width: 100%; min-height: 56px; border: 0; border-bottom: 4px solid #597d2f; border-radius: 11px; background: #95c95b; color: #162509; font-size: 22px; font-weight: 750; }
   .game-overview .start-review:hover { background: #a7d977; }
   .game-overview :focus-visible { outline-color: #b9e784; }
-  .overview-method { margin-top: 14px; color: #c4c2b9; font-size: 11px; }
-  .overview-method p { margin-top: 8px; }
   .overview-topline { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 12px; }
   .overview-topline .overview-heading { margin: 0; text-align: left; }
   .overview-topline .overview-heading h2 { font-size: 21px; }
@@ -139,7 +136,6 @@
   .overview-chart .win-history-comparison-row { margin-top: 3px; font-size: 11px; }
   .overview-chart .win-history-meter { height: 4px; margin: 3px 0 5px; }
   .overview-chart .win-history-inspector-note { font-size: 10px; }
-  .overview-chart .win-history-inspector-event { margin-top: 6px; padding-top: 6px; font-size: 10px; }
   .game-overview .overview-table th, .game-overview .overview-table td { padding-top: 1px; padding-bottom: 1px; }
   .game-overview .overview-table td { font-size: 18px; }
   .game-overview .overview-table [data-summary-row="average"] td,
@@ -147,7 +143,6 @@
   .game-overview .overview-avatar { width: 32px; height: 32px; font-size: 14px; margin-bottom: 4px; border-width: 2px; }
   .game-overview .overview-status { margin: 8px 0; font-size: 11px; }
   .game-overview .start-review { min-height: 44px; padding: 6px 12px; font-size: 17px; border-bottom-width: 3px; }
-  .game-overview .overview-method { margin-top: 6px; }
   @container (min-width: 700px) {
     .overview-body { grid-template-columns: minmax(0, 1.5fr) minmax(290px, 1fr); }
     .overview-metrics .overview-avatar { display: none; }
@@ -241,13 +236,11 @@
   .win-history-meter { height: 7px; margin: 6px 0 10px; border-radius: 4px; background: #e0e8dc; overflow: hidden; }
   .win-history-meter i { display: block; height: 100%; background: #27694d; }
   .win-history-meter.played i { background: #91aa88; }
-  .win-history-inspector-event { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--line); font-size: 12px; }
   @container (min-width: 800px) { .win-history-body { grid-template-columns: minmax(0, 1fr) 250px; } }
   @container (max-width: 799px) {
     .win-history-inspector[data-final="false"] { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); column-gap: 18px; padding: 14px; }
     .win-history-inspector-head, .win-history-inspector-loss-block { grid-column: 1; }
     .win-history-comparison { grid-column: 2; grid-row: 1 / 3; margin: 0; padding: 0; border: 0; }
-    .win-history-inspector-event { grid-column: 1 / -1; }
     .win-history-comparison-row { font-size: 11px; gap: 6px; }
     .win-history-inspector h4 { font-size: 20px; }
   }
@@ -262,8 +255,6 @@
   .win-history-sweep-key { display: inline-block; position: relative; font-size: 16px; line-height: 12px; }
   .win-history-sweep-key.missed::after { content: ''; position: absolute; left: 0; top: 50%; width: 100%; border-top: 2px solid currentColor; transform: rotate(-45deg); }
   .win-history-note { margin: 5px 0 0; font-size: 11px; line-height: 1.4; overflow-wrap: anywhere; color: var(--muted); }
-  .win-history-help { margin-top: 5px; color: var(--muted); font-size: 11px; }
-  .win-history-help > summary { cursor: pointer; }
 
   .win-history-annotation { pointer-events: all; }
   .win-history-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-bottom: 6px; }
@@ -332,6 +323,7 @@
   .quality-empty p { max-width: 270px; margin: 5px 0 13px; color: var(--muted); font-size: 11px; }
   .analysis-button { color: #fff; background: #2b714f; border-color: #2b714f; font-size: 12px; }
   .analysis-button:hover:not(:disabled) { color: #fff; background: #205b3e; border-color: #205b3e; }
+  .analysis-counts { margin-top: 9px; color: var(--muted); font-size: 10px; }
   .analysis-note { margin-top: 9px; color: var(--muted); font-size: 10px; line-height: 1.6; }
   .luck-stats { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
   .luck-stat { min-width: 0; padding: 12px; border-radius: 8px; background: #f5f7f1; }
@@ -379,7 +371,6 @@
   .rack-label { margin-right: 5px; color: var(--muted); font-size: 10px; }
   .rack-tile { display: grid; place-items: center; width: 25px; height: 29px; border: 1px solid #d5c59e; border-bottom-width: 3px; border-radius: 4px; background: #eee0bb; color: #493c25; font-size: 14px; font-weight: 700; }
   .turn-panel .walkthrough-tools { margin: 14px 0 0; padding-top: 12px; border-top: 1px solid var(--line); }
-  .coach-details { margin-top: 10px; color: var(--muted); font-size: 11px; }
   .walkthrough-tools { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 14px; }
   .walkthrough-progress { margin-right: auto; color: var(--muted); font-size: 11px; }
   .walkthrough-tools button { padding: 7px 10px; font-size: 11px; }
@@ -534,18 +525,11 @@
       </label>
     </form>
     <div id="accountHelp" class="account-help">
-      <p><strong>How to get your NYT-S token in Chrome</strong></p>
-      <ol>
-        <li>Open <a href="https://www.nytimes.com/" target="_blank" rel="noopener noreferrer">nytimes.com</a> and sign in to the NYT account you use for Crossplay.</li>
-        <li>Right-click the page and select <strong>Inspect</strong>.</li>
-        <li>Open <strong>Application → Storage → Cookies</strong>, select the NYTimes site, and find <strong>NYT-S</strong>.</li>
-        <li>Copy its <strong>Value</strong>, paste it in the box above, and select <strong>Connect</strong>.</li>
-      </ol>
-      <p>With Google sign-in, leave <strong>Remember this NYT cookie encrypted on my account</strong> checked to reuse the token on later visits. NYT can expire a token. <strong>Forget cookie</strong> removes the saved copy. Google sign-in does not connect your NYT account. See our <a href="privacy.html">Privacy Policy</a>.</p>
+      <a href="privacy.html">Privacy</a>
     </div>
   </section>
 
-  <div id="sharedBanner" class="shared-banner hidden">Shared game · No sign-in needed. <a href="./">View your games</a></div>
+  <div id="sharedBanner" class="shared-banner hidden">Shared game · <a href="./">View your games</a></div>
 
   <div class="workspace">
     <section class="panel games-panel" aria-label="Recent games">
@@ -1653,8 +1637,8 @@ function makeAnalysisResetControls(review) {
   button.type = 'button';
   button.disabled = Boolean(analysisResetState?.busy);
   button.addEventListener('click', () => { void restartEntireGameAnalysis(review); });
-  controls.append(button, makeElement('p', 'analysis-note', state?.message ||
-    'Clears all opening, move, and draw estimates for this game. Imported moves, scores, sharing, and other games are kept. Stop analysis for this game in other tabs first.'));
+  controls.append(button);
+  if (state?.message) controls.append(makeElement('p', 'analysis-note', state.message));
   return controls;
 }
 
@@ -1742,8 +1726,7 @@ function makeTurnBoard(turn, qualityPoint) {
     ? 'Exchange ' + move.tiles : (move.word || candidateWord(turn, move)) + ' at ' + move.position);
   const legend = makeElement('div', 'board-legend' + (preview ? ' board-preview-note' : ''),
     (preview ? (previewBestMove ? 'Best move preview' : 'Selected move preview') + ' · ' + description + '.'
-      : boardView === 'after' ? 'Board after this move.' : 'Board before this move.') +
-    ' Green outline marks newly placed tiles. Italic letters are assigned blanks.');
+      : boardView === 'after' ? 'Board after this move.' : 'Board before this move.'));
   if (preview) {
     const explore = makeElement('button', 'explore-continuation', 'Explore continuations');
     explore.type = 'button';
@@ -1949,7 +1932,7 @@ function makeGameOverview(review) {
   if (players.some(player => player.unrated)) row('unrated', 'Unrated', players.map(player => player.unrated), '—');
   if (players.some(player => player.pending)) row('pending', 'Pending', players.map(player => player.pending), '·');
   table.append(head, body);
-  metrics.append(makeElement('p', 'overview-wpa-note', 'WPA = win probability added, in percentage points. Average (total); higher is better.'), table);
+  metrics.append(table);
   const pending = players.reduce((sum, player) => sum + player.pending, 0);
   const early = players.reduce((sum, player) => sum + player.early, 0);
   const unrated = players.reduce((sum, player) => sum + player.unrated, 0);
@@ -1973,11 +1956,8 @@ function makeGameOverview(review) {
   start.type = 'button';
   start.addEventListener('click', () => { boardView = 'after'; selectTurn(0, '.turn-controls'); });
   metrics.append(start);
-  const method = makeReviewDetails('overview-method', 'overview-method', 'About these estimates');
-  method.append(makeElement('p', '', 'Gameplay WPA is the recorded move’s win estimate minus the best sampled alternative from the same position. Best: under 2 percentage points; Inaccuracy: 2–under 5; Mistake: 5–under 10; Blunder: 10 or more. Rack Draws WPA compares the same recorded move before and after its actual refill. Each row shows the average signed change with the total in parentheses; passes and empty-bag turns have no draw. Each player’s initial seven tiles count as one draw, with later refills counted separately. Partial totals and averages include only measured draws. The gray triangle shows the joint estimate after both initial racks, before Turn 1. The opening estimate uses a fixed static-best move policy, conditioned on both racks. Opening WPA averages both rack reveal orders. It removes the normal first-move advantage from draw luck. These values do not exactly divide the whole chart into move and draw effects. Missing estimates stay blank. These are engine estimates, not a measure of human accuracy.'));
   const reset = makeAnalysisResetControls(review);
-  if (reset) method.append(reset);
-  metrics.append(method);
+  if (reset) metrics.append(reset);
   return panel;
 }
 
@@ -1992,6 +1972,7 @@ function refreshGameOverview() {
   const turn = focusedPoint?.dataset.turnIndex;
   const selector = focusedPoint?.classList.contains('win-history-opening') ? '.win-history-opening' : turn !== undefined ? '.win-history-point[data-turn-index="' + turn + '"][data-phase="' + focusedPoint.dataset.phase + '"]'
     : focused?.matches('.start-review') ? '.start-review'
+    : focused?.matches('.reset-analysis-button') ? '.reset-analysis-button'
     : disclosure ? 'details[data-review-disclosure="' + CSS.escape(disclosure) + '"] > summary'
     : focused?.matches('.win-history-scroll') ? '.win-history-scroll'
     : focused?.closest('.win-history-controls') ? '[data-chart-control="' + focused.dataset.chartControl + '"]' : null;
@@ -2057,7 +2038,7 @@ function renderReview() {
   shareUrl.addEventListener('focus', () => shareUrl.select());
   const copyButton = makeElement('button', '', 'Copy game link');
   copyButton.type = 'button';
-  const shareNote = makeElement('p', 'muted share-note', 'Anyone with this link can view this finished game, including player names, racks, and analysis.');
+  const shareNote = makeElement('p', 'muted share-note', 'Public game link');
   shareNote.setAttribute('role', 'status');
   copyButton.addEventListener('click', async () => {
     try {
@@ -2200,7 +2181,7 @@ function renderReview() {
     bagCount: Number(turn.bag_count), finalTurnsRemaining: Number(turn.bag_count) === 0 ? Number(turn.final_turns_remaining) : 0
   }), (type, payload, options) => workerRequest(type, payload, {
     ...options, priority: ANALYSIS_PRIORITY.view + ++viewRequestSequence
-  }), 'Try an alternative using the rack and board before this turn, even when it is outside Quackle’s suggestions.');
+  }));
   body.append(turnPanel);
 
   const sidebar = makeElement('div', 'walkthrough-sidebar');
@@ -2281,7 +2262,7 @@ function makeTurnWinMetrics(review, index) {
   };
   const early = point?.provisional ? ' · Early' : '';
   append('played', 'WP ' + (probability(point?.playedWin) ? (point.playedWin * 100).toFixed(1) + '%' + early : '—'),
-    'Recorded move win estimate for the player who moved.');
+    'Recorded move win %');
   // Compare adjacent chart states only. A missing refill must not look like a
   // move change, and the first turn has no measured pre-move baseline.
   const previous = index > 0 ? qualityPointForTurn(index - 1) : null;
@@ -2293,14 +2274,14 @@ function makeTurnWinMetrics(review, index) {
   const changeEarly = (measuredDraw(point) ? point.draw.provisional : point?.provisional) ||
     (measuredDraw(previous) ? previous.draw.provisional : previous?.provisional);
   append('change', 'Change ' + (knownChange ? signed((current - baseline) * 100) + ' pp' + (changeEarly ? ' · Early' : '') : '—'),
-    'Change from the previous turn’s post-draw estimate to this move’s pre-draw estimate, from this mover’s view. Estimates use different positions; this is not the move grade.');
+    'Win chance change (pp)');
   append('loss', 'Loss vs best ' + (Number.isFinite(point?.loss) ? Math.max(0, point.loss).toFixed(1) + ' pp' + early : '—'),
-    'Win chance lost compared with the best sampled move from the same position, in percentage points.');
+    'Loss vs best analyzed (pp)');
   const knownDraw = measuredDraw(point);
   append('draw', knownDraw ? 'Draw ' + signed((point.draw.afterWin - point.draw.beforeWin) * 100) + ' pp' + (point.draw.provisional ? ' · Early' : '')
     : noDraw(turn, point) ? 'Draw: no tiles' : 'Draw —',
-    knownDraw ? 'Win estimate change from the recorded refill for the player who moved.'
-      : point?.draw?.reason || 'A dash means the draw estimate is unavailable or has not finished.');
+    knownDraw ? 'Draw change (pp)'
+      : point?.draw?.reason || 'Draw estimate unavailable');
   return metrics;
 }
 
@@ -2337,7 +2318,7 @@ function makeTurnList(review) {
   });
   if (!list.childNodes.length) list.append(makeElement('p', 'turn-list-empty', !moveQualityResults
     ? 'Analyze move quality to flag your moves.' : 'No flagged moves among your rated turns so far.'));
-  panel.append(list, makeElement('p', 'analysis-note', 'Use ← / → to step through moves, Home / End for the first / last move.'));
+  panel.append(list);
   return panel;
 }
 
@@ -2348,8 +2329,7 @@ function makeTurnCoach(turn, point) {
   if (!point) {
     panel.append(makeElement('h3', '', turn.mine ? 'What could you play here?' : 'Your opponent’s move'));
     const running = moveQualityResults?.state === 'running';
-    panel.append(makeElement('p', '', running ? 'Review in progress. This turn has not been analyzed yet.'
-      : 'Analyze move quality to see a verdict for this turn and compare it with the engine’s best play.'));
+    panel.append(makeElement('p', '', running ? 'Waiting for analysis…' : 'Not analyzed'));
     if (!running) {
       const analyze = makeElement('button', 'analysis-button', 'Review all moves');
       analyze.type = 'button';
@@ -2359,20 +2339,16 @@ function makeTurnCoach(turn, point) {
     return panel;
   }
   if (!Number.isFinite(point.loss)) {
-    panel.append(makeElement('h3', '', 'This turn is unrated'), makeElement('p', '', point.reason || 'The played move could not be matched to an engine candidate.'),
-      makeElement('p', 'analysis-note', 'Unrated turns are excluded from mistake counts and averages.'));
+    panel.append(makeElement('h3', '', 'This turn is unrated'), makeElement('p', '', point.reason || 'Move unavailable.'));
   } else {
     panel.append(makeElement('p', 'estimate-level', point.provisional ? 'Early estimate' : 'Full estimate'));
     panel.append(makeElement('h3', '', qualityLabel(point.category) + ' · ' + point.loss.toFixed(1) + ' percentage points lost'));
-    panel.append(makeElement('p', '', point.category === 'best'
-      ? 'This play is within 2 percentage points of the best sampled alternative.'
-      : 'The best sampled alternative has a win estimate ' + point.loss.toFixed(1) + ' percentage points higher from the same position.'));
   }
   if (point.bestMove) {
     const comparison = makeElement('div', 'move-comparison');
     for (const [label, move, word, score] of [
       ['Played move', point.playedMove, actionWord(turn.action) || turn.action, turn.score],
-      ['Best among analyzed moves', point.bestMove, point.bestMove.word, point.bestMove.score]
+      ['Best analyzed', point.bestMove, point.bestMove.word, point.bestMove.score]
     ]) {
       const card = makeElement('div', 'comparison-move');
       card.append(makeElement('span', '', label), makeElement('strong', '', word + (move?.position ? ' · ' + move.position : '')),
@@ -2395,15 +2371,10 @@ function makeTurnCoach(turn, point) {
       panel.append(preview);
     }
   } else if (Number.isFinite(point.loss)) {
-    panel.append(makeElement('p', 'analysis-note', 'This saved review has no move comparison. Re-analyze moves to add the best alternative.'));
+    panel.append(makeElement('p', 'analysis-note', 'Comparison unavailable · Re-analyze moves'));
   }
-  const explanation = makeReviewDetails('coach', 'coach-details', 'How this move is rated');
-  explanation.append(makeElement('p', 'analysis-note', 'Grades compare estimated win chances for the recorded move and the best sampled alternative. ' +
-    (Number.isFinite(point.samples) ? 'This estimate uses ' + point.samples + ' samples per move. ' : '') +
-    (CrossplayBagEmptying.coverageNote(point) ? CrossplayBagEmptying.coverageNote(point) + ' ' : '') +
-    (CrossplayBagEmptying.precisionNote({bagCount:turn.bag_count,iterationsCompleted:point.samples}) + ' ') +
-    'Small differences can be sampling noise.' + (point.provisional ? ' The grade can change when the full estimate is ready.' : '')));
-  panel.append(explanation);
+  if (Number.isFinite(point.samples)) panel.append(makeElement('p', 'analysis-counts',
+    point.samples + ' samples' + (Number.isFinite(point.candidateCount) ? ' · ' + point.candidateCount + ' moves' : '')));
   return panel;
 }
 
@@ -2479,12 +2450,12 @@ function makeDashboardStats(review) {
 function makeLuckPanel(review) {
   const summary = CrossplayLuck.summarize(review, moveQualityResults?.points || []);
   const panel = makeElement('section', 'panel luck-panel');
-  panel.append(makeElement('h3', '', 'Luck & performance'), makeElement('p', 'panel-subtitle', 'How favorable your racks were, and what you made of them'));
+  panel.append(makeElement('h3', '', 'Luck & performance'));
   const stats = makeElement('div', 'luck-stats');
   const score = value => Number.isFinite(value) ? Math.round(value) + ' / 100' : '—';
   const partial = moveQualityResults && moveQualityResults.state !== 'done' ? ' · partial analysis' : '';
   const values = [
-    ['Rack favorability', score(summary.favorability), summary.rackCount + ' of your ' + summary.turns.length + ' racks estimated · 50 is typical'],
+    ['Rack favorability', score(summary.favorability), summary.rackCount + ' of your ' + summary.turns.length + ' racks estimated'],
     ['Execution', score(summary.execution), summary.ratedCount + ' of your ' + summary.turns.length + ' turns rated' + partial],
     ['Adjusted performance', score(summary.adjusted), summary.adjustedCount + ' of your ' + summary.turns.length + ' turns weighted' + partial]
   ];
@@ -2494,16 +2465,9 @@ function makeLuckPanel(review) {
     stats.append(card);
   }
   panel.append(stats);
-  panel.append(makeElement('p', 'analysis-note', 'Rack favorability estimates tile flexibility. Execution measures your choices against Quackle; adjusted performance gives harder racks more weight and allows for less-common alternatives. These are provisional scores, not win odds or a percentage of the result caused by luck.'));
   if (!summary.adjustedCount) {
-    const note = !moveQualityResults ? 'Use Analyze move quality above to add execution and adjusted performance.'
-      : moveQualityResults.state === 'running' ? 'Analysis is running. Performance will appear as eligible turns are rated.'
-      : summary.ratedCount ? 'Re-analyze moves to include word commonness in performance. Only turns with a rated move, a valid rack estimate, and word-opportunity analysis can be weighted.'
-      : 'No eligible rated turns yet. Passes, exchanges, and plays Quackle cannot evaluate are excluded from performance.';
+    const note = moveQualityResults?.state === 'running' ? 'Performance analysis running…' : 'Performance unavailable';
     panel.append(makeElement('p', 'analysis-note', note));
-  }
-  if (summary.adjustedCount) {
-    panel.append(makeElement('p', 'analysis-note', 'Word frequency available for ' + summary.knownWords + ' of ' + summary.candidateWords + ' candidate entries on weighted turns. Words outside the local list stay unknown and receive no familiarity allowance.'));
   }
   if (moveQualityResults?.frequencyWarning) panel.append(makeElement('p', 'analysis-note', moveQualityResults.frequencyWarning));
   const breakdown = makeReviewDetails('luck-breakdown', 'estimate-details luck-breakdown', 'Your turn-by-turn breakdown');
@@ -2540,22 +2504,15 @@ function makeLuckPanel(review) {
   table.append(head, body);
   breakdown.append(table);
   panel.append(breakdown);
-  const method = makeReviewDetails('luck-method', 'estimate-details', 'How luck and performance are estimated');
-  method.append(makeElement('p', 'analysis-note', 'Each rack is compared with 2,048 deterministic samples of the same size, drawn without replacement from Crossplay tiles not yet on the board. The percentile measures a tile-flexibility heuristic: blanks +12, S +3, E/R/N/T +0.8 each; vowel imbalance −2.5 per tile from a 42% target (blanks can balance it), duplicate pairs −1.5, J −2, V −1.5, W/K −1, and Q without U or a blank −6. Assigned blanks on the board consume physical blanks. Rack order does not matter.'));
-  method.append(makeElement('p', 'analysis-note', 'The game value averages your rack percentiles, including pass and exchange turns with valid racks. Retained tiles reflect earlier choices, so repeated racks are not independent draws. This estimates rack ease, not pure draw luck; it does not model board openings, opponent decisions, or the actual sequence of draws.'));
-  method.append(makeElement('p', 'analysis-note', 'Execution averages 100 / (1 + equity loss / 10). For adjusted loss, each returned candidate’s equity is reduced by 2 × max(0, 4 − Zipf frequency of its main word), capped at 6 points; unknown words receive no reduction. The best resulting benchmark is compared with your played equity, with loss floored at zero and capped at the original loss. The same 0–100 conversion is weighted by 1 + (100 − rack percentile) / 100, so tougher racks count up to twice as much. Only your eligible turns are included. Passes, exchanges, and plays Quackle cannot evaluate remain unrated.'));
-  const attribution = makeElement('p', 'analysis-note', 'General English frequency is a rough familiarity signal, not Scrabble vocabulary. Source: wordfreq / Alex Parrish, CC BY-SA 4.0. ');
-  const link = makeElement('a', '', 'Frequency source and attribution');
-  link.href = 'WORD_FREQUENCY.md';
-  attribution.append(link);
-  method.append(attribution);
-  panel.append(method);
+  const source = makeElement('a', 'frequency-source', 'wordfreq · CC BY-SA 4.0');
+  source.href = 'WORD_FREQUENCY.md';
+  panel.append(source);
   return panel;
 }
 
 function makeScorePanel(review) {
   const panel = makeElement('section', 'panel score-panel');
-  panel.append(makeElement('h3', '', 'How the game unfolded'), makeElement('p', 'panel-subtitle', 'Cumulative score · select a point to replay that turn'));
+  panel.append(makeElement('h3', '', 'Score'));
   const chart = makeElement('div', 'trend-chart score-chart');
   chart.append(drawScoreChart(review));
   const legend = makeElement('div', 'trend-legend');
@@ -2639,13 +2596,11 @@ function makeReviewLesson(review) {
       selectTurn(opportunity.turnIndex, '.turn-controls');
       byId('replayHeading').scrollIntoView({ block: 'start', behavior: 'instant' });
     });
-    panel.append(button, makeElement('small', '', 'Largest opportunity among your rated moves.' +
-      (opportunity.provisional ? ' Early estimate; it can change.' : '')));
+    panel.append(button);
   } else {
     panel.append(makeElement('p', '', rated.length
-      ? 'Your rated moves are within 2 percentage points of the best sampled alternative.'
-      : 'Review a move below. Your main lesson will appear as estimates finish.'));
-    if (rated.some(point => point.provisional)) panel.append(makeElement('small', '', 'Early estimates; they can change as analysis continues.'));
+      ? 'No flagged moves' : 'Waiting for analysis…'));
+    if (rated.some(point => point.provisional)) panel.append(makeElement('small', '', 'Early estimates'));
   }
   return panel;
 }
@@ -2657,12 +2612,9 @@ function makeInsightsPanel(review) {
   const rated = points.filter(point => Number.isFinite(point.loss));
   const opportunities = rated.filter(point => point.loss >= 2).sort((a, b) => b.loss - a.loss).slice(0, 3);
   if (!opportunities.length) {
-    const text = !moveQualityResults ? 'Start with move quality to uncover the turns where a different play could have helped.'
-      : !rated.length ? 'No rated turns yet. Valid placements, passes, and exchanges are analyzed in the background.'
-      : 'Every rated move is within 2 percentage points of the best sampled alternative.';
+    const text = !moveQualityResults ? 'Not analyzed' : !rated.length ? 'No rated turns' : 'No flagged moves';
     panel.append(makeElement('p', 'panel-subtitle', text));
   } else {
-    panel.append(makeElement('p', 'panel-subtitle', 'Your largest rated opportunities, in order. Select one to revisit the position.'));
     const list = makeElement('div', 'insight-list');
     for (const point of opportunities) {
       const button = makeElement('button', 'insight');
@@ -2681,7 +2633,7 @@ function makeInsightsPanel(review) {
   }
   if (moveQualityResults) {
     const count = review.turns.filter(turn => turn.mine).length;
-    panel.append(makeElement('p', 'analysis-note', rated.length + ' of your ' + count + ' turns rated. ' + (moveQualityResults.state === 'done' ? 'Unrated turns are excluded from averages and opportunities.' : 'Analysis is incomplete; insights reflect rated turns so far.')));
+    panel.append(makeElement('p', 'analysis-note', rated.length + ' / ' + count + ' turns rated'));
   }
   const walkthrough = makeElement('button', 'analysis-button walkthrough-start', 'Start walkthrough');
   walkthrough.type = 'button';
@@ -2706,13 +2658,13 @@ function makeQualityBadge(point, detail = false, compact = false) {
   const badge = makeElement('span', 'quality-chip quality-' + category + (detail ? ' turn-quality' : ''), text);
   badge.title = category === 'unrated'
     ? point.reason || 'This played move could not be matched to a returned Quackle candidate.'
-    : qualityLabel(category) + ': ' + point.loss.toFixed(1) + ' percentage points below the best sampled alternative.';
+    : qualityLabel(category) + ' · ' + point.loss.toFixed(1) + ' pp';
   return badge;
 }
 
 function makeMoveQualityPanel(review) {
   const panel = makeElement('section', 'panel quality-panel');
-  panel.append(makeElement('h3', '', 'How well you played'), makeElement('p', 'panel-subtitle', 'Your move quality · measured against Quackle'));
+  panel.append(makeElement('h3', '', 'Move quality'));
   const controls = makeElement('div', 'trend-controls');
   const reset = analysisResetState?.owner === analysisOwner() && analysisResetState.id === review.id ? analysisResetState : null;
   const resetting = Boolean(reset?.busy);
@@ -2732,18 +2684,18 @@ function makeMoveQualityPanel(review) {
   controls.append(button);
   if (!moveQualityResults) {
     const empty = makeElement('div', 'quality-empty');
-    empty.append(makeElement('span', 'quality-empty-icon', '↗'), makeElement('strong', '', 'Go beyond the final score'), makeElement('p', '', 'Find your best moves and the opportunities you missed. Your personal breakdown is prepared automatically in the background.'), controls);
+    empty.append(controls);
     panel.append(empty);
   } else panel.append(controls);
   panel.append(makeElement('div', 'trend-status', resetting || reset?.error ? reset.message : moveQualityResults
     ? moveQualityResults.state === 'done'
       ? 'Your review is ready · ' + personalQualityPoints(review).filter(point => Number.isFinite(point.loss)).length + ' of your ' + review.turns.filter(turn => turn.mine).length + ' turns rated.' + (moveQualityResults.message?.includes('Save failed:') ? ' ' + moveQualityResults.message.slice(moveQualityResults.message.indexOf('Save failed:')) : '')
       : moveQualityResults.message || ''
-    : 'Analysis starts automatically with the bundled engine.'));
+    : 'Waiting for analysis…'));
   if (moveQualityResults && moveQualityResults.points && moveQualityResults.points.length) {
     const personal = personalQualityPoints(review);
     const rated = personal.filter(point => Number.isFinite(point.loss));
-    if (rated.some(point => point.provisional)) panel.append(makeElement('p', 'estimate-level', 'Includes early estimates · grades can change as analysis continues'));
+    if (rated.some(point => point.provisional)) panel.append(makeElement('p', 'estimate-level', 'Includes early estimates'));
     const summary = makeElement('div', 'quality-summary');
     for (const category of ['best', 'inaccuracy', 'mistake', 'blunder']) {
       const count = rated.filter(point => point.category === category).length;
@@ -2765,10 +2717,6 @@ function makeMoveQualityPanel(review) {
     }
     panel.append(legend);
   }
-  panel.append(makeElement('p', 'analysis-note', 'Loss is measured in percentage points (pp) of estimated win chance. For example, 60% versus 45% is a loss of 15 pp. Lower is better.'));
-  const methodology = makeReviewDetails('quality-method', 'estimate-details', 'How move quality is measured');
-  methodology.append(makeElement('p', 'analysis-note', 'Only your turns are shown here; both players are analyzed. Loss compares the recorded move with the highest win estimate among the sampled alternatives. Early estimates use fewer alternatives and samples, then full estimates compare Quackle’s top ' + MOVE_COUNT + ' static candidates plus the recorded move with ' + '277 samples each outside the late game and with an empty bag. Late-game full estimates use 96, 192, or 277 samples based on the bag size and device worker budget. Smaller sample counts have more sampling uncertainty. The actual sample count appears with each estimate. Bands: Best <2 pp; Inaccuracy 2–<5; Mistake 5–<10; Blunder ≥10. Placements, passes, and legal exchanges are included. Missing or invalid moves remain unrated. Alternatives use the same initial hidden rack and bag samples. Above 21 bag tiles the engine uses two-ply play and its win model; at 21 or fewer it plays to the Crossplay finish. Near an empty bag, the engine combines the original static shortlist with an endgame-equity shortlist. Future choices follow an approximate policy; every sample reaches the official finish. Earlier choices and hidden tiles remain sampled, so these are estimates, not a proof of perfect play. Ties count as half a win.'));
-  panel.append(methodology);
   return panel;
 }
 
@@ -2925,7 +2873,7 @@ function makeTrendPanel(review) {
     startWinTrend(review);
   });
   controls.append(button);
-  const settings = makeReviewDetails('trend', 'trend-settings', 'Estimate details and controls');
+  const settings = makeReviewDetails('trend', 'trend-settings', 'Analysis controls');
   settings.append(controls);
   const status = makeElement('div', 'trend-status', resetting || reset?.error ? reset.message : preview
     ? (previewCandidate ? 'Showing the selected alternative for this turn.' : 'Showing the best sampled alternative for this turn.') : trendResults
@@ -2933,11 +2881,6 @@ function makeTrendPanel(review) {
     : 'Estimates appear as background analysis finishes.');
   status.id = 'trendStatus';
   panel.append(status);
-  settings.append(makeElement('p', 'analysis-note', point?.actual
-    ? 'The final position shows the game result. A draw splits the bar equally. The chart shows move estimates before and after recorded rack draws; gaps have no estimate.'
-    : 'White shows your chance; black shows your opponent’s. The bar estimates ' +
-      (preview ? (previewCandidate ? 'the selected move preview' : 'the best move preview') : 'the recorded move') +
-      '. The chart adds a second point after each measured rack refill. Draw luck compares the same move before and after that refill. Gaps have no estimate. Early estimates can change.'));
   panel.append(settings);
   return panel;
 }
@@ -2968,7 +2911,6 @@ function makeRackDrawTiles(turn) {
     group.append(rack);
     section.append(group);
   }
-  section.append(makeElement('p', 'draw-letters-note', '? = blank tile. New tiles + kept tiles = rack after draw.'));
   return section;
 }
 
@@ -2998,6 +2940,13 @@ function makeOpeningDrawInspector(opening, review) {
   }
   const comparison = makeElement('div', 'win-history-comparison');
   comparison.append(makeElement('p', 'eyebrow', 'Win chance for ' + you));
+  if (known && Number.isFinite(opening.beforeWin)) {
+    const before = makeElement('div', 'win-history-comparison-row');
+    before.dataset.move = 'before-opening';
+    before.append(makeElement('span', '', 'Before initial draw'), makeElement('strong', '',
+      ((firstMine ? opening.beforeWin : 1 - opening.beforeWin) * 100).toFixed(1) + '%'));
+    comparison.append(before);
+  }
   const row = makeElement('div', 'win-history-comparison-row');
   row.dataset.move = 'after-opening';
   row.append(makeElement('span', '', 'After initial draw'), makeElement('strong', '', known
@@ -3005,11 +2954,6 @@ function makeOpeningDrawInspector(opening, review) {
   comparison.append(row);
   if (opening.reason) comparison.append(makeElement('p', 'win-history-inspector-note', opening.reason));
   inspector.append(comparison);
-  const method = makeReviewDetails('opening-method', 'opening-method', 'Opening estimate method');
-  method.append(makeElement('p', 'win-history-inspector-note', 'Fixed static-best move policy, conditioned on both initial racks. The policy does not see the other rack. Opening WPA averages both rack reveal orders and removes normal first-move advantage from draw luck. These values do not exactly divide the whole chart into move and draw effects.'));
-  if (known && Number.isFinite(opening.beforeWin)) method.append(makeElement('p', 'win-history-inspector-note',
-    'Both racks random: ' + ((firstMine ? opening.beforeWin : 1 - opening.beforeWin) * 100).toFixed(1) + '% for ' + you + '.'));
-  inspector.append(method);
   return inspector;
 }
 
@@ -3026,8 +2970,7 @@ function makeWinHistoryInspector(point, review, sweep) {
     inspector.append(makeElement('p', 'eyebrow', 'Final result'),
       makeElement('h4', '', result.kind === 'draw' ? 'Draw' : (result.kind === 'win' ? you : review.opponent || 'Opponent') + ' won'),
       makeElement('p', 'win-history-inspector-player', review.my_score + '–' + review.opponent_score),
-      makeElement('strong', '', you + ': ' + point.mine.toFixed(1) + '%'),
-      makeElement('p', 'win-history-inspector-note', 'Game result, not a move estimate.'));
+      makeElement('strong', '', you + ': ' + point.mine.toFixed(1) + '%'));
     return inspector;
   }
   const turn = review.turns[point.x];
@@ -3055,7 +2998,6 @@ function makeWinHistoryInspector(point, review, sweep) {
       row.append(makeElement('span', '', label), makeElement('strong', '', Number.isFinite(value) ? (value * 100).toFixed(1) + '%' : '—'));
       comparison.append(row);
     }
-    comparison.append(makeElement('p', 'win-history-inspector-note', 'Same move and position; the second estimate fixes the recorded refill.'));
     inspector.append(heading, lossBlock, comparison);
     return inspector;
   }
@@ -3080,7 +3022,7 @@ function makeWinHistoryInspector(point, review, sweep) {
   inspector.append(heading, lossBlock);
   const comparison = makeElement('div', 'win-history-comparison');
   comparison.append(makeElement('p', 'eyebrow', 'Win chance for ' + player));
-  for (const [kind, label, value] of [['played', 'Played move', played], ['best', 'Best sampled move', best]]) {
+  for (const [kind, label, value] of [['played', 'Played move', played], ['best', 'Best analyzed', best]]) {
     const row = makeElement('div', 'win-history-comparison-row');
     row.dataset.move = kind;
     row.append(makeElement('span', '', label), makeElement('strong', '', value === null ? '—' : (value * 100).toFixed(1) + '%'));
@@ -3093,16 +3035,10 @@ function makeWinHistoryInspector(point, review, sweep) {
     }
     comparison.append(row, meter);
   }
-  comparison.append(makeElement('p', 'win-history-inspector-note', early ? 'Early estimates and grades can change.'
-    : 'Both moves start from the same position.'));
   if (grade === 'unrated' && quality?.reason) comparison.append(makeElement('p', 'win-history-inspector-note', quality.reason));
   inspector.append(comparison);
-  const event = makeReviewDetails('sweep-event', 'win-history-inspector-event', 'Bingo details');
-  event.append(makeElement('strong', '', sweep === 'played' ? '★ Sweep (bingo)' : sweep === 'missed' ? '☆ Missed sweep (bingo)' : 'No sweep event shown'),
-    makeElement('p', 'win-history-inspector-note', sweep === 'played' ? 'All seven tiles were played. The move grade is separate.'
-      : sweep === 'missed' ? 'Analysis found a seven-tile alternative. It may not be the best move.'
-      : 'Analysis may not include every seven-tile alternative.'));
-  inspector.append(event);
+  if (sweep === 'played' || sweep === 'missed') inspector.append(makeElement('strong', '',
+    sweep === 'played' ? '★ Sweep (bingo)' : '☆ Missed sweep (bingo)'));
   return inspector;
 }
 
@@ -3537,16 +3473,8 @@ function drawWinHistory(estimates, review, preview = false, overview = false) {
     item.append(marker, document.createTextNode(' ' + qualityLabel(grade)));
     gradeLegend.append(item);
   }
-  gradeLegend.append(makeElement('span', '', 'Dashed badge: early grade'));
-  const legend = makeElement('div', 'win-history-legend');
-  for (const label of ['Gray triangle: initial racks, before Turn 1', 'Dot in marker: after rack draw', 'Filled: full estimate', 'Hollow: early (dashed line)', '◆ Final result', 'Below line: missing estimate']) legend.append(makeElement('span', '', label));
-  const note = makeElement('p', 'win-history-note', (viewingSharedGame ? you + '’s icons' : 'Your icons') + ' are above the plot; opponent icons are below. All key turns remain visible. Sweep: all 7 tiles played. Missed sweep: analysis found a 7-tile alternative; it may not be the best move.');
-  const help = makeReviewDetails('chart-key', 'win-history-help', 'Chart key');
-  help.append(legend, note);
   viewport.append(svg);
-  visual.append(controls, viewport, makeElement('p', 'win-history-note win-history-direction',
-    'Upper half favors ' + you + '; lower half favors ' + (review.opponent || 'Opponent') + '. Choose a turn, then Move or Draw. Select to keep the details fixed.'),
-    playerLegend, eventLegend, gradeLegend, help);
+  visual.append(controls, viewport, playerLegend, eventLegend, gradeLegend);
   body.append(visual, inspector);
   chart.append(body);
   return chart;
@@ -4095,15 +4023,10 @@ function renderMoves(moves, result, output, turn) {
   table.append(body);
   output.append(table);
   const early = result.provisional || result.iterationsCompleted < CrossplayBagEmptying.fullIterations(Number(turn.bag_count));
-  const note = result.simulated !== true
-    ? 'Static alternatives for the board and rack before this turn. Win estimates are unavailable for these candidates.'
-    : (early ? 'Early estimate. ' : 'Full estimate. ') + (result.playToEnd
-      ? 'Win estimates use ' + result.iterationsCompleted + ' sampled hidden racks and draws per move, played to the Crossplay finish.'
-      : 'Win estimates use Quackle’s two-ply model with ' + result.iterationsCompleted + ' samples per move.') +
-      (CrossplayBagEmptying.coverageNote(result) ? ' ' + CrossplayBagEmptying.coverageNote(result) : '') +
-      (CrossplayBagEmptying.precisionNote(result) ? ' ' + CrossplayBagEmptying.precisionNote(result) : '') +
-      (early ? ' Values and grades can change when full analysis finishes.' : '');
-  output.append(makeElement('p', 'analysis-note', note));
+  const count = result.searchedCandidateCount ?? result.candidateCount ?? moves.length;
+  const note = result.simulated !== true ? 'Static · ' + count + ' moves'
+    : (early ? 'Early · ' : '') + result.iterationsCompleted + ' samples · ' + count + ' moves';
+  output.append(makeElement('p', 'analysis-counts', note));
   renderWordInsight(turn, moves, output);
 }
 
@@ -4183,7 +4106,6 @@ function candidateWord(turn, move) {
 function renderWordInsight(turn, moves, output) {
   const panel = makeElement('section', 'commonness-panel');
   panel.append(makeElement('h4', '', 'Played word and missed alternatives'));
-  panel.append(makeElement('div', 'analysis-note', 'Comparisons use Quackle’s top ' + moves.length + ' candidate moves. General English frequency is a rough familiarity signal, not a measure of Scrabble skill.'));
   const status = makeElement('p', 'analysis-note', 'Loading the local word frequency list…');
   panel.append(status);
   output.append(panel);
@@ -4197,7 +4119,7 @@ function renderWordInsight(turn, moves, output) {
       actualRow.append(makeElement('strong', 'commonness-tag commonness-' + frequency.band,
         frequency.label + (frequency.zipf === null ? '' : ' · Zipf ' + frequency.zipf.toFixed(1))));
     } else {
-      actualRow.textContent = 'This turn did not play a word (pass or tile exchange).';
+      actualRow.textContent = 'No word played';
     }
     panel.append(actualRow);
 
@@ -4211,9 +4133,9 @@ function renderWordInsight(turn, moves, output) {
       else if (item.frequency.zipf >= 4) common.push(item);
       else lessCommon.push(item);
     }
-    if (playedCandidateIndex === 0) panel.append(makeElement('p', 'analysis-note', 'Quackle ranked the played move first among its candidates.'));
-    else if (playedCandidateIndex > 0) panel.append(makeElement('p', 'analysis-note', 'The played move ranked #' + (playedCandidateIndex + 1) + '; these higher-ranked moves were missed.'));
-    else if (actual) panel.append(makeElement('p', 'analysis-note', 'The played move was outside Quackle’s returned top ' + moves.length + ' candidates; these are the engine’s top alternatives.'));
+    if (playedCandidateIndex === 0) panel.append(makeElement('p', 'analysis-note', 'Played move: #1'));
+    else if (playedCandidateIndex > 0) panel.append(makeElement('p', 'analysis-note', 'Played move: #' + (playedCandidateIndex + 1)));
+    else if (actual) panel.append(makeElement('p', 'analysis-note', 'Played move: outside top ' + moves.length));
     const adjective = playedCandidateIndex >= 0 ? 'higher-ranked ' : 'top ';
     const groups = [
       ['Common ' + adjective + 'alternatives', common],
@@ -4238,9 +4160,9 @@ function renderWordInsight(turn, moves, output) {
       }
       panel.append(list);
     }
-    if (!alternatives.length && playedCandidateIndex !== 0) panel.append(makeElement('p', 'analysis-note', 'No other word candidates were available for this position.'));
+    if (!alternatives.length && playedCandidateIndex !== 0) panel.append(makeElement('p', 'analysis-note', 'No alternatives'));
     const attribution = makeElement('p', 'analysis-note');
-    attribution.append(document.createTextNode('Frequency source: wordfreq English top 25,000 list, licensed CC BY-SA 4.0. '));
+    attribution.append(document.createTextNode('wordfreq · CC BY-SA 4.0 · '));
     const link = document.createElement('a');
     link.href = 'WORD_FREQUENCY.md';
     link.textContent = 'Source and attribution';

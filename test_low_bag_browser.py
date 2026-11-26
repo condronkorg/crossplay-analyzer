@@ -13,7 +13,7 @@ class LowBagBrowserTest(unittest.TestCase):
     open_game = review_browser.ReviewBrowserTest.open_game
     start_review = review_browser.ReviewBrowserTest.start_review
 
-    def test_shortlist_coverage_reaches_the_move_explanation(self):
+    def test_shortlist_count_reaches_the_move_result(self):
         self.open_game()
         text = self.page.evaluate("""() => {
           const turn=currentReview.turns[0];
@@ -25,9 +25,11 @@ class LowBagBrowserTest(unittest.TestCase):
             evaluatedBagEmptyingCount:10,totalBagEmptyingCount:352});
           return makeTurnCoach(turn,point).textContent;
         }""")
-        self.assertIn('Compared 25 selected moves, including 10 of 352 legal bag-emptying placements.', text)
+        self.assertIn('277 samples · 25 moves', text)
+        self.assertIn('Best analyzed', text)
+        self.assertNotIn('How this move is rated', text)
 
-    def test_late_full_profile_is_final_and_discloses_precision(self):
+    def test_late_full_profile_is_final_and_shows_actual_samples(self):
         self.open_game()
         result=self.page.evaluate("""() => {
           Object.defineProperty(navigator,'hardwareConcurrency',{value:2,configurable:true});
@@ -47,8 +49,8 @@ class LowBagBrowserTest(unittest.TestCase):
         self.assertGreater(result['samples'],64)
         self.assertLess(result['samples'],277)
         self.assertIn('Full estimate',result['text'])
-        self.assertIn(f"{result['samples']} samples per move",result['text'])
-        self.assertIn('more sampling uncertainty',result['text'])
+        self.assertIn(f"{result['samples']} samples",result['text'])
+        self.assertNotIn('sampling uncertainty',result['text'])
 
     def test_device_profile_restore_rebuilds_equal_win_summary_with_actual_samples(self):
         self.open_game()
@@ -79,8 +81,8 @@ class LowBagBrowserTest(unittest.TestCase):
         self.assertEqual(result['restored']['bestWin'],1)
         self.assertEqual(result['restored']['samples'],192)
         self.assertFalse(result['restored']['provisional'])
-        self.assertIn('192 samples per move',result['text'])
-        self.assertIn('more sampling uncertainty',result['text'])
+        self.assertIn('192 samples',result['text'])
+        self.assertNotIn('sampling uncertainty',result['text'])
         self.assertNotIn('277 samples',result['text'])
 
     def test_old_exchange_rules_are_not_reused(self):

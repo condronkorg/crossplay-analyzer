@@ -921,7 +921,6 @@ class AnalysisRestoreBrowserTest(unittest.TestCase):
               oldResult:{simulated:false,moves:[{tiles:'CAT'}]}}})});
           startBackgroundAnalysis=automaticAnalysis;
         }''')
-        self.page.locator('.overview-method > summary').click()
         self.page.get_by_role('button', name='Clear and rerun analysis', exact=True).click()
         self.page.wait_for_function('''() => contextFor(currentReview)?.quality?.state==='done' &&
           contextFor(currentReview)?.openingState==='done' ''')

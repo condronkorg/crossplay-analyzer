@@ -174,7 +174,7 @@ test('endgame policy invalidates only sampled low-bag caches and keeps paired se
     const legacyReview = JSON.parse(cache.key(played, 'review'));
     if (legacyReview.at(-1) === 'crossplay-low-bag-equity-v1') legacyReview.pop();
     if (legacyReview.at(-1) === 'crossplay-endgame-v2') legacyReview.pop();
-    if (bag_count >= 8 && bag_count <= 21) legacyReview[9] = 277;
+    if (bag_count >= 1 && bag_count <= 21) legacyReview[9] = 277;
     let expectedSeed = 2166136261;
     for (const character of JSON.stringify(legacyReview)) expectedSeed = Math.imul(expectedSeed ^ character.charCodeAt(0), 16777619);
     assert.equal(cache.seed(played), expectedSeed >>> 0);
@@ -238,7 +238,7 @@ test('full late-game profiles select paired sample counts without changing legac
   const Bag=require('./bag-emptying-analysis.js');
   for(const bag of [0,7,8,21,22,86]){
     const t={...turn,bag_count:bag,final_turns_remaining:bag===0?2:0};
-    const c=new AnalysisCache(), n=bag>=8&&bag<=21?192:277;
+    const c=new AnalysisCache(), n=bag>=1&&bag<=21?192:277;
     assert.equal(Bag.fullIterations(bag),n);
     assert.equal(JSON.parse(c.key(t,'review'))[9],n);
     assert.equal(JSON.parse(c.key(t,'draw'))[8],n);
@@ -264,7 +264,7 @@ test('device worker budgets select matching full profiles and preserve paired wo
     assert.equal(vm.runInContext('QuackleWorkerPool.browserSize()',context),workers);
     for(const bag of [0,1,7,8,21,22]){
       context.t={...turn,bag_count:bag,final_turns_remaining:bag===0?2:0};
-      const n=bag>=1&&bag<=7?(workers<=2?192:277):bag>=8&&bag<=21?(workers===1?96:192):277;
+      const n=bag>=1&&bag<=7?192:bag>=8&&bag<=21?(workers===1?96:192):277;
       const identity=JSON.parse(vm.runInContext('new AnalysisCache().key(t,"review")',context));
       assert.equal(identity[9],n,workers+':'+bag);
       assert.equal(JSON.parse(vm.runInContext('new AnalysisCache().key(t,"draw")',context))[8],n);

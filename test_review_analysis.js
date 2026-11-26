@@ -488,11 +488,11 @@ test('low-bag move and draw validation requires the current endgame policy', () 
   const turn = {grid: Array.from({length:15}, (_, i) => cells.slice(i*15, i*15+15)),
     rack, bag_count:6, final_turns_remaining:0, action:'PASS 0', rack_after:rack};
   const move = {action:'pass', position:'', tiles:'', win:.4, equity:0, staticEquity:0,
-    samples:277, terminalSamples:277};
-  const common = {simulated:true, seed:123, iterationsRequested:277, iterationsCompleted:277,
+    samples:192, terminalSamples:192};
+  const common = {simulated:true, seed:123, iterationsRequested:192, iterationsCompleted:192,
     bagCount:6, finalTurnsRemaining:0, playToEnd:true, plies:-1, simulationMode:'play-to-end', winModel:'terminal'};
   const review = {...common, samplingVersion:'paired-review-v1', moves:[move], selected:move, best:move,
-    staticMoves:[move], bestStaticEquity:0, candidateCount:1, totalPlayaheads:277,
+    staticMoves:[move], bestStaticEquity:0, candidateCount:1, totalPlayaheads:192,
     generatedCandidateCount:10,totalBagEmptyingCount:5,equityMoves:[move],candidatePolicy:'crossplay-low-bag-equity-v1',searchedCandidateCount:1,requiredBagEmptyingCount:0,evaluatedBagEmptyingCount:0};
   const draw = {...common, samplingVersion:'rack-draw-v1', rackAfter:rack, drawCount:0,
     beforeWin:.4, afterWin:.4, selected:move};

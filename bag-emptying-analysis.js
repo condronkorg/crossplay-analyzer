@@ -10,7 +10,7 @@
   }
   function fullIterations(bag, configured = 277, workers = browserWorkerBudget()) {
     if (configured !== 277 || !Number.isInteger(bag) || bag < 1 || bag > 21) return configured;
-    if (bag <= 7) return workers <= 2 ? 192 : 277;
+    if (bag <= 7) return 192;
     return workers <= 1 ? 96 : 192;
   }
   function precisionNote(result) {
