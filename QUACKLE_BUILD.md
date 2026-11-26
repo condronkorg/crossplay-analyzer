@@ -17,7 +17,7 @@ Artifact SHA-256 values:
 
 ```text
 quackle.js   865a555e856374c545e95f2899a81e2588bd41548dd97bb239427566607815e0
-quackle.wasm 3fad789bee7e0ead153179334ea51601ef177b89edba60d0ed045d0e27fbfb80
+quackle.wasm 91ab80c4e735449265e6486844825a3d57f81c7fc1545ce1ca88de20a2dd4e82
 quackle.data 0f7b4e8cdcf4cb743c5423d6befe23ea77691c588f7c7dfb603bf475c1fbf8f3
 ```
 
@@ -76,7 +76,7 @@ also include the opening-deal API below.
 
 ## Endgame policy
 
-Low-bag results include `endgamePolicy: "crossplay-endgame-v2"`. The existing
+Low-bag results include `endgamePolicy: "crossplay-endgame-v3"`. The existing
 64-sample previews and the full sample profiles and terminal-result metadata remain in use. A100% result
 means every sampled continuation won; it is not a proof under hidden tiles.
 
@@ -88,25 +88,34 @@ winning margin. Empty-bag root candidate lists
 include that winning action even when it falls outside the static shortlist.
 The existing two-final-turn countdown and no-rack-penalty rule are unchanged.
 
-With one through seven tiles in the bag, future decisions rank legal moves by
-`effective score + 0.5 * rack-leave value + 10` for placements that empty the
-bag. Other actions receive no bag-emptying term. This replaces the generic
-Scrabble timing table and the earlier nested hidden-world simulations. The
-coefficients are a heuristic, not an exact value of playing last. If a legal
-placement exists, the future policy uses a placement so the bag count falls.
-Recorded root passes and exchanges remain legal. Larger bags use the existing
-static continuation until they reach this phase. The policy uses only the
-actor's board, rack, and bag count. It does not inspect the sampled hidden rack
-or consume the outer paired random stream.
+For an occupied Crossplay board with one through seven bag tiles, the main
+`CatchallEvaluator::equity` returns
+`effective score + 0.5 * rack-leave value + drain term`.
+The drain term is10 for a placement that empties the bag and zero otherwise. Physical tiles placed are the
+rack size minus the remaining physical rack, so board overlaps do not count
+and assigned blanks remain physical tiles. This is the ordinary engine equity:
+raw `kibitz`, previews, root shortlists, and future move selection all use it.
+There is no separate candidate-equity formula or union of two rankings.
+The coefficients are a heuristic, not an exact value of playing last.
+Empty-board evaluation, bags above seven, non-Crossplay parameters, and the
+empty-bag score-only rule retain their earlier behavior.
+
+If a legal placement exists, the future policy uses a placement so the bag
+count falls. Otherwise it uses ordinary pass/exchange evaluation. Recorded
+root passes and exchanges remain legal. Selection uses only the acting
+player's board, rack, and bag count; it does not inspect the sampled hidden
+rack or consume the outer paired random stream.
 
 In sampled future play, both empty-bag turns retain the exact solver described
 above. The bounded first-final-turn experiment did not meet the latency goal
-and is not used. Policy version v2 instead replaces nested preempty sampling
-with direct phase-equity selection. The generator retains only its best
-placement and caches leave values by the remaining physical rack for that
-position. It avoids recording/sorting all placements or evaluating each leave
-twice. The scalar formula and exhaustive phase-policy tie order are preserved.
-Policy version v2 invalidates prior terminal move, preview, and draw results through their cache
+and is not used. Version v3 makes low-bag equity authoritative. A generator
+caches the authoritative evaluator's rack adjustment directly by action and
+remaining physical rack, then uses the same score-plus-adjustment grouping.
+The cache is cleared at every generation and position change. It cannot retain
+strategy values across separate generations. Its seven-tile input bounds the
+number of rack/action keys. No second scoring formula is implemented there.
+Ordinary native tie order is used throughout. Version v3 invalidates prior
+terminal move, preview, and draw results through their cache
 identities. The paired seed excludes policy suffixes, so the sampled physical
 worlds remain comparable. All reported terminal candidates must still finish
 all requested samples; partial batches cannot become full results.
@@ -153,21 +162,20 @@ draw, exception, low-bag exchange, and 1000-ply finish-bound changes.
 
 ## Bag-emptying candidate coverage
 
-The worker pool uses `planBagEmptying` for full 277-sample recorded/custom
-comparisons and continuation alternatives with one through seven bag tiles.
-The shared native plan combines the original top15 static actions with the
-leading15 actions under the endgame equity estimate above, plus the supplied
-recorded action. Physical duplicates are removed (at most31 candidates).
+The worker pool uses the legacy-named `planBagEmptying` export for full
+recorded/custom comparisons and continuation alternatives with one through
+seven bag tiles. The plan is the ordinary authoritative-equity top15 plus the
+supplied recorded action, with physical duplicates removed (at most16 moves).
+Early64-sample previews use the ordinary top5 under the same evaluator.
 Existing board letters do not count as newly placed tiles. Exchanges do not
-empty the bag. Early64-sample previews retain their smaller shortlist and
-remain provisional. This search does not assess every legal bag-emptying move.
+empty the bag. This search does not assess every legal bag-emptying move.
 
 The worker pool submits the plan through `simulateReviewBatch`. It retains
 completed sums across transient failures, yields between requests, and
 coalesces matching jobs. The 120-second worker deadline still applies.
 
 Full results retain the top15 sampled alternatives, the recorded action, and
-the highest static-equity action, with duplicates removed (at most17 moves).
+the highest static-equity action, with duplicates removed (at most16 moves).
 `candidateCount` is the retained count; `searchedCandidateCount` is the number
 of selected candidates assessed. `generatedCandidateCount` counts all generated
 legal actions, and `totalBagEmptyingCount` counts all legal placements that
@@ -175,9 +183,9 @@ empty the bag. `requiredBagEmptyingCount` and `evaluatedBagEmptyingCount` count
 the selected bag-emptying placements and must match before completion. These
 counts do not claim exhaustive coverage. `totalPlayaheads` counts all selected
 candidates times their completed samples.
-`equityMoves` preserves the original static shortlist plus the recorded action
+`equityMoves` contains the current authoritative-equity shortlist plus the recorded action
 for word-commonness and adjusted-performance calculations. These metrics do
-not use the compact win-ranked display list. Results and affected cache identities carry `candidatePolicy: crossplay-low-bag-equity-v1`.
+not use the compact win-ranked display list. Results and affected cache identities carry `candidatePolicy: crossplay-low-bag-equity-v2`.
 The cache policy does not change the paired seed. The legacy
 `simulateCandidateBatch` export still accepts explicit candidates for bags
 with one through seven tiles.
@@ -190,7 +198,7 @@ coverage and sample-offset checks. The data artifact is unchanged.
 ## Terminal review and draw batches
 
 For a bag with zero through 21 tiles, `planReviewSimulation` returns the
-legacy static shortlist and includes the recorded action when supplied. At
+ordinary authoritative-equity shortlist and includes the recorded action when supplied. At
 zero tiles, the shortlist includes the exact final winner from the native
 search. Both plan exports include the native tie order as an array of candidate
 indices, starting with the highest-ranked candidate when win and equity tie.

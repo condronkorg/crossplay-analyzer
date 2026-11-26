@@ -1,3 +1,48 @@
+diff --git c/catchall.cpp w/catchall.cpp
+index 25d52d9..00b3305 100644
+--- c/catchall.cpp
++++ w/catchall.cpp
+@@ -61,6 +61,9 @@ double CatchallEvaluator::equity(const GamePosition &position, const Move &move)
+ 
+ 	else if (position.bag().size() > 0)
+ 	{
++        if (QUACKLE_PARAMETERS->equalTurnsEndgame() && position.bag().size() <= 7)
++            return move.effectiveScore() + crossplayLowBagAdjustment(position, move);
++
+ 		int leftInBagPlusSeven = position.bag().size() - move.usedTiles().length() + 7;
+ 		double heuristicArray[13] = { 0.0, -8.0, 0.0, -0.5, -2.0, -3.5, -2.0, 2.0, 10.0, 7.0, 4.0, -1.0, -2.0 };
+ 		double timingHeuristic = 0.0;
+@@ -76,6 +79,14 @@ double CatchallEvaluator::equity(const GamePosition &position, const Move &move)
+ 	}
+ }
+ 
++double CatchallEvaluator::crossplayLowBagAdjustment(const GamePosition &position, const Move &move) const
++{
++    const Rack remaining = position.currentPlayer().rack() - move;
++    const int placed = position.currentPlayer().rack().size() - remaining.size();
++    const bool drains = move.action == Move::Place && placed >= position.bag().size();
++    return 0.5 * leaveValue(remaining.tiles()) + (drains ? 10.0 : 0.0);
++}
++
+ double CatchallEvaluator::endgameResult(const GamePosition &position, const Move &move) const
+ {
+ 	Rack leave = position.currentPlayer().rack() - move;
+diff --git c/catchall.h w/catchall.h
+index e09b6ac..4f8f905 100644
+--- c/catchall.h
++++ w/catchall.h
+@@ -27,9 +27,9 @@ namespace Quackle
+ class CatchallEvaluator : public ScorePlusLeaveEvaluator
+ {
+ public:
+-	// Evaluator that returns score+leave equity for non-bag-empty positions,
+-	// otherwise returns approximate endgame equity
++	// Crossplay low-bag equity, ordinary score-plus-leave elsewhere.
+ 	virtual double equity(const GamePosition &position, const Move &move) const;
++	double crossplayLowBagAdjustment(const GamePosition &position, const Move &move) const;
+ 
+ 	double endgameResult(const GamePosition &position, const Move &move) const;
+ };
 diff --git c/crossplaycache.h w/crossplaycache.h
 new file mode 100644
 index 0000000..a47043a
@@ -104,10 +149,10 @@ index 15bc035..f77ebf9 100644
  	// depletion. It does not use Scrabble's six-scoreless-turn finish.
  	m_numberOfScorelessTurnsThatEndsGame = -1;
 diff --git c/generator.cpp w/generator.cpp
-index 19c7d8e..c18853a 100644
+index 19c7d8e..3c85f0f 100644
 --- c/generator.cpp
 +++ w/generator.cpp
-@@ -19,6 +19,7 @@
+@@ -19,9 +19,11 @@
  #include <fstream>
  #include <iostream>
  #include <math.h>
@@ -115,7 +160,11 @@ index 19c7d8e..c18853a 100644
  
  #include "datamanager.h"
  #include "evaluator.h"
-@@ -34,6 +35,14 @@
++#include "catchall.h"
+ #include "generator.h"
+ #include "gaddag.h"
+ #include "board.h"
+@@ -34,6 +36,14 @@
  using namespace std;
  using namespace Quackle;
  
@@ -130,63 +179,29 @@ index 19c7d8e..c18853a 100644
  Generator::Generator() {}
  
  Generator::Generator(const GamePosition &position)
-@@ -74,6 +83,80 @@ void Generator::kibitz(int kibitzLength, int flags)
+@@ -74,6 +84,46 @@ void Generator::kibitz(int kibitzLength, int flags)
  	}
  }
  
 +Move Generator::crossplayBestPlacement()
 +{
 +    setrecordall(false);
-+    m_crossplayEquity = true;
-+    m_crossplayLeaves.clear();
++    m_forceCrossplayPlacement = true;
 +    Move result;
 +    try { result = findstaticbest(false); }
-+    catch (...) { m_crossplayEquity = false; throw; }
-+    m_crossplayEquity = false;
-+    if (result.action != Move::Place)
-+    {
-+        // Rare no-placement path: a swap may make progress. Preserve the
-+        // former exhaustive pass/exchange selection, rather than forcing pass.
-+        Generator fallback(m_position);
-+        fallback.kibitz(2, position().exchangeAllowed() ? RegularKibitz : CannotExchange);
-+        MoveList all = fallback.allPossiblePlays();
-+        if (std::none_of(all.begin(), all.end(), [](const Move &move) { return move.action == Move::Pass; }))
-+            all.push_back(Move::createPassMove());
-+        std::stable_sort(all.begin(), all.end(), [](const Move &a, const Move &b) {
-+            if (a.equity != b.equity) return a.equity > b.equity;
-+            if (a.score != b.score) return a.score > b.score;
-+            if (a.action != b.action) return a.action < b.action;
-+            if (a.startrow != b.startrow) return a.startrow < b.startrow;
-+            if (a.startcol != b.startcol) return a.startcol < b.startcol;
-+            if (a.horizontal != b.horizontal) return a.horizontal < b.horizontal;
-+            return a.tiles() < b.tiles();
-+        });
-+        double bestValue = -std::numeric_limits<double>::infinity();
-+        m_crossplayEquity = true;
-+        for (const auto &move : all)
-+        {
-+            const double value = equity(move);
-+            if (value > bestValue) { bestValue = value; result = move; }
-+        }
-+        m_crossplayEquity = false;
-+    }
-+    result.equity = QUACKLE_EVALUATOR->equity(m_position, result);
++    catch (...) { m_forceCrossplayPlacement = false; throw; }
++    m_forceCrossplayPlacement = false;
++    // When no placement exists, use the same authoritative pass/exchange
++    // evaluation as ordinary single-best generation.
++    if (result.action != Move::Place) result = findstaticbest(position().exchangeAllowed());
 +    return result;
 +}
 +
-+bool Generator::prefersMove(const Move &move) const
++bool Generator::hasCrossplayEquity() const
 +{
-+    if (!m_crossplayEquity) return MoveList::equityComparator(best, move);
-+    if (move.equity != best.equity) return move.equity > best.equity;
-+    const double raw = QUACKLE_EVALUATOR->equity(m_position, move);
-+    const double previous = QUACKLE_EVALUATOR->equity(m_position, best);
-+    if (raw != previous) return raw > previous;
-+    if (move.score != best.score) return move.score > best.score;
-+    if (move.action != best.action) return move.action < best.action;
-+    if (move.startrow != best.startrow) return move.startrow < best.startrow;
-+    if (move.startcol != best.startcol) return move.startcol < best.startcol;
-+    if (move.horizontal != best.horizontal) return move.horizontal < best.horizontal;
-+    return move.tiles() < best.tiles();
++    return QUACKLE_PARAMETERS->equalTurnsEndgame() && !position().board().isEmpty()
++        && position().bag().size() >= 1 && position().bag().size() <= 7
++        && dynamic_cast<const CatchallEvaluator *>(QUACKLE_EVALUATOR) != nullptr;
 +}
 +
 +bool Generator::findScoreAtLeast(int threshold, Move &move)
@@ -211,72 +226,28 @@ index 19c7d8e..c18853a 100644
  void Generator::filterOutDuplicatePlays()
  {
  	map<int, bool> oneTilePlayMap;
-@@ -784,7 +867,7 @@ void Generator::gordongoon(int pos, char L, LetterString word, const GaddagNode
- 				m_moveList.push_back(move);
- 			}
- 
--			if (MoveList::equityComparator(best, move))
-+			if (prefersMove(move))
- 			{
- 				best = move;
- 			}
-@@ -907,7 +990,7 @@ void Generator::gordongoon(int pos, char L, LetterString word, const GaddagNode
- 				m_moveList.push_back(move);
- 			}
- 
--			if (MoveList::equityComparator(best, move))
-+			if (prefersMove(move))
- 			{
- 				best = move;
- 			}
-@@ -1118,7 +1201,7 @@ void Generator::extendright(const LetterString &partial, int i, int row, int col
- 								m_moveList.push_back(move);
- 							}
- 
--							if (MoveList::equityComparator(best, move))
-+							if (prefersMove(move))
- 							{
- 								best = move;
- 							}
-@@ -1193,7 +1276,7 @@ void Generator::extendright(const LetterString &partial, int i, int row, int col
- 								m_moveList.push_back(move);
- 							}
- 
--							if (MoveList::equityComparator(best, move))
-+							if (prefersMove(move))
- 							{
- 								best = move;
- 							}
-@@ -1298,7 +1381,7 @@ void Generator::extendright(const LetterString &partial, int i, int row, int col
- 							m_moveList.push_back(move);
- 						}
- 
--						if (MoveList::equityComparator(best, move))
-+						if (prefersMove(move))
- 						{
- 							best = move;
- 						}
-@@ -1377,6 +1460,19 @@ void Generator::setupCounts(const LetterString &letters)
+@@ -1377,6 +1427,20 @@ void Generator::setupCounts(const LetterString &letters)
  
  double Generator::equity(const Move &move) const
  {
 +	if (m_hasScoreThreshold && move.score >= m_scoreThreshold)
 +		throw ScoreThresholdFound { move };
-+    if (m_crossplayEquity)
++    if (hasCrossplayEquity())
 +    {
-+        const Rack remaining = rack() - move;
-+        const LetterString key = remaining.alphaTiles();
-+        auto value = m_crossplayLeaves.find(key);
-+        if (value == m_crossplayLeaves.end())
-+            value = m_crossplayLeaves.emplace(key, QUACKLE_EVALUATOR->leaveValue(key)).first;
-+        const int placed = rack().size() - remaining.size();
-+        const bool drains = move.action == Move::Place && placed >= position().bag().size();
-+        return move.effectiveScore() + 0.5 * value->second + (drains ? 10.0 : 0.0);
++        // Cache the authoritative adjustment directly: subtracting a score
++        // and adding a different score could change floating-point ties.
++        // Action identity matters: swaps never earn the placement drain term.
++        const auto key = std::make_pair(static_cast<int>(move.action), (rack() - move).alphaTiles());
++        auto found = m_equityAdjustments.find(key);
++        if (found == m_equityAdjustments.end())
++            found = m_equityAdjustments.emplace(key,
++                static_cast<const CatchallEvaluator *>(QUACKLE_EVALUATOR)->crossplayLowBagAdjustment(m_position, move)).first;
++        return move.effectiveScore() + found->second;
 +    }
  	return QUACKLE_EVALUATOR->equity(m_position, move);
  }
  
-@@ -1872,6 +1968,9 @@ Move Generator::exchange()
+@@ -1872,6 +1936,9 @@ Move Generator::exchange()
  			if (i & (1 << j))
  				thrown += rack().tiles()[j];
  
@@ -286,34 +257,32 @@ index 19c7d8e..c18853a 100644
  		Move move;
  		move.action = Move::Exchange;
  		move.setTiles(String::alphabetize(thrown));
-@@ -1883,7 +1982,7 @@ Move Generator::exchange()
- 			if (m_recordall)
- 				m_moveList.push_back(move);
+@@ -1895,7 +1962,10 @@ Move Generator::exchange()
  
--			if (MoveList::equityComparator(best, move))
-+			if (prefersMove(move))
- 				best = move;
- 
- 			throwmap[move.tiles()] = true;
-@@ -1896,6 +1995,7 @@ Move Generator::exchange()
  Move Generator::findstaticbest(bool canExchange)
  {
++    m_equityAdjustments.clear();
  	best = Move::createPassMove();
-+    if (m_crossplayEquity) best.equity = -std::numeric_limits<double>::infinity();
++    if (hasCrossplayEquity()) best.equity = equity(best);
++    if (m_forceCrossplayPlacement) best.equity = -std::numeric_limits<double>::infinity();
  	m_moveList.clear();
  
  	setupCounts(rack().tiles());
-@@ -2085,7 +2185,7 @@ Move Generator::anagram()
- 			if (m_recordall)
- 				m_moveList.push_back(move);
+@@ -1925,6 +1995,12 @@ Move Generator::findstaticbest(bool canExchange)
+ 	if (canExchange)
+ 		exchange();
  
--			if (MoveList::equityComparator(best, move))
-+			if (prefersMove(move))
- 				best = move;
- 		}
- 	}
++    if (m_recordall && hasCrossplayEquity())
++    {
++        Move pass = Move::createPassMove();
++        pass.equity = equity(pass);
++        m_moveList.push_back(pass);
++    }
+ 	if (m_moveList.empty())
+ 		m_moveList.push_back(best);
+ 
 diff --git c/generator.h w/generator.h
-index 31f144e..52f999f 100644
+index 31f144e..866b3f3 100644
 --- c/generator.h
 +++ w/generator.h
 @@ -20,6 +20,7 @@
@@ -337,19 +306,27 @@ index 31f144e..52f999f 100644
  	UVString cross2string(const LetterBitset &cross);
  
  	Move best;
-+	bool prefersMove(const Move &move) const;
-+	bool m_crossplayEquity = false;
-+	mutable std::map<LetterString, double> m_crossplayLeaves;
++	bool hasCrossplayEquity() const;
++	bool m_forceCrossplayPlacement = false;
++	mutable std::map<std::pair<int, LetterString>, double> m_equityAdjustments;
 +	bool m_hasScoreThreshold = false;
 +	int m_scoreThreshold = 0;
  
  	// keeps *all* moves
  	MoveList m_moveList;
+@@ -174,6 +182,7 @@ private:
+ inline void Generator::setPosition(const GamePosition &position)
+ {
+ 	m_position = position;
++    m_equityAdjustments.clear();
+ }
+ 
+ inline const GamePosition &Generator::position() const
 diff --git c/sim.cpp w/sim.cpp
-index 6271bcd..a7d9d0c 100644
+index 6271bcd..8cb2b48 100644
 --- c/sim.cpp
 +++ w/sim.cpp
-@@ -18,11 +18,19 @@
+@@ -18,11 +18,18 @@
  
  #include <iostream>
  #include <math.h>
@@ -362,14 +339,13 @@ index 6271bcd..a7d9d0c 100644
  #include "computerplayer.h"
 +#include "crossplaycache.h"
  #include "datamanager.h"
-+#include "evaluator.h"
  #include "game.h"
  #include "gameparameters.h"
 +#include "generator.h"
  #include "move.h"
  #include "sim.h"
  #include "strategyparameters.h"
-@@ -43,6 +51,239 @@ using namespace std;
+@@ -43,6 +50,227 @@ using namespace std;
  
  std::atomic_long SimmedMove::objectIdCounter { 0 };
  
@@ -586,18 +562,6 @@ index 6271bcd..a7d9d0c 100644
 +
 +
 +
-+double Simulator::crossplayCandidateEquity(const GamePosition &position, const Move &move)
-+{
-+    const int bag = position.bag().size();
-+    if (!QUACKLE_PARAMETERS->equalTurnsEndgame() || bag < 1 || bag > 7)
-+        return move.equity;
-+    const Rack remaining = position.currentPlayer().rack() - move;
-+    const int placed = position.currentPlayer().rack().size() - remaining.size();
-+    const bool drains = move.action == Move::Place && placed >= bag;
-+    const double leave = QUACKLE_EVALUATOR->leaveValue(remaining.tiles());
-+    return move.effectiveScore() + 0.5 * leave + (drains ? 10.0 : 0.0);
-+}
-+
 +Move Simulator::crossplayFinalBestMove(const GamePosition &position)
 +{
 +    if (!QUACKLE_PARAMETERS->equalTurnsEndgame() || !position.bag().empty() || position.players().size() != 2)
@@ -609,7 +573,7 @@ index 6271bcd..a7d9d0c 100644
  Simulator::Simulator()
  	: m_logfileIsOpen(false)
  	, m_hasHeader(false)
-@@ -426,6 +667,7 @@ void Simulator::simulate(int plies, int iterations)
+@@ -426,6 +654,7 @@ void Simulator::simulate(int plies, int iterations)
  	SimmedMoveConstants constants;
  	constants.game = m_originalGame;
  	constants.partialOppoRack = m_partialOppoRack;
@@ -617,7 +581,7 @@ index 6271bcd..a7d9d0c 100644
  	constants.startPlayerId = m_originalGame.currentPosition().currentPlayer().id();
  	constants.playerCount = int(m_originalGame.currentPosition().players().size());
  	// level one's first move is the zeroth ply (the candidate)
-@@ -434,6 +676,8 @@ void Simulator::simulate(int plies, int iterations)
+@@ -434,6 +663,8 @@ void Simulator::simulate(int plies, int iterations)
  	constants.levelCount = (int)((plies - constants.decimalTurns) / constants.playerCount);
  	constants.ignoreOppos = m_ignoreOppos;
  	constants.isLogging = isLogging();
@@ -626,7 +590,7 @@ index 6271bcd..a7d9d0c 100644
  
  	if (isLogging() && !m_hasHeader)
  		writeLogHeader();
-@@ -668,10 +912,68 @@ void Simulator::simulateOnePosition(SimmedMoveMessage &message, const SimmedMove
+@@ -668,10 +899,68 @@ void Simulator::simulateOnePosition(SimmedMoveMessage &message, const SimmedMove
  {
  	Game game = constants.game;
  
@@ -699,7 +663,7 @@ index 6271bcd..a7d9d0c 100644
  
  	double residual = 0;
  
-@@ -703,12 +1005,22 @@ void Simulator::simulateOnePosition(SimmedMoveMessage &message, const SimmedMove
+@@ -703,12 +992,22 @@ void Simulator::simulateOnePosition(SimmedMoveMessage &message, const SimmedMove
  
  			Move move = Move::createNonmove();
  
@@ -725,7 +689,7 @@ index 6271bcd..a7d9d0c 100644
  			int deadwoodScore = 0;
  			if (!QUACKLE_PARAMETERS->noEndgamePenalty() && game.currentPosition().doesMoveEndGame(move))
 diff --git c/sim.h w/sim.h
-index b236a24..4a67ddf 100644
+index b236a24..82e1b62 100644
 --- c/sim.h
 +++ w/sim.h
 @@ -228,12 +228,19 @@ class SimmedMoveConstants
@@ -762,18 +726,17 @@ index b236a24..4a67ddf 100644
  	void makeSureConsideredMovesAreIncluded();
  	void moveConsideredMovesToBeginning(MoveList &moves) const;
  
-@@ -367,6 +381,10 @@ public:
+@@ -367,6 +381,9 @@ public:
  	// Set this to an empty rack if no tiles are known, so
  	// that all tiles are chosen randomly each iteration.
  	void setPartialOppoRack(const Rack &rack);
 +
 +	// Exact win-utility choice for the one/two-move Crossplay final phase.
 +	static Move crossplayFinalBestMove(const GamePosition &position);
-+	static double crossplayCandidateEquity(const GamePosition &position, const Move &move);
  	const Rack &partialOppoRack() const;
  
  	// Set oppo's racks to something random, including
-@@ -441,6 +459,9 @@ protected:
+@@ -441,6 +458,9 @@ protected:
  
  	int m_iterations;
  	bool m_ignoreOppos;
@@ -796,7 +759,7 @@ index c87b8ad..075eeee 100755
      --bind \
      --preload-file "$DATA_DIR/alphabets/crossplay.quackle_alphabet@/data/alphabets/crossplay.quackle_alphabet" \
 diff --git c/wasm/quackle_wasm.cpp w/wasm/quackle_wasm.cpp
-index 6de2970..eff7036 100644
+index 6de2970..9512ecd 100644
 --- c/wasm/quackle_wasm.cpp
 +++ w/wasm/quackle_wasm.cpp
 @@ -5,6 +5,7 @@
@@ -855,11 +818,11 @@ index 6de2970..eff7036 100644
          result.set("candidateCount", candidateCount);
          result.set("totalPlayaheads", completed * candidateCount);
  		result.set("winModel", std::string(playToEnd ? "terminal" : "bogowin"));
-+        if (playToEnd) result.set("endgamePolicy", std::string("crossplay-endgame-v2"));
++        if (playToEnd) result.set("endgamePolicy", std::string("crossplay-endgame-v3"));
  		result.set("error", playToEnd && !allTerminal
  			? std::string("A sampled endgame did not reach the official Crossplay finish")
  			: std::string(""));
-@@ -549,6 +568,704 @@ emscripten::val simulateKibitz(std::string gridJson, std::string rackStr, int pl
+@@ -549,6 +568,700 @@ emscripten::val simulateKibitz(std::string gridJson, std::string rackStr, int pl
      return result;
  }
  
@@ -1104,7 +1067,7 @@ index 6de2970..eff7036 100644
 +        result.set("playToEnd", playToEnd);
 +        result.set("simulationMode", std::string(playToEnd ? "play-to-end" : "2-ply"));
 +        result.set("winModel", std::string(playToEnd ? "terminal" : "bogowin"));
-+        if (playToEnd) result.set("endgamePolicy", std::string("crossplay-endgame-v2"));
++        if (playToEnd) result.set("endgamePolicy", std::string("crossplay-endgame-v3"));
 +        result.set("error", playToEnd && !allTerminal
 +            ? std::string("A sampled endgame did not reach the official Crossplay finish") : std::string(""));
 +    }
@@ -1143,7 +1106,7 @@ index 6de2970..eff7036 100644
 +		};
 +		int staticCount = 0;
 +        int totalBagEmptying = 0;
-+        Quackle::MoveList adjusted;
++        int generated = 0;
 +		for (const auto &move : pos.moves())
 +		{
 +			if (move.action == Quackle::Move::Exchange && move.tiles().size() > (size_t)bag)
@@ -1155,12 +1118,8 @@ index 6de2970..eff7036 100644
 +				add(move);
 +			}
 +            if (empties) ++totalBagEmptying;
-+            adjusted.push_back(move);
++            ++generated;
 +		}
-+        std::stable_sort(adjusted.begin(), adjusted.end(), [&](const Quackle::Move &a, const Quackle::Move &b) {
-+            return Quackle::Simulator::crossplayCandidateEquity(pos, a) > Quackle::Simulator::crossplayCandidateEquity(pos, b);
-+        });
-+        for (size_t i = 0; i < std::min<size_t>(15, adjusted.size()); ++i) add(adjusted[i]);
 +		int actualIndex = -1;
 +		if (!played.isNull() && !played.isUndefined())
 +		{
@@ -1180,7 +1139,7 @@ index 6de2970..eff7036 100644
 +		result.set("moves", serializeMoves(candidates, rack, nullptr));
 +		result.set("equityMoves", serializeMoves(equityMoves, rack, nullptr));
 +		result.set("bagEmptyingIndices", indices);
-+        result.set("generatedCandidateCount", (int)adjusted.size());
++        result.set("generatedCandidateCount", generated);
 +        result.set("totalBagEmptyingCount", totalBagEmptying);
 +		result.set("tieOrder", nativeTieOrder(candidates));
 +		result.set("actualIndex", actualIndex);
@@ -1440,7 +1399,7 @@ index 6de2970..eff7036 100644
 +        result.set("playToEnd", playToEnd);
 +        result.set("simulationMode", std::string(playToEnd ? "play-to-end" : "2-ply"));
 +        result.set("winModel", std::string(playToEnd ? "terminal" : "bogowin"));
-+        if (playToEnd) result.set("endgamePolicy", std::string("crossplay-endgame-v2"));
++        if (playToEnd) result.set("endgamePolicy", std::string("crossplay-endgame-v3"));
 +        result.set("simulated", true);
 +        result.set("error", std::string(""));
 +	}
@@ -1564,7 +1523,7 @@ index 6de2970..eff7036 100644
  bool isWordValid(std::string word)
  {
      if (!s_dm || !s_dm->isGood())
-@@ -582,11 +1299,20 @@ std::string getEngineInfo()
+@@ -582,11 +1295,20 @@ std::string getEngineInfo()
      return info;
  }
  

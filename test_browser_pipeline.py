@@ -518,7 +518,8 @@ class BrowserPipelineTest(unittest.TestCase):
                 samples=page.locator('#movesContainer td[data-samples]').evaluate_all('cells=>cells.map(c=>c.dataset.samples)')
                 self.assertTrue(samples)
                 self.assertTrue(all(n==str(expected) for n in samples))
-                expect(page.locator('#movesContainer')).to_contain_text('more sampling uncertainty')
+                expect(page.locator('#movesContainer .analysis-counts')).to_have_text(
+                    f'{len(samples)} moves · {expected} samples')
                 requests=page.evaluate('workerTrace.requests')
                 plan=next(r for r in requests if r['type']=='planReviewSimulation')
                 self.assertEqual(plan['payload']['iterations'],expected)
@@ -606,7 +607,7 @@ class BrowserPipelineTest(unittest.TestCase):
                 self.assertTrue(all(samples == '192' for samples in win_cells.evaluate_all(
                     'cells => cells.map(cell => cell.dataset.samples)')))
                 total = int(re.search(r'\(([\d,]+) playouts total\)', status.inner_text())[1].replace(',', ''))
-                self.assertGreater(total, 192 * win_cells.count())
+                self.assertEqual(total, 192 * win_cells.count())
                 result = page.evaluate('window.lastStandaloneResult')
                 selected = result['searchedCandidateCount']
                 selected_emptying = result['evaluatedBagEmptyingCount']
@@ -614,7 +615,7 @@ class BrowserPipelineTest(unittest.TestCase):
                 expect(page.locator('#movesContainer')).to_contain_text(f'{selected} moves · 192 samples')
                 expect(page.locator('#movesContainer')).not_to_contain_text('official Crossplay final-turn rules')
                 self.assertEqual(selected, total // 192)
-                self.assertLessEqual(selected, 31)
+                self.assertLessEqual(selected, 16)
                 self.assertLess(selected_emptying, legal_emptying)
 
                 page.get_by_role('textbox', name='Custom move word').fill('FET')
@@ -623,7 +624,7 @@ class BrowserPipelineTest(unittest.TestCase):
                 output = page.locator('.custom-move-result')
                 expect(page.locator('.custom-move-status')).to_have_text('Move evaluated.', timeout=30_000)
                 static_rank = int(re.search(r'Static rank #(\d+)', output.inner_text())[1])
-                self.assertGreater(static_rank, 15)
+                self.assertLessEqual(static_rank, 15)
                 page.get_by_role('button', name='Estimate win% (slower)', exact=True).click()
                 expect(page.locator('.custom-move-status')).to_have_text('Win simulation complete.', timeout=120_000)
                 expect(output.locator('tbody tr').first).to_contain_text('Your move: 15B FET')

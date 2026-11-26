@@ -34,9 +34,9 @@ def review_analysis_entry(kind='review'):
 
 def expanded_policy(identity, result):
     if 1 <= identity[6] <= 7 and identity[1] in ('review', 'simulation'):
-        identity.append('crossplay-low-bag-equity-v1')
+        identity.append('crossplay-low-bag-equity-v2')
         result.update(equityMoves=result.get('staticMoves', result['moves']),
-                      candidatePolicy='crossplay-low-bag-equity-v1', searchedCandidateCount=len(result['moves']),
+                      candidatePolicy='crossplay-low-bag-equity-v2', searchedCandidateCount=len(result['moves']),
                       requiredBagEmptyingCount=0, evaluatedBagEmptyingCount=0,
                       generatedCandidateCount=100, totalBagEmptyingCount=90)
 
@@ -85,24 +85,26 @@ class BackgroundAnalysisTest(unittest.TestCase):
         self.client.recent_games.return_value = []
         self.handler.current_session = Mock(return_value=('account-a', self.client))
 
-    def test_compact_low_bag_results_require_complete_search_coverage(self):
+    def test_ordinary_low_bag_results_require_complete_selected_coverage(self):
         key, result = review_analysis_entry()
         identity = json.loads(key)
         identity[6] = result['bagCount'] = 6
-        identity.append('crossplay-endgame-v2')
-        result.update(endgamePolicy='crossplay-endgame-v2', playToEnd=True, plies=-1,
+        identity.append('crossplay-endgame-v3')
+        result.update(endgamePolicy='crossplay-endgame-v3', playToEnd=True, plies=-1,
                       simulationMode='play-to-end', winModel='terminal')
         for move in result['moves']:
             move['terminalSamples'] = 277
         expanded_policy(identity, result)
-        result.update(searchedCandidateCount=30, requiredBagEmptyingCount=29,
-                      evaluatedBagEmptyingCount=29, totalPlayaheads=277 * 30)
+        result.update(searchedCandidateCount=2, requiredBagEmptyingCount=1,
+                      evaluatedBagEmptyingCount=1, totalPlayaheads=277 * 2)
         Handler.validate_review_result(identity, result)
-        for changes in ({'evaluatedBagEmptyingCount': 28}, {'searchedCandidateCount': 1},
-                        {'requiredBagEmptyingCount': 31}, {'evaluatedBagEmptyingCount': True},
-                        {'totalPlayaheads': 277 * 2}, {'candidatePolicy': 'old-policy'},
-                        {'generatedCandidateCount': 29}, {'totalBagEmptyingCount': 28},
-                        {'totalBagEmptyingCount': 101}, {'generatedCandidateCount': True}):
+        for changes in ({'evaluatedBagEmptyingCount': 0}, {'searchedCandidateCount': 1},
+                        {'requiredBagEmptyingCount': 3}, {'evaluatedBagEmptyingCount': True},
+                        {'totalPlayaheads': 277}, {'candidatePolicy': 'old-policy'},
+                        {'generatedCandidateCount': 1}, {'totalBagEmptyingCount': 0},
+                        {'searchedCandidateCount':17,'totalPlayaheads':17*277},
+                        {'totalBagEmptyingCount': 101}, {'generatedCandidateCount': True},
+                        {'equityMoves':[{**result['staticMoves'][0],'equity':999},result['staticMoves'][1]]}):
             with self.subTest(changes=changes), self.assertRaises(CrossplayError):
                 Handler.validate_review_result(identity, {**result, **changes})
 
@@ -124,18 +126,18 @@ class BackgroundAnalysisTest(unittest.TestCase):
                 identity[11], identity[13] = 'PASS 0', identity[3]
                 result.update(selected={'action': 'pass', 'position': '', 'tiles': ''},
                               rackAfter=identity[3], drawCount=0, afterWin=result['beforeWin'])
-            for saved_identity, policy in ((identity, None), (identity, 'crossplay-endgame-v2'),
-                                           (identity + ['crossplay-endgame-v2'], None),
-                                           (identity + ['crossplay-endgame-v2'], 'old-policy'),
-                                           (identity + ['old-policy'], 'crossplay-endgame-v2')):
+            for saved_identity, policy in ((identity, None), (identity, 'crossplay-endgame-v3'),
+                                           (identity + ['crossplay-endgame-v3'], None),
+                                           (identity + ['crossplay-endgame-v3'], 'old-policy'),
+                                           (identity + ['old-policy'], 'crossplay-endgame-v3')):
                 entry = dict(result)
                 if policy is not None:
                     entry['endgamePolicy'] = policy
                 with self.subTest(kind=kind, identity=saved_identity[-1], policy=policy), self.assertRaises(CrossplayError):
                     self.handler.validate_game_analysis({'analysis_version': ANALYSIS_VERSION,
                         'turn_analyses': {json.dumps(saved_identity): entry}})
-            identity.append('crossplay-endgame-v2')
-            result['endgamePolicy'] = 'crossplay-endgame-v2'
+            identity.append('crossplay-endgame-v3')
+            result['endgamePolicy'] = 'crossplay-endgame-v3'
             expanded_policy(identity, result)
             self.handler.validate_game_analysis({'analysis_version': ANALYSIS_VERSION,
                 'turn_analyses': {json.dumps(identity): result}})
@@ -149,11 +151,11 @@ class BackgroundAnalysisTest(unittest.TestCase):
             with self.assertRaises(CrossplayError):
                 self.handler.validate_game_analysis({'analysis_version': ANALYSIS_VERSION,
                     'turn_analyses': {json.dumps(identity): result}})
-            identity.append('crossplay-endgame-v2')
+            identity.append('crossplay-endgame-v3')
             with self.assertRaises(CrossplayError):
                 self.handler.validate_game_analysis({'analysis_version': ANALYSIS_VERSION,
                     'turn_analyses': {json.dumps(identity): result}})
-            result['endgamePolicy'] = 'crossplay-endgame-v2'
+            result['endgamePolicy'] = 'crossplay-endgame-v3'
             expanded_policy(identity, result)
             self.handler.validate_game_analysis({'analysis_version': ANALYSIS_VERSION,
                 'turn_analyses': {json.dumps(identity): result}})
@@ -357,9 +359,9 @@ class BackgroundAnalysisTest(unittest.TestCase):
             identity[2:4] = [grid, rack]
             identity[6:8] = [6, 0]
             identity[11:14] = ['swap -- 0', 'AIRS', 'AETBCDE']
-            identity.append('crossplay-endgame-v2')
+            identity.append('crossplay-endgame-v3')
             result = {**original, 'rackAfter': 'AETBCDE', 'drawCount': 4,
-                      'endgamePolicy': 'crossplay-endgame-v2',
+                      'endgamePolicy': 'crossplay-endgame-v3',
                       'bagCount': 6, 'playToEnd': True, 'plies': -1,
                       'simulationMode': 'play-to-end', 'winModel': 'terminal',
                       'selected': {'action': 'exchange', 'position': '', 'tiles': 'AIRS'}}
@@ -394,9 +396,9 @@ class BackgroundAnalysisTest(unittest.TestCase):
             identity[2] = [cells[index:index + 15] for index in range(0, 225, 15)]
             identity[6] = result['bagCount'] = 6
             identity[12:14] = ['swap -- 0', 'CATS']
-            identity.append('crossplay-endgame-v2')
+            identity.append('crossplay-endgame-v3')
             result.update(playToEnd=True, plies=-1, simulationMode='play-to-end', winModel='terminal',
-                          endgamePolicy='crossplay-endgame-v2')
+                          endgamePolicy='crossplay-endgame-v3')
             for move in result['moves'] + result['staticMoves']:
                 move.update(action='exchange', position='', tiles='CATS', terminalSamples=move['samples'])
             # A single legal comparison move keeps its static identity unique.
@@ -441,9 +443,9 @@ class BackgroundAnalysisTest(unittest.TestCase):
         identity[2] = grid
         identity[6] = 2
         identity[11] = 'CAT 7A 10'; identity[13] = 'ERS?AI'
-        identity.append('crossplay-endgame-v2')
+        identity.append('crossplay-endgame-v3')
         result = {**original, 'rackAfter': 'ERS?AI', 'drawCount': 2, 'bagCount': 2,
-                  'endgamePolicy': 'crossplay-endgame-v2',
+                  'endgamePolicy': 'crossplay-endgame-v3',
                   'playToEnd': True, 'simulationMode': 'play-to-end', 'winModel': 'terminal', 'plies': -1,
                   'selected': {'action': 'place', 'position': '7A', 'tiles': 'CAT'}}
         self.handler.validate_game_analysis({'analysis_version': ANALYSIS_VERSION,
@@ -620,10 +622,10 @@ class BackgroundAnalysisTest(unittest.TestCase):
                             self.handler.validate_game_analysis(body)
             identity = json.loads(key)
             identity[6:8] = [0, 1]
-            identity.append('crossplay-endgame-v2')
+            identity.append('crossplay-endgame-v3')
             result.update(bagCount=0, finalTurnsRemaining=1, playToEnd=True,
                           simulationMode='play-to-end', plies=-1, winModel='terminal',
-                          endgamePolicy='crossplay-endgame-v2')
+                          endgamePolicy='crossplay-endgame-v3')
             body = {'analysis_version': ANALYSIS_VERSION, 'turn_analyses': {json.dumps(identity): result}}
             with self.subTest(kind=kind), self.assertRaises(CrossplayError):
                 self.handler.validate_game_analysis(body)
@@ -667,6 +669,13 @@ class BackgroundAnalysisTest(unittest.TestCase):
                     'analysis_version': ANALYSIS_VERSION, 'turn_analyses': {key: result}})
             self.assertEqual(caught.exception.status, 400)
 
+    def test_authoritative_static_lowbag_cache_tag_can_be_persisted(self):
+        identity=['quackle-position-v1','candidates',['.'*15]*15,'CATERS?',0,0,5,0,15,0,0,0,'crossplay-equity-v1']
+        key=json.dumps(identity)
+        result={'moves':[{'action':'pass','position':'','tiles':'','equity':2}]}
+        checked=Handler.validate_game_analysis({'analysis_version':ANALYSIS_VERSION,'turn_analyses':{key:result}})
+        self.assertEqual(checked['turn_analyses'][key],result)
+
     def test_device_profiles_accept_only_supported_full_sample_counts(self):
         for bag, allowed in ((0,(277,)),(5,(192,277)),(21,(96,192)),(22,(277,))):
             for samples in (64,80,96,128,192,277):
@@ -677,8 +686,8 @@ class BackgroundAnalysisTest(unittest.TestCase):
                 identity[9]=samples
                 result.update(iterationsRequested=samples,iterationsCompleted=samples,totalPlayaheads=2*samples)
                 if bag<=21:
-                    identity.append('crossplay-endgame-v2')
-                    result.update(endgamePolicy='crossplay-endgame-v2',playToEnd=True,plies=-1,
+                    identity.append('crossplay-endgame-v3')
+                    result.update(endgamePolicy='crossplay-endgame-v3',playToEnd=True,plies=-1,
                                   simulationMode='play-to-end',winModel='terminal')
                 for move in result['moves']:
                     move.update(samples=samples,terminalSamples=samples if bag<=21 else 0)
@@ -696,9 +705,9 @@ class BackgroundAnalysisTest(unittest.TestCase):
             identity=json.loads(key)
             identity[6]=result['bagCount']=21
             identity[sample_index]=96
-            identity.append('crossplay-endgame-v2')
+            identity.append('crossplay-endgame-v3')
             result.update(iterationsRequested=96,iterationsCompleted=96,
-                          endgamePolicy='crossplay-endgame-v2',playToEnd=True,
+                          endgamePolicy='crossplay-endgame-v3',playToEnd=True,
                           simulationMode='play-to-end',plies=-1,winModel='terminal')
             if 'moves' in result:
                 result['totalPlayaheads']=96*len(result['moves'])
@@ -731,10 +740,10 @@ class BackgroundAnalysisTest(unittest.TestCase):
         parts = json.loads(key)
         parts[6] = 21
         parts[9] = 192
-        parts.append('crossplay-endgame-v2')
+        parts.append('crossplay-endgame-v3')
         key = json.dumps(parts)
         result.update(bagCount=21, playToEnd=True, simulationMode='play-to-end', plies=-1, winModel='terminal',
-                      endgamePolicy='crossplay-endgame-v2', iterationsRequested=192, iterationsCompleted=192, totalPlayaheads=384)
+                      endgamePolicy='crossplay-endgame-v3', iterationsRequested=192, iterationsCompleted=192, totalPlayaheads=384)
         for move in result['moves']:
             move['samples'] = 192
         with self.assertRaises(CrossplayError):

@@ -1,7 +1,7 @@
 /* Combines bounded, paired-sample batches without hiding incomplete coverage. */
 (function (root) {
   'use strict';
-  const POLICY = 'crossplay-low-bag-equity-v1';
+  const POLICY = 'crossplay-low-bag-equity-v2';
   function browserWorkerBudget() {
     if (typeof navigator === 'undefined' || typeof matchMedia !== 'function') return 3;
     const cores = navigator.hardwareConcurrency || 2;
@@ -140,13 +140,11 @@
       .map(index => all[index]);
     const staticBest = all.reduce((a, b) => (a.staticEquity >= b.staticEquity ? a : b));
     const selected = plan.actualIndex >= 0 ? all[plan.actualIndex] : null;
-    const retained = expanded ? [
-      ...new Set([...ranked.slice(0, 15), ...(selected ? [selected] : []), staticBest]),
-    ] : ranked;
+    const retained = ranked;
     const result = {
       moves: retained,
       best: ranked[0],
-      staticMoves: expanded ? retained.map((move) => ({ ...move, equity: move.staticEquity })) : plan.moves,
+      staticMoves: plan.moves,
       bestStaticEquity: staticBest.staticEquity,
       simulated: true,
       error: '',
@@ -162,7 +160,7 @@
       playToEnd: true,
       simulationMode: 'play-to-end',
       winModel: 'terminal',
-      endgamePolicy: 'crossplay-endgame-v2',
+      endgamePolicy: 'crossplay-endgame-v3',
     };
     if (expanded) Object.assign(result, {
       equityMoves: plan.equityMoves,
@@ -215,8 +213,9 @@
       result.equityMoves.length <= 16 &&
       result.equityMoves.every((move) => Number.isFinite(move.equity)) &&
       Number.isInteger(result.searchedCandidateCount) &&
-      result.searchedCandidateCount >= result.moves?.length &&
-      result.searchedCandidateCount <= 31 &&
+      result.searchedCandidateCount === result.moves?.length &&
+      result.searchedCandidateCount <= 16 &&
+      result.equityMoves.length === result.searchedCandidateCount &&
       Number.isInteger(result.generatedCandidateCount) &&
       result.generatedCandidateCount >= result.searchedCandidateCount &&
       result.generatedCandidateCount <= 1000000 &&

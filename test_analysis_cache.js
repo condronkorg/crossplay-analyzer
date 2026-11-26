@@ -161,8 +161,8 @@ test('endgame policy invalidates only sampled low-bag caches and keeps paired se
       action: 'CAT 8G 10', rack_after: 'ERSTUAE'};
     for (const kind of ['review', 'preview', 'draw', 'draw-preview', 'simulation', 'trend']) {
       const identity = JSON.parse(cache.key(played, kind));
-      if (identity.at(-1)==='crossplay-low-bag-equity-v1') identity.pop();
-      assert.equal(identity.at(-1) === 'crossplay-endgame-v2', bag_count <= 21, kind + ':' + bag_count);
+      if (identity.at(-1)==='crossplay-low-bag-equity-v2') identity.pop();
+      assert.equal(identity.at(-1) === 'crossplay-endgame-v3', bag_count <= 21, kind + ':' + bag_count);
       if (bag_count <= 21) {
         const legacyKey = JSON.stringify(identity.slice(0, -1));
         const saved = new AnalysisCache({[legacyKey]: {legacy: true}});
@@ -170,10 +170,10 @@ test('endgame policy invalidates only sampled low-bag caches and keeps paired se
         assert.deepEqual(saved.results[legacyKey], {legacy: true});
       }
     }
-    assert.equal(JSON.parse(cache.key(played, 'candidates')).includes('crossplay-endgame-v2'), false);
+    assert.equal(JSON.parse(cache.key(played, 'candidates')).includes('crossplay-endgame-v3'), false);
     const legacyReview = JSON.parse(cache.key(played, 'review'));
-    if (legacyReview.at(-1) === 'crossplay-low-bag-equity-v1') legacyReview.pop();
-    if (legacyReview.at(-1) === 'crossplay-endgame-v2') legacyReview.pop();
+    if (legacyReview.at(-1) === 'crossplay-low-bag-equity-v2') legacyReview.pop();
+    if (legacyReview.at(-1) === 'crossplay-endgame-v3') legacyReview.pop();
     if (bag_count >= 1 && bag_count <= 21) legacyReview[9] = 277;
     let expectedSeed = 2166136261;
     for (const character of JSON.stringify(legacyReview)) expectedSeed = Math.imul(expectedSeed ^ character.charCodeAt(0), 16777619);
@@ -220,13 +220,13 @@ test('a viewed turn promotes remaining batches after expanded analysis has start
 });
 
 
-test('v2 terminal policy rejects v1 cached results without changing paired worlds', () => {
+test('v3 terminal policy rejects v2 cached results without changing paired worlds', () => {
   const turn = {grid: Array(15).fill('.'.repeat(15)),rack:'AEIRST?',mover_score:110,
     other_score:100,bag_count:5,final_turns_remaining:0,action:'AT 8G 4'};
   const current = new AnalysisCache();
   const key = current.key(turn,'review');
-  const oldKey = key.replace('crossplay-endgame-v2','crossplay-endgame-v1')
-    .replace('crossplay-low-bag-equity-v1','bag-emptying-v1');
+  const oldKey = key.replace('crossplay-endgame-v3','crossplay-endgame-v2')
+    .replace('crossplay-low-bag-equity-v2','crossplay-low-bag-equity-v1');
   const restored = new AnalysisCache({[oldKey]:{simulated:true}});
   assert.equal(restored.get(turn,'review'),null);
   assert.deepEqual(restored.results[oldKey],{simulated:true});
@@ -245,7 +245,7 @@ test('full late-game profiles select paired sample counts without changing legac
     assert.equal(JSON.parse(c.key(t,'preview'))[9],64);
     const identity=JSON.parse(c.key(t,'review'));
     if(identity.at(-1)===Bag.POLICY)identity.pop();
-    if(identity.at(-1)==='crossplay-endgame-v2')identity.pop();
+    if(identity.at(-1)==='crossplay-endgame-v3')identity.pop();
     identity[9]=277;
     let seed=2166136261;for(const ch of JSON.stringify(identity))seed=Math.imul(seed^ch.charCodeAt(0),16777619);
     assert.equal(c.seed(t),seed>>>0);
@@ -272,4 +272,19 @@ test('device worker budgets select matching full profiles and preserve paired wo
       assert.equal(vm.runInContext('CrossplayBagEmptying.fullIterations(t.bag_count,32)',context),32);
     }
   }
+});
+
+
+test('authoritative lowbag equity invalidates ordinary static caches only in its phase', () => {
+ const cache=new AnalysisCache();
+ for(const bag of [0,1,7,8,21,22]){
+   const t={...turn,bag_count:bag,final_turns_remaining:bag===0?2:0};
+   const identity=JSON.parse(cache.key(t,'candidates'));
+   const changed=bag>=1&&bag<=7;
+   assert.equal(identity.at(-1)==='crossplay-equity-v1',changed);
+   if(changed){
+     const old=JSON.stringify(identity.slice(0,-1));
+     assert.equal(new AnalysisCache({[old]:{moves:[{equity:99}]}}).get(t,'candidates'),null);
+   }else assert.equal(identity.length,12);
+ }
 });

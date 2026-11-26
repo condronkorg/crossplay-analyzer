@@ -115,8 +115,8 @@
         state = Bag.create(plan);
         this.saveCheckpoint(key, state);
       }
-      const lanes = Math.min(this.size, expanded ? Math.ceil(state.sums.length / 8) : state.sums.length);
-      const groupSize = expanded ? 8 : Math.min(8, Math.ceil(state.sums.length / lanes));
+      const lanes = Math.min(this.size, state.sums.length);
+      const groupSize = Math.min(8, Math.ceil(state.sums.length / lanes));
       // Groups use disjoint candidates and keep the next sample offset per candidate.
       const reserved = new Set();
       let failure = null;

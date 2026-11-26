@@ -2,7 +2,7 @@
 (function(root) {
   'use strict';
   const Bag = typeof module !== 'undefined' && module.exports ? require('./bag-emptying-analysis.js') : root.CrossplayBagEmptying;
-  const ENDGAME_POLICY = 'crossplay-endgame-v2';
+  const ENDGAME_POLICY = 'crossplay-endgame-v3';
   function playedMove(turn) {
     const action = String(turn.action || '').trim();
     if (/^PASS(?:\s+(?:--\s+)?-?\d+)?$/i.test(action)) return { action: 'pass', position: '', tiles: '' };
@@ -177,7 +177,7 @@
     const expanded = bag >= 1 && bag <= 7 && [192, 277].includes(iterations);
     let played;
     try { played = playedMove(turn); } catch (_) { return false; }
-    if (!result || result.error || !Array.isArray(result.moves) || !result.moves.length || result.moves.length > (expanded ? 17 : moveCount + 1) ||
+    if (!result || result.error || !Array.isArray(result.moves) || !result.moves.length || result.moves.length > (expanded ? 16 : moveCount + 1) ||
         (end && result.endgamePolicy !== ENDGAME_POLICY) ||
         result.simulated !== true || result.plies !== (end ? -1 : 2) || result.playToEnd !== end ||
         result.simulationMode !== (end ? 'play-to-end' : '2-ply') || result.winModel !== (end ? 'terminal' : 'bogowin') ||
@@ -196,6 +196,8 @@
       const matches = result.staticMoves.filter(candidate => ['action', 'position', 'tiles'].every(field => candidate[field] === move[field]));
       if (matches.length !== 1 || matches[0].equity !== move.staticEquity) return false;
     }
+    if (expanded && result.equityMoves.some(move => !result.staticMoves.some(candidate =>
+      ['action','position','tiles','equity'].every(field => candidate[field] === move[field])))) return false;
     const sameMove = (left, right) => ['action', 'position', 'tiles', 'win', 'equity', 'staticEquity', 'samples', 'terminalSamples'].every(field => left[field] === right[field]);
     if (!result.moves.some(move => sameMove(move, result.selected)) || !result.moves.some(move => sameMove(move, result.best))) return false;
     const selectedKey = placementKey(result.selected, turn.grid);

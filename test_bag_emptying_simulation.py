@@ -19,7 +19,7 @@ class BagEmptyingSimulationTests(unittest.TestCase):
         }""", grid)
         plan = result['plan']
         self.assertFalse(plan.get('error'), plan)
-        self.assertLessEqual(len(plan['moves']), 30)
+        self.assertLessEqual(len(plan['moves']), 15)
         self.assertEqual(plan['generatedCandidateCount'], len(result['all']))
         self.assertEqual(plan['totalBagEmptyingCount'], sum(
             move['action'] == 'place' and 7 - len(move['leave']) >= 2
@@ -45,6 +45,95 @@ class BagEmptyingSimulationTests(unittest.TestCase):
         self.assertEqual(plan['totalBagEmptyingCount'], sum(map(drains, result['all'])))
         self.assertEqual(plan['bagEmptyingIndices'], [
             index for index, move in enumerate(plan['moves']) if drains(move)])
+
+    def test_ordinary_kibitz_uses_authoritative_crossplay_equity(self):
+        grid = list(endgame.EndgameSimulationTests.GRID)
+        grid[0] = '..........G....'
+        result = self.page.evaluate("""grid => {
+          const args=[JSON.stringify(grid),'WEAFTUO',110,100];
+          return {all:testEngine.kibitz(...args,1000000).moves,
+            normal:testEngine.kibitz(...args,15).moves,
+            plan:testEngine.planBagEmptying(...args,null,123456789)};
+        }""", grid)
+        move = next(move for move in result['all']
+                    if move['tiles'] == 'FET' and move['position'] == '15B')
+        self.assertEqual(move['score'], 41)
+        self.assertAlmostEqual(move['equity'], 41.4140625, places=10)
+        self.assertLessEqual(result['all'].index(move) + 1, 15)
+        self.assertEqual(result['plan']['moves'], result['normal'])
+        self.assertEqual(result['plan']['equityMoves'], result['normal'])
+
+    def test_authoritative_equity_bag_boundaries_and_physical_overlap(self):
+        result = self.page.evaluate("""base => [0,1,7,8].map(bag => {
+          const grid=[...base];
+          if(bag===1)grid[0]='.D........G....';
+          if(bag>=7){grid[0]='..........G....';grid[1]=bag===7?'..............Y':'...............';}
+          const result=testEngine.kibitz(JSON.stringify(grid),'WEAFTUO',110,100,1000000);
+          if(result.error)throw Error(result.error);
+          const move=result.moves.find(m=>m.position==='D1'&&m.tiles==='OUTWEAR');
+          if(!move)throw Error('Missing overlap fixture');
+          return {bag,move};
+        })""", endgame.EndgameSimulationTests.GRID)
+        expected = {0: 51, 1: 59.89453125, 7: 49.89453125, 8: 55.7890625}
+        for case in result:
+            with self.subTest(bag=case['bag']):
+                self.assertEqual(case['move']['leave'], 'F')
+                self.assertAlmostEqual(case['move']['equity'], expected[case['bag']], places=10)
+
+    def test_authoritative_cache_separates_swap_from_draining_placement_and_blanks(self):
+        result = self.page.evaluate("""base => [false,true].map(blank => {
+          const grid=[...base];
+          let removed=0;
+          for(let row=0;row<15&&removed<6;row++) {
+            const letters=[...grid[row]];
+            for(let col=0;col<15&&removed<6;col++)if(letters[col]!=='.'){letters[col]='.';removed++;}
+            grid[row]=letters.join('');
+          }
+          if(blank)grid[4]=grid[4].replace('a','A');
+          const rack=blank?'WE?FTUO':'WEAFTUO';
+          const all=testEngine.kibitz(JSON.stringify(grid),rack,110,100,1000000).moves;
+          const placement=all.find(m=>m.action==='place'&&m.position==='D1'&&m.tiles.toUpperCase()==='OUTWEAR'&&m.leave==='F');
+          const swap=all.find(m=>m.action==='exchange'&&m.leave==='F');
+          return {blank,placement,swap};
+        })""", endgame.EndgameSimulationTests.GRID)
+        for case in result:
+            with self.subTest(blank=case['blank']):
+                self.assertIsNotNone(case['placement'])
+                self.assertIsNotNone(case['swap'])
+                self.assertAlmostEqual(case['placement']['equity'] - case['placement']['score'],
+                                       8.89453125, places=10)
+                self.assertAlmostEqual(case['swap']['equity'], -1.10546875, places=10)
+
+    def test_generated_equity_exactly_matches_direct_evaluator_across_scores(self):
+        grid = list(endgame.EndgameSimulationTests.GRID)
+        grid[0] = '..........G....'
+        result = self.page.evaluate("""grid => {
+          const args=[JSON.stringify(grid),'WEAFTUO',110,100];
+          const all=testEngine.kibitz(...args,1000000).moves;
+          const groups=new Map();
+          for(const move of all.slice(1)) {
+            const key=move.action+':'+move.leave;
+            if(!groups.has(key))groups.set(key,[]);
+            groups.get(key).push(move);
+          }
+          let checked=0,distinctScoreGroups=0;
+          for(const group of groups.values()) {
+            if(new Set(group.map(m=>m.score)).size<2)continue;
+            distinctScoreGroups++;
+            for(const move of [group[0],group.at(-1)]) {
+              const plan=testEngine.planReviewSimulation(...args,1,2,0,move,123456789);
+              if(plan.error)throw Error(plan.error);
+              if(plan.actualIndex!==1)throw Error('Fixture must append independently evaluated action');
+              const direct=plan.moves[plan.actualIndex];
+              if(direct.equity!==move.equity)throw Error('Cached/direct floating-point equity mismatch');
+              checked++;
+            }
+            if(distinctScoreGroups===12)break;
+          }
+          return {checked,distinctScoreGroups};
+        }""", grid)
+        self.assertEqual(result['distinctScoreGroups'], 12)
+        self.assertEqual(result['checked'], 24)
 
     def test_all_emptying_moves_and_sample_offsets(self):
         grid = list(endgame.EndgameSimulationTests.GRID)
@@ -73,7 +162,7 @@ class BagEmptyingSimulationTests(unittest.TestCase):
             self.assertEqual(whole['win'], (result['a']['moves'][i]['win'] + result['b']['moves'][i]['win']) / 2)
             self.assertEqual(whole['terminalSamples'], 4)
 
-    def test_emptying_winner_outside_shortlist_and_emptying_loser(self):
+    def test_authoritative_shortlist_retains_known_emptying_winner_and_loser(self):
         grid = list(endgame.EndgameSimulationTests.GRID)
         grid[0] = '..........G....'
         result = self.page.evaluate('''grid => {
@@ -85,7 +174,7 @@ class BagEmptyingSimulationTests(unittest.TestCase):
           return {rank:all.indexOf(moves[0])+1,moves,plan,
             batch:testEngine.simulateCandidateBatch(...args,2,moves,123456789,0,8)};
         }''', grid)
-        self.assertGreater(result['rank'], 15)
+        self.assertLessEqual(result['rank'], 15)
         self.assertTrue(all(7 - len(m['leave']) >= 2 for m in result['moves']))
         planned = result['plan']['moves']
         self.assertTrue(any(m['tiles'] == 'FET' and m['position'] == '15B' for m in planned))
