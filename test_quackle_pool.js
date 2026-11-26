@@ -492,7 +492,7 @@ function drawBatch(request, completed = request.payload.count, win = .75) {
     beforeWin: win, afterWin: win, beforeWinSum: win * completed, afterWinSum: win * completed,
     selected: drawPayload.played, drawCount: 0, rackAfter: drawPayload.rackAfter,
     seed: drawPayload.seed, bagCount: drawPayload.bagCount, finalTurnsRemaining: 0, plies: -1,
-    playToEnd: true, endgamePolicy: 'crossplay-endgame-v2', simulationMode: 'play-to-end', winModel: 'terminal'};
+    playToEnd: true, endgamePolicy: 'crossplay-endgame-v3', simulationMode: 'play-to-end', winModel: 'terminal'};
 }
 
 test('terminal draw retries the missing offset and reuses a matching baseline', async () => {
@@ -756,12 +756,12 @@ test('128sample terminal draws reuse the matching128sample move baseline', async
 });
 
 
-test('96sample terminal draws reuse the matching full move baseline', async () => {
+test('one-worker128sample terminal draws reuse the matching full move baseline', async () => {
  const {pool,log}=makePool(1);
- const job=pool.run('simulateDraw',{...drawPayload,iterations:96,beforeWin:{win:.75,samples:96,seed:33}});
+ const job=pool.run('simulateDraw',{...drawPayload,iterations:128,beforeWin:{win:.75,samples:128,seed:33}});
  try{
    await settle();
-   for(let offset=0;offset<96;offset+=16){
+   for(let offset=0;offset<128;offset+=16){
      assert.equal(log.requests.length,1);
      assert.equal(log.requests[0].payload.offset,offset);
      assert.equal(log.requests[0].payload.knownBeforeWin,.75);
@@ -769,8 +769,30 @@ test('96sample terminal draws reuse the matching full move baseline', async () =
      await settle();
    }
    const result=await job;
-   assert.equal(result.iterationsCompleted,96);
-   assert.equal(result.iterationsRequested,96);
+   assert.equal(result.iterationsCompleted,128);
+   assert.equal(result.iterationsRequested,128);
    assert.equal(result.beforeWin,.75);
+ }finally{pool.stop();await job.catch(()=>{});}
+});
+
+
+test('ordinary lowbag16candidate plan uses all3workers with exact full coverage', async () => {
+ const {pool,log}=makePool(3);
+ const job=pool.run('simulateKibitz',{bagCount:5,iterations:192,seed:17});
+ try{
+   await settle();
+   const plan=expandedPlan(16);plan.equityMoves=plan.moves;
+   plan.generatedCandidateCount=500;plan.totalBagEmptyingCount=100;
+   reply(log,log.requests[0],plan);
+   await settle();
+   assert.equal(log.requests.length,3);
+   assert.deepEqual(log.requests.map(r=>r.payload.candidates.length),[6,6,4]);
+   const coverage=await completeExpanded(log);
+   const result=await job;
+   assert.equal(coverage.size,16);
+   assert.ok([...coverage.values()].every(n=>n===192));
+   assert.equal(result.moves.length,16);
+   assert.equal(result.searchedCandidateCount,16);
+   assert.equal(require('./bag-emptying-analysis.js').validCoverage(result,5,192),true);
  }finally{pool.stop();await job.catch(()=>{});}
 });

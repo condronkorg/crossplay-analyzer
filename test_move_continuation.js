@@ -95,7 +95,7 @@ function simulated(payload) {
     equity: 20, staticEquity: 25, win: .4 };
   const moves = [placement, pass];
   return { moves, selected: pass, best: pass, simulated: true,
-    ...(end ? {endgamePolicy:'crossplay-endgame-v2'} : {}),
+    ...(end ? {endgamePolicy:'crossplay-endgame-v3'} : {}),
     seed: payload.seed, samplingVersion: 'paired-review-v1',
     iterationsRequested: payload.iterations, iterationsCompleted: payload.iterations,
     candidateCount: moves.length, totalPlayaheads: moves.length * payload.iterations,

@@ -1176,7 +1176,7 @@ function makeReviewContext(review, owner, shared = false) {
       if (point.retryable && !cache.get(turn, 'review') &&
           savedTurnFailureMatches(point, cache, turn, 'review')) return true;
       const result = cache.get(turn, 'review');
-      return point.endgamePolicy === 'crossplay-endgame-v2' &&
+      return point.endgamePolicy === 'crossplay-endgame-v3' &&
         result?.endgamePolicy === point.endgamePolicy &&
         result.selected.win === point.playedWin && result.best.win === point.bestWin &&
         point.samples === result.iterationsCompleted;

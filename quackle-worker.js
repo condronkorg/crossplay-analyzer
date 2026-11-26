@@ -3,7 +3,7 @@ importScripts('bag-emptying-analysis.js', 'luck-analysis.js', 'review-analysis.j
 
 const integerBetween = (value, min, max) => Number.isInteger(value) && value >= min && value <= max;
 const DEFAULT_REVIEW_SEED = 123456789;
-const ENDGAME_POLICY = 'crossplay-endgame-v2';
+const ENDGAME_POLICY = 'crossplay-endgame-v3';
 let modulePromise = null;
 
 async function getModule() {

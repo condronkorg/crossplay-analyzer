@@ -61,7 +61,7 @@ class LowBagBrowserTest(unittest.TestCase):
           const cache=new AnalysisCache({},POSITION_PARAMETERS);
           const move={action:'pass',position:'',tiles:'',leave:turn.rack,score:0,equity:0,
             staticEquity:0,win:1,samples:192,terminalSamples:192};
-          const raw={simulated:true,endgamePolicy:'crossplay-endgame-v2',
+          const raw={simulated:true,endgamePolicy:'crossplay-endgame-v3',
             samplingVersion:'paired-review-v1',seed:cache.seed(turn),
             moves:[move],selected:move,best:move,staticMoves:[move],bestStaticEquity:0,
             candidateCount:1,totalPlayaheads:192,plies:-1,playToEnd:true,
@@ -172,7 +172,7 @@ class LowBagBrowserTest(unittest.TestCase):
           const cache = new AnalysisCache({},POSITION_PARAMETERS);
           const move = {action:'pass', position:'', tiles:'', leave:'WEAFTUO',
             score:0, equity:0, staticEquity:0, win:1, samples:277, terminalSamples:277};
-          const raw = {simulated:true, endgamePolicy:'crossplay-endgame-v2',
+          const raw = {simulated:true, endgamePolicy:'crossplay-endgame-v3',
             samplingVersion:'paired-review-v1', seed:cache.seed(turn),
             moves:[move], selected:move, best:move, staticMoves:[{...move,equity:0}],
             bestStaticEquity:0, candidateCount:1, totalPlayaheads:277,
@@ -180,7 +180,7 @@ class LowBagBrowserTest(unittest.TestCase):
             bagCount:0, finalTurnsRemaining:1, iterationsRequested:277,iterationsCompleted:277};
           const point = {turnIndex:0, turn:1, mine:true, action:'PASS',
             evaluation:MOVE_QUALITY_EVALUATION, playedWin:1,bestWin:1,loss:0,
-            category:'best',samples:277,provisional:false,endgamePolicy:'crossplay-endgame-v2'};
+            category:'best',samples:277,provisional:false,endgamePolicy:'crossplay-endgame-v3'};
           const saved = {...currentReview,turns:[turn],stored_analysis:{
             version:ANALYSIS_VERSION,turn_analyses:{[cache.key(turn,'review')]:raw},
             move_quality:{evaluation:MOVE_QUALITY_EVALUATION,state:'done',current:1,points:[point]}}};
@@ -205,7 +205,7 @@ class LowBagBrowserTest(unittest.TestCase):
             self.assertEqual(len(repaired['points']), 1)
             self.assertEqual(repaired['points'][0]['playedWin'], 1)
             self.assertEqual(repaired['points'][0]['bestWin'], 1)
-            self.assertEqual(repaired['points'][0]['endgamePolicy'], 'crossplay-endgame-v2')
+            self.assertEqual(repaired['points'][0]['endgamePolicy'], 'crossplay-endgame-v3')
         self.assertEqual(result['oldPolicy']['points'], [])
         self.assertEqual(result['oldPolicy']['state'], 'running')
 

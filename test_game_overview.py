@@ -472,8 +472,8 @@ class GameOverviewTest(unittest.TestCase):
         self.assertEqual(upper.get_attribute('height'), lower.get_attribute('height'))
         self.assertAlmostEqual(float(lower.get_attribute('y')),
                                float(upper.get_attribute('y')) + float(upper.get_attribute('height')))
-        expect(self.page.locator('.win-history-direction')).to_contain_text('Upper half favors You')
-        expect(self.page.locator('.win-history-direction')).to_contain_text('lower half favors Demo Cedar')
+        expect(self.page.locator('.win-history-players > span')).to_have_text(['You', 'Demo Cedar'])
+        expect(self.page.locator('.win-history')).to_have_attribute('aria-label', 'Win chance for You')
 
     def test_summary_enters_first_turn_and_chart_enters_selected_turn(self):
         self.open_summary()

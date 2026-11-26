@@ -90,7 +90,7 @@ class AnalysisRestoreBrowserTest(unittest.TestCase):
             if(point.draw)point.draw.samples=samples;
             const seed = cache.seed(turn);
             const terminal = {seed, bagCount:21, plies:-1, playToEnd:true,
-              winModel:'terminal', simulationMode:'play-to-end', endgamePolicy:'crossplay-endgame-v2'};
+              winModel:'terminal', simulationMode:'play-to-end', endgamePolicy:'crossplay-endgame-v3'};
             for (const candidate of [...move.moves, move.selected, move.best]) candidate.samples=candidate.terminalSamples=samples;
             review.stored_analysis.turn_analyses[cache.key(turn, 'review')] = Object.assign(move, terminal);
             if (draw) review.stored_analysis.turn_analyses[cache.key(turn, 'draw')] = Object.assign(draw, terminal);
@@ -249,7 +249,7 @@ class AnalysisRestoreBrowserTest(unittest.TestCase):
           const cache=new AnalysisCache({},POSITION_PARAMETERS), key=cache.key(turn,'review');
           const move={action:'pass',position:'',tiles:'',score:0,leave:turn.rack,
             equity:0,staticEquity:0,win:.5,samples:277,terminalSamples:277};
-          review.stored_analysis.turn_analyses[key]={simulated:true,endgamePolicy:'crossplay-endgame-v2',
+          review.stored_analysis.turn_analyses[key]={simulated:true,endgamePolicy:'crossplay-endgame-v3',
             samplingVersion:'paired-review-v1',seed:cache.seed(turn),moves:[move],selected:move,best:move,
             staticMoves:[move],bestStaticEquity:0,candidateCount:1,totalPlayaheads:277,
             plies:-1,playToEnd:true,simulationMode:'play-to-end',winModel:'terminal',
@@ -258,7 +258,7 @@ class AnalysisRestoreBrowserTest(unittest.TestCase):
           const current=restoreInstall(review), currentPoint=current.quality.points.find(point=>point.turnIndex===index);
           const changed=structuredClone(review);
           changed.stored_analysis.move_quality.points.find(point=>point.turnIndex===index).analysisKey=
-            key.replace('crossplay-endgame-v2','old-endgame-policy');
+            key.replace('crossplay-endgame-v3','old-endgame-policy');
           return {states:current.states,point:currentPoint,changed:restoreInstall(changed).states};
         }''')
         self.assertEqual(result['states'], ['done'] * 4 + ['error', 'done'])

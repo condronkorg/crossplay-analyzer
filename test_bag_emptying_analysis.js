@@ -2,8 +2,8 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const Bag = require('./bag-emptying-analysis.js');
 
-test('complete search retains a winner outside the display shortlist and static best', () => {
-  const moves = Array.from({ length: 20 }, (_, i) => ({
+test('ordinary top15 plus actual retain all assessed candidates and static best', () => {
+  const moves = Array.from({ length: 16 }, (_, i) => ({
     action: 'place',
     position: '1A',
     tiles: String(i),
@@ -13,11 +13,11 @@ test('complete search retains a winner outside the display shortlist and static 
   }));
   const plan = {
     moves,
-    equityMoves: moves.slice(0, 15),
+    equityMoves: moves,
     generatedCandidateCount: 200,
     totalBagEmptyingCount: 100,
-    actualIndex: 0,
-    bagEmptyingIndices: [19],
+    actualIndex: 15,
+    bagEmptyingIndices: [15],
     seed: 4,
     bagCount: 5,
     finalTurnsRemaining: 0,
@@ -30,20 +30,20 @@ test('complete search retains a winner outside the display shortlist and static 
       offset: 0,
       completed: 277,
       moves: [
-        { ...moves[i], win: i === 19 ? 1 : 0, equity: i, samples: 277, terminalSamples: 277 },
+        { ...moves[i], win: i === 15 ? 1 : 0, equity: i, samples: 277, terminalSamples: 277 },
       ],
     });
   const result = Bag.finish(state, 277);
-  assert.equal(result.best.tiles, '19');
-  assert.equal(result.selected.tiles, '0');
-  assert.equal(result.searchedCandidateCount, 20);
+  assert.equal(result.best.tiles, '15');
+  assert.equal(result.selected.tiles, '15');
+  assert.equal(result.searchedCandidateCount, 16);
   assert.equal(result.requiredBagEmptyingCount, 1);
   assert.equal(result.evaluatedBagEmptyingCount, 1);
-  assert.equal(result.totalPlayaheads, 5540);
+  assert.equal(result.totalPlayaheads, 4432);
   assert.equal(result.generatedCandidateCount, 200);
   assert.equal(result.totalBagEmptyingCount, 100);
-  assert.equal(result.candidatePolicy, 'crossplay-low-bag-equity-v1');
-  assert.ok(result.moves.length <= 17);
+  assert.equal(result.candidatePolicy, 'crossplay-low-bag-equity-v2');
+  assert.ok(result.moves.length <= 16);
 });
 
 test('partial batches must use contiguous offsets and finish every sample', () => {
@@ -68,8 +68,8 @@ test('partial batches must use contiguous offsets and finish every sample', () =
 
 test('coverage validation rejects an omitted policy, partial coverage, and false counts', () => {
   const result = {
-    moves: [{}],
-    equityMoves: [{ equity: 0 }],
+    moves: [{},{},{}],
+    equityMoves: [{equity:0},{equity:0},{equity:0}],
     candidatePolicy: Bag.POLICY,
     searchedCandidateCount: 3,
     generatedCandidateCount: 100,
@@ -90,14 +90,15 @@ test('coverage validation rejects an omitted policy, partial coverage, and false
     { totalBagEmptyingCount: 101 },
     { generatedCandidateCount: undefined },
     { candidatePolicy: "bag-emptying-v1" },
+    { searchedCandidateCount: 17, generatedCandidateCount:100, totalPlayaheads:17*277 },
   ]) {
     assert.equal(Bag.validCoverage({ ...result, ...changes }, 5, 277), false);
   }
 });
 
-test('common-word equity opportunity keeps the original static list after display compaction', () => {
+test('common-word equity opportunity uses the authoritative ordinary candidate list', () => {
   const Luck = require('./luck-analysis.js');
-  const moves = Array.from({ length: 20 }, (_, i) => ({
+  const moves = Array.from({ length: 15 }, (_, i) => ({
     action: 'place',
     position: '1A',
     tiles: String(i),
@@ -107,11 +108,11 @@ test('common-word equity opportunity keeps the original static list after displa
   }));
   const state = Bag.create({
     moves,
-    equityMoves: moves.slice(0, 15),
+    equityMoves: moves,
     generatedCandidateCount: 200,
     totalBagEmptyingCount: 100,
     actualIndex: 0,
-    bagEmptyingIndices: [19],
+    bagEmptyingIndices: [14],
     seed: 1,
     bagCount: 5,
     finalTurnsRemaining: 0,
@@ -121,7 +122,7 @@ test('common-word equity opportunity keeps the original static list after displa
       start: i,
       offset: 0,
       completed: 277,
-      moves: [{ win: i === 19 ? 1 : 0, equity: i, samples: 277, terminalSamples: 277 }],
+      moves: [{ win: i === 14 ? 1 : 0, equity: i, samples: 277, terminalSamples: 277 }],
     }),
   );
   const result = Bag.finish(state, 277);
@@ -133,10 +134,10 @@ test('common-word equity opportunity keeps the original static list after displa
     Luck.opportunityContext({}, candidates, frequencies, (_, move) => move.word);
   assert.equal(
     result.staticMoves.some((move) => move.word === 'CAT'),
-    false,
+    true,
   );
   assert.equal(evaluate(Bag.equityCandidates(result)).accessibleEquity, 99);
-  assert.equal(evaluate(result.staticMoves).accessibleEquity, 96);
+  assert.equal(evaluate(result.staticMoves).accessibleEquity, 99);
   assert.deepEqual(Bag.equityCandidates({ staticMoves: moves }), moves);
 });
 
@@ -222,9 +223,9 @@ test('shortlist coverage distinguishes selected placements from all generated pl
 
 
 test('192sample lowbag full profile requires selected coverage just like277', () => {
- const r={moves:[{}],equityMoves:[{equity:0}],candidatePolicy:Bag.POLICY,
-   searchedCandidateCount:25,generatedCandidateCount:500,totalBagEmptyingCount:352,
-   requiredBagEmptyingCount:10,evaluatedBagEmptyingCount:10,totalPlayaheads:25*192};
+ const r={moves:Array.from({length:16},()=>({})),equityMoves:Array.from({length:16},()=>({equity:0})),candidatePolicy:Bag.POLICY,
+   searchedCandidateCount:16,generatedCandidateCount:500,totalBagEmptyingCount:352,
+   requiredBagEmptyingCount:10,evaluatedBagEmptyingCount:10,totalPlayaheads:16*192};
  assert.equal(Bag.validCoverage(r,5,192),true);
  assert.equal(Bag.validCoverage({...r,evaluatedBagEmptyingCount:9},5,192),false);
  assert.equal(Bag.validCoverage({...r,candidatePolicy:undefined},5,192),false);
