@@ -16,6 +16,8 @@ class GameOverviewTest(unittest.TestCase):
     connect = review_browser.ReviewBrowserTest.connect
 
     def open_summary(self):
+        from test_hindsight_helpers import install_hindsight_fixtures
+        install_hindsight_fixtures(self.page)
         self.connect()
         self.page.get_by_role('button', name='Review game against Demo Cedar').click()
         expect(self.page.locator('.game-overview')).to_be_visible()
@@ -28,7 +30,7 @@ class GameOverviewTest(unittest.TestCase):
             {turnIndex: 2, category: 'unrated', reason: 'Missing rack'},
             {turnIndex: 3, category: 'mistake', loss: 7, playedWin: .40, bestWin: .47, provisional: true}
           ]};
-          trendResults = deriveWinTrend({review: currentReview, quality: moveQualityResults});
+          trendResults = syntheticPositionTrend(currentReview, moveQualityResults);
           refreshMoveQualityPanel(); refreshTrendPanel();
         }''')
 
@@ -50,12 +52,12 @@ class GameOverviewTest(unittest.TestCase):
              draw: {beforeWin: .60, afterWin: .53, luck: -7, drawCount: 1,
                rackAfter: 'AEIRSTZ', samples: 64, provisional: true}}
           ]};
-          trendResults = {state: 'running', points: [
+          trendResults = syntheticTrendFromPoints(currentReview, {state: 'running', points: [
             {x: 0, phase: 'before-draw', mine: 50},
             {x: 0, phase: 'after-draw', mine: 62, draw: moveQualityResults.points[0].draw},
             {x: 1, phase: 'before-draw', mine: 40},
             {x: 1, phase: 'after-draw', mine: 47, provisional: true, draw: moveQualityResults.points[1].draw}
-          ]};
+          ]}, moveQualityResults.opening);
           renderReview();
         }""")
 
@@ -165,20 +167,16 @@ class GameOverviewTest(unittest.TestCase):
         after.focus()
         inspector = chart.locator('.win-history-inspector')
         expect(inspector).to_have_attribute('data-inspected-phase', 'after-draw')
-        expect(inspector).to_contain_text('+12.0')
         expect(inspector.locator('.draw-new .rack-tile')).to_have_text(['I', 'N', 'G'])
         expect(inspector.locator('.draw-kept .rack-tile')).to_have_text(['E', 'R', 'S', '?'])
         expect(inspector.locator('.draw-kept [aria-label="Blank"]')).to_have_count(1)
-        expect(inspector.locator('h4')).to_have_text('New tiles drawn')
-        expect(inspector.locator('[data-move="before-draw"] strong')).to_have_text('50.0%')
-        expect(inspector.locator('[data-move="after-draw"] strong')).to_have_text('62.0%')
+        expect(inspector.locator('h4').first).to_contain_text('Turn 1')
+        expect(inspector.locator('.position-wp-table tr').nth(1).locator('td')).to_have_text(['—', '50.0%', '62.0%'])
         opponent = chart.locator('.win-history-point[data-turn-index="1"][data-phase="after-draw"]')
         opponent.focus()
-        expect(inspector).to_contain_text('−7.0')
         expect(inspector.locator('.draw-new .rack-tile')).to_have_text(['Z'])
         expect(inspector.locator('.draw-kept .rack-tile')).to_have_text(list('AEIRST'))
-        expect(inspector.locator('[data-move="before-draw"] strong')).to_have_text('60.0%')
-        expect(inspector.locator('[data-move="after-draw"] strong')).to_have_text('53.0%')
+        expect(inspector.locator('.position-wp-table tr').nth(2).locator('td')).to_have_text(['38.0%', '60.0%', '53.0% · Early'])
         expect(opponent).to_have_attribute('aria-label', re.compile('You: 47.0%'))
         self.page.keyboard.press('Enter')
         expect(self.page.get_by_role('combobox', name='Select game turn')).to_have_value('1')
@@ -218,10 +216,10 @@ class GameOverviewTest(unittest.TestCase):
             ...point, turnIndex, loss: 7, category: 'mistake', playedWin: .5, bestWin: .57,
             draw: {...point.draw, beforeWin: .5, afterWin: .55}
           }))};
-          trendResults = {state: 'done', points: currentReview.turns.flatMap((turn, x) => [
+          trendResults = syntheticTrendFromPoints(currentReview, {state: 'done', points: currentReview.turns.flatMap((turn, x) => [
             {x, phase: 'before-draw', mine: 50},
             {x, phase: 'after-draw', mine: turn.mine ? 55 : 45, draw: moveQualityResults.points[x].draw}
-          ])};
+          ])}, moveQualityResults.opening);
           renderReview();
         }""")
 
@@ -488,7 +486,7 @@ class GameOverviewTest(unittest.TestCase):
         self.page.get_by_role('button', name='Game summary', exact=True).click()
         expect(self.page.locator('.game-overview')).to_be_visible()
         expect(self.page.get_by_role('button', name='Start Review', exact=True)).to_be_focused()
-        self.page.locator('.win-history-point[data-turn-index="3"] .win-history-marker').click()
+        self.page.locator('.win-history-point[data-turn-index="3"][data-phase="before-draw"] .win-history-marker').click()
         expect(self.page.get_by_role('combobox', name='Select game turn')).to_have_value('3')
         expect(self.page.locator('.board')).to_be_visible()
         self.page.get_by_role('button', name='Game summary', exact=True).click()
@@ -610,7 +608,7 @@ class GameOverviewTest(unittest.TestCase):
         self.page.keyboard.press('Tab')
         self.page.keyboard.press('Tab')
         expect(inspector).to_have_attribute('data-inspected-turn', '2')
-        self.page.locator('.win-history-point[data-turn-index="3"] .win-history-marker').click()
+        self.page.locator('.win-history-point[data-turn-index="3"][data-phase="before-draw"] .win-history-marker').click()
         expect(self.page.get_by_role('combobox', name='Select game turn')).to_have_value('3')
         expect(inspector).to_have_attribute('data-inspected-turn', '3')
 
@@ -637,7 +635,7 @@ class GameOverviewTest(unittest.TestCase):
             turnIndex, category: turnIndex % 2 ? 'mistake' : 'blunder', loss: turnIndex % 2 ? 7 : 12,
             playedWin: .5, bestWin: .62
           }))};
-          trendResults = deriveWinTrend({review: currentReview, quality: moveQualityResults});
+          trendResults = syntheticPositionTrend(currentReview, moveQualityResults);
           renderReview();
         }''')
         self.page.locator('.win-history-point[data-turn-index="1"]').focus()

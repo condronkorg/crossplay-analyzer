@@ -1,5 +1,6 @@
 importScripts('quackle.js');
 importScripts('bag-emptying-analysis.js', 'luck-analysis.js', 'review-analysis.js', 'opening-draw.js');
+importScripts('hindsight-timeline.js');
 
 const integerBetween = (value, min, max) => Number.isInteger(value) && value >= min && value <= max;
 const DEFAULT_REVIEW_SEED = 123456789;
@@ -325,7 +326,16 @@ self.addEventListener('message', async event => {
     const module = await getModule();
     let result;
 
-    if (type === 'planBagEmptying' || type === 'planReviewSimulation') {
+    if (type === 'evaluateKnownStateBatch') {
+      const state = CrossplayHindsight.canonical(payload.state);
+      if (!Number.isInteger(payload.iterations) || payload.iterations < 1 || payload.iterations > 277 ||
+          !Number.isInteger(payload.offset) || payload.offset < 0 || !Number.isInteger(payload.count) ||
+          payload.count < 1 || payload.count > 16 || payload.offset + payload.count > payload.iterations ||
+          payload.seed !== CrossplayHindsight.seed(state)) throw new Error('Invalid known-state sample request.');
+      result = module.evaluateKnownStateBatch(JSON.stringify(state), payload.iterations, payload.seed, payload.offset, payload.count);
+      if (!CrossplayHindsight.validResult(result, state, payload.iterations, payload.offset, payload.count))
+        throw new Error(result.error || 'Quackle returned incomplete position WP.');
+    } else if (type === 'planBagEmptying' || type === 'planReviewSimulation') {
       result = planTerminalReview(module, payload, type === 'planBagEmptying');
     } else if (type === 'simulateCandidateBatch' || type === 'simulateReviewBatch') {
       result = simulateTerminalReviewBatch(module, payload, type === 'simulateCandidateBatch');

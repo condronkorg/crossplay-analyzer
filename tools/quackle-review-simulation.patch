@@ -426,7 +426,7 @@ index 31f144e..b1115e3 100644
  
  inline const GamePosition &Generator::position() const
 diff --git c/sim.cpp w/sim.cpp
-index 6271bcd..8b1852a 100644
+index 6271bcd..24505f5 100644
 --- c/sim.cpp
 +++ w/sim.cpp
 @@ -18,11 +18,18 @@
@@ -708,7 +708,7 @@ index 6271bcd..8b1852a 100644
  
  	if (isLogging() && !m_hasHeader)
  		writeLogHeader();
-@@ -668,10 +906,68 @@ void Simulator::simulateOnePosition(SimmedMoveMessage &message, const SimmedMove
+@@ -668,10 +906,90 @@ void Simulator::simulateOnePosition(SimmedMoveMessage &message, const SimmedMove
  {
  	Game game = constants.game;
  
@@ -727,7 +727,29 @@ index 6271bcd..8b1852a 100644
 +		QUACKLE_DATAMANAGER->seedRandomNumbers(seed ^ (seed >> 16));
 +	}
 +	// Other callers retain independent draws for each playahead.
-+	if (constants.initialDeal)
++	if (constants.knownState)
++	{
++		GamePosition &position = game.currentPosition();
++		if (constants.pendingCount > 0)
++		{
++			Bag available = position.bag();
++			Rack rack;
++			for (const auto &player : position.players())
++				if (player.id() == constants.pendingPlayer) rack = player.rack();
++			const int before = rack.size();
++			available.refill(rack);
++			if (rack.size() - before != constants.pendingCount)
++				throw std::invalid_argument("Pending refill count is inconsistent");
++			available.toss(constants.returnedTiles);
++			position.setPlayerRack(constants.pendingPlayer, rack, false);
++			position.setBag(available);
++			if (available.empty() && !position.setFinalTurnsRemaining(2))
++				throw std::invalid_argument("Pending final-turn state is invalid");
++		}
++		// Both actual hands are reserved; only the remaining bag is shuffled.
++		randomizeDrawingOrder(position);
++	}
++	else if (constants.initialDeal)
 +	{
 +		GamePosition &position = game.currentPosition();
 +		Bag available;
@@ -781,7 +803,7 @@ index 6271bcd..8b1852a 100644
  
  	double residual = 0;
  
-@@ -703,12 +999,22 @@ void Simulator::simulateOnePosition(SimmedMoveMessage &message, const SimmedMove
+@@ -703,12 +1021,22 @@ void Simulator::simulateOnePosition(SimmedMoveMessage &message, const SimmedMove
  
  			Move move = Move::createNonmove();
  
@@ -796,7 +818,7 @@ index 6271bcd..8b1852a 100644
 +						policyPosition.setPlayerRack(player.id(), Rack(), false);
 +				move = policyPosition.staticBestMove();
 +			}
-+			else if (playerId == constants.startPlayerId && levelNumber == 1)
++			else if (!constants.knownState && playerId == constants.startPlayerId && levelNumber == 1)
  				move = message.move;
  			else if (constants.ignoreOppos && playerId != constants.startPlayerId)
  				move = Move::createPassMove();
@@ -806,11 +828,29 @@ index 6271bcd..8b1852a 100644
  
  			int deadwoodScore = 0;
  			if (!QUACKLE_PARAMETERS->noEndgamePenalty() && game.currentPosition().doesMoveEndGame(move))
+@@ -770,7 +1098,16 @@ void Simulator::simulateOnePosition(SimmedMoveMessage &message, const SimmedMove
+ 			move.score -= deadwoodScore;
+ 			game.setCandidate(move);
+ 
+-			game.commitCandidate(!isVeryFinalTurnOfSimulation);
++			if (constants.knownState)
++			{
++				// History-based rack repairs are for incomplete imported hands.
++				// This mode has exact physical hands and must never redistribute them.
++				GamePosition &position = game.currentPosition();
++				position.incrementTurn(nullptr);
++				position.makeMove(move, !isVeryFinalTurnOfSimulation);
++			}
++			else
++				game.commitCandidate(!isVeryFinalTurnOfSimulation);
+ 
+ 			if (constants.isLogging)
+ 			{
 diff --git c/sim.h w/sim.h
-index b236a24..8556422 100644
+index b236a24..37869a3 100644
 --- c/sim.h
 +++ w/sim.h
-@@ -228,12 +228,20 @@ class SimmedMoveConstants
+@@ -228,12 +228,24 @@ class SimmedMoveConstants
  public:
  	Game game;
  	Rack partialOppoRack;
@@ -825,13 +865,17 @@ index b236a24..8556422 100644
 +	unsigned int sampleSeed = 0;
 +	// Initial-deal trials reserve known racks before sampling unknown racks.
 +	bool initialDeal = false;
++	bool knownState = false;
++	int pendingPlayer = -1;
++	int pendingCount = 0;
++	Rack returnedTiles;
 +	bool terminalRollout = false;
 +	Rack firstOpeningRack;
 +	Rack secondOpeningRack;
  };
  
  class SimmedMoveMessageQueue
-@@ -309,6 +317,13 @@ public:
+@@ -309,6 +321,13 @@ public:
  	// to front of simmed move list and level values zeroed.
  	void setIncludedMoves(const MoveList &moves);
  
@@ -845,7 +889,7 @@ index b236a24..8556422 100644
  	void makeSureConsideredMovesAreIncluded();
  	void moveConsideredMovesToBeginning(MoveList &moves) const;
  
-@@ -367,6 +382,9 @@ public:
+@@ -367,6 +386,9 @@ public:
  	// Set this to an empty rack if no tiles are known, so
  	// that all tiles are chosen randomly each iteration.
  	void setPartialOppoRack(const Rack &rack);
@@ -855,7 +899,7 @@ index b236a24..8556422 100644
  	const Rack &partialOppoRack() const;
  
  	// Set oppo's racks to something random, including
-@@ -441,6 +459,9 @@ protected:
+@@ -441,6 +463,9 @@ protected:
  
  	int m_iterations;
  	bool m_ignoreOppos;
@@ -878,7 +922,7 @@ index c87b8ad..075eeee 100755
      --bind \
      --preload-file "$DATA_DIR/alphabets/crossplay.quackle_alphabet@/data/alphabets/crossplay.quackle_alphabet" \
 diff --git c/wasm/quackle_wasm.cpp w/wasm/quackle_wasm.cpp
-index 6de2970..9512ecd 100644
+index 6de2970..1207052 100644
 --- c/wasm/quackle_wasm.cpp
 +++ w/wasm/quackle_wasm.cpp
 @@ -5,6 +5,7 @@
@@ -1642,14 +1686,162 @@ index 6de2970..9512ecd 100644
  bool isWordValid(std::string word)
  {
      if (!s_dm || !s_dm->isGood())
-@@ -582,11 +1295,20 @@ std::string getEngineInfo()
+@@ -582,11 +1295,168 @@ std::string getEngineInfo()
      return info;
  }
  
 +
++
++// Return a null handle on malformed JSON so public native calls return errors.
++EM_JS(emscripten::EM_VAL, parseKnownStateJson, (const char *text), {
++    try { return Emval.toHandle(JSON.parse(UTF8ToString(text))); }
++    catch (_) { return Emval.toHandle(null); }
++});
++
++// State value under the normal continuation policy, with both hands fixed.
++emscripten::val evaluateKnownStateBatch(std::string stateJson, double iterationsValue,
++    double seedValue, double offsetValue, double countValue)
++{
++    using emscripten::val;
++    val result = val::object();
++    result.set("error", std::string(""));
++    try
++    {
++        if (!s_dm || !s_dm->isGood()) throw std::invalid_argument("Engine not initialized");
++        auto integer = [](double value, double low, double high) {
++            return std::isfinite(value) && std::floor(value) == value && value >= low && value <= high;
++        };
++        if (!integer(iterationsValue, 1, 277) || !integer(seedValue, 0, 4294967295.0) ||
++            !integer(offsetValue, 0, 276) || !integer(countValue, 1, 16) || offsetValue + countValue > iterationsValue)
++            throw std::invalid_argument("Invalid known-state sample range or seed");
++        val state = val::take_ownership(parseKnownStateJson(stateJson.c_str()));
++        if (state.isNull() || state.typeOf().as<std::string>() != "object")
++            throw std::invalid_argument("Invalid known-state object");
++        auto number = [&](val value, int low, int high) {
++            if (value.typeOf().as<std::string>() != "number" || !integer(value.as<double>(), low, high))
++                throw std::invalid_argument("Invalid known-state integer");
++            return value.as<int>();
++        };
++        auto array = [](val value, int size) {
++            return val::global("Array").call<bool>("isArray", value) && value["length"].as<int>() == size;
++        };
++        auto rack = [](val value) {
++            if (value.typeOf().as<std::string>() != "string")
++                throw std::invalid_argument("Known racks must contain physical tiles");
++            std::string text = value.as<std::string>();
++            if (text.size() > 7 || !std::all_of(text.begin(), text.end(),
++                [](char c) { return c == '?' || (c >= 'A' && c <= 'Z'); }))
++                throw std::invalid_argument("Known racks must contain uppercase physical tiles");
++            std::sort(text.begin(), text.end());
++            Quackle::LetterString letters;
++            for (char c : text) letters.push_back(c == '?' ? QUACKLE_BLANK_MARK : charToLetter(c));
++            return Quackle::Rack(letters);
++        };
++        if (!array(state["grid"], 15) || !array(state["racks"], 2) || !array(state["scores"], 2))
++            throw std::invalid_argument("Invalid known-state board or players");
++        const int toMove = number(state["toMove"], 0, 1);
++        const int bagCount = number(state["bagCount"], 0, 100);
++        const int finals = number(state["finalTurnsRemaining"], 0, 2);
++        Quackle::Rack racks[2] = {rack(state["racks"][0]), rack(state["racks"][1])};
++        Quackle::Rack returned;
++        int pendingPlayer = -1, pendingCount = 0;
++        val pending = state["pendingDraw"];
++        if (!pending.isUndefined() && !pending.isNull())
++        {
++            pendingPlayer = number(pending["player"], 0, 1);
++            pendingCount = number(pending["count"], 1, 7);
++            returned = rack(pending["returnedTiles"]);
++            if (pendingPlayer == toMove || pendingCount > bagCount || finals != 0 ||
++                pendingCount != std::min(7 - static_cast<int>(racks[pendingPlayer].size()), bagCount) ||
++                (!returned.empty() && (returned.size() != pendingCount || racks[pendingPlayer].size() + pendingCount != 7)))
++                throw std::invalid_argument("Invalid pending draw or exchange");
++        }
++        if ((bagCount == 0 && (finals < 1 || pendingCount)) || (bagCount > 0 && finals != 0))
++            throw std::invalid_argument("Invalid known-state final-turn count");
++        for (int i = 0; i < 2; ++i)
++            if (bagCount > 0 && i != pendingPlayer && racks[i].size() != 7)
++                throw std::invalid_argument("A settled nonempty bag requires full racks");
++        Quackle::Game game;
++        Quackle::PlayerList players;
++        for (int i = 0; i < 2; ++i)
++        {
++            Quackle::Player player(i == 0 ? MARK_UV("Owner") : MARK_UV("Opponent"), Quackle::Player::HumanPlayerType, i);
++            player.setScore(number(state["scores"][i], -1000000, 1000000));
++            players.push_back(player);
++        }
++        game.setPlayers(players); game.addPosition();
++        auto &position = game.currentPosition();
++        auto &board = position.underlyingBoardReference();
++        board.prepareEmptyBoard();
++        Quackle::Bag available;
++        bool occupied = false;
++        for (int row = 0; row < 15; ++row)
++        {
++            if (state["grid"][row].typeOf().as<std::string>() != "string")
++                throw std::invalid_argument("Invalid known-state board row");
++            const std::string cells = state["grid"][row].as<std::string>();
++            if (cells.size() != 15) throw std::invalid_argument("Invalid known-state board width");
++            for (int col = 0; col < 15; ++col)
++            {
++                const char tile = cells[col];
++                if (tile == '.') continue;
++                const bool blank = tile >= 'a' && tile <= 'z';
++                if (!blank && !(tile >= 'A' && tile <= 'Z')) throw std::invalid_argument("Invalid board tile");
++                const auto letter = charToLetter(tile);
++                if (!available.removeLetter(blank ? QUACKLE_BLANK_MARK : letter))
++                    throw std::invalid_argument("Known-state board exceeds the tile distribution");
++                board.setLetterAt(row, col, letter); board.setIsBlankAt(row, col, blank); occupied = true;
++            }
++        }
++        if (occupied) board.setNotEmpty();
++        if (!available.removeLetters(racks[0].tiles()) || !available.removeLetters(racks[1].tiles()) ||
++            !available.removeLetters(returned.tiles()) || available.size() != bagCount)
++            throw std::invalid_argument("Known hands and bag do not conserve physical tiles");
++        position.setPlayerRack(0, racks[0], false); position.setPlayerRack(1, racks[1], false);
++        position.setBag(available); position.setCurrentPlayer(toMove);
++        if (!position.setFinalTurnsRemaining(finals)) throw std::invalid_argument("Invalid final-turn state");
++        { Quackle::Generator gen(position); gen.allCrosses(); position.setBoard(gen.position().board()); }
++        const int settledBag = bagCount - pendingCount + returned.size();
++        const bool terminal = settledBag <= 21;
++        Quackle::SimmedMoveConstants constants;
++        constants.game = game; constants.startPlayerId = toMove; constants.playerCount = 2;
++        constants.levelCount = terminal ? 500 : 1;
++        constants.decimalTurns = terminal ? 0 : 1;
++        constants.ignoreOppos = false; constants.isLogging = false;
++        constants.pairedSamples = true; constants.sampleSeed = static_cast<unsigned int>(seedValue);
++        constants.terminalRollout = terminal; constants.knownState = true;
++        constants.pendingPlayer = pendingPlayer; constants.pendingCount = pendingCount; constants.returnedTiles = returned;
++        double sum = 0; int terminalSamples = 0;
++        for (int i = 0; i < static_cast<int>(countValue); ++i)
++        {
++            Quackle::SimmedMoveMessage message;
++            message.iteration = static_cast<int>(offsetValue) + i + 1;
++            message.levels.setNumberLevels(constants.levelCount + 1);
++            Quackle::Simulator::simulateOnePosition(message, constants);
++            if (!std::isfinite(message.wins) || message.wins < 0 || message.wins > 1 || (terminal && message.bogowin))
++                throw std::invalid_argument("Known-state trial did not complete its horizon");
++            sum += toMove == 0 ? message.wins : 1 - message.wins;
++            if (!message.bogowin) ++terminalSamples;
++        }
++        result.set("winSum", sum); result.set("win", sum / countValue);
++        result.set("samples", countValue); result.set("completed", countValue);
++        result.set("terminalSamples", terminalSamples); result.set("offset", offsetValue);
++        result.set("seed", seedValue); result.set("iterationsRequested", iterationsValue);
++        result.set("bagCount", bagCount); result.set("settledBagCount", settledBag);
++        result.set("finalTurnsRemaining", finals); result.set("plies", terminal ? -1 : 2);
++        result.set("playToEnd", terminal); result.set("simulationMode", std::string(terminal ? "play-to-end" : "2-ply"));
++        result.set("informationModel", std::string("hindsight-state-v1"));
++        result.set("policyVersion", std::string("hindsight-state-v1/crossplay-endgame-v3"));
++        result.set("simulated", true);
++    }
++    catch (const std::exception &error) { result.set("error", std::string(error.what())); }
++    return result;
++}
++
  EMSCRIPTEN_BINDINGS(quackle)
  {
      emscripten::function("initEngine", &initEngine);
++    emscripten::function("evaluateKnownStateBatch", &evaluateKnownStateBatch);
      emscripten::function("kibitz", &kibitz);
      emscripten::function("simulateKibitz", &simulateKibitz);
 +    emscripten::function("simulateReviewMove", &simulateReviewMove);

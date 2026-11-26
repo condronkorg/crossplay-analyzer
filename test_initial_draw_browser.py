@@ -24,6 +24,7 @@ class InitialDrawBrowserTest(unittest.TestCase):
         opening.update(changes)
         self.page.evaluate('''opening => {
           moveQualityResults.opening = opening;
+          trendResults = syntheticPositionTrend(currentReview, moveQualityResults);
           renderReview();
         }''', opening)
 
@@ -43,11 +44,11 @@ class InitialDrawBrowserTest(unittest.TestCase):
         marker.focus()
         inspector = self.page.locator('.win-history-inspector')
         expect(inspector).to_have_attribute('data-inspected-phase', 'opening')
-        expect(inspector).to_contain_text('ACEIRST')
-        expect(inspector).to_contain_text('AEINORT')
-        expect(inspector).to_contain_text('+7.0 pp')
-        expect(inspector).to_contain_text('+3.0 pp')
-        expect(inspector.locator('[data-move="after-opening"] strong')).to_have_text('58.0%')
+        expect(inspector).to_contain_text(self.page.evaluate('currentReview.turns[0].rack'))
+        expect(inspector).to_contain_text(self.page.evaluate('CrossplayHindsight.opponentRack(currentReview,0)'))
+        expect(inspector.locator('h4')).to_have_text('Opening position')
+        expect(inspector.locator('[data-move="before-opening"]')).to_have_count(0)
+        expect(inspector.locator('.position-wp-table tr').nth(1).locator('td')).to_have_text('58.0%')
 
     def test_opponent_opening_uses_your_view_and_each_own_wpa(self):
         self.open_summary()
@@ -57,7 +58,7 @@ class InitialDrawBrowserTest(unittest.TestCase):
         expect(self.page.locator('.win-history-opening')).to_contain_text('You: 42.0%')
         expect(self.page.locator('[data-summary-row="draw-luck"] td')).to_have_text(
             ['+7.5 (+15.0)', '0.0 (0.0)'])
-        expect(self.page.locator('[data-move="after-opening"] strong')).to_have_text('42.0%')
+        expect(self.page.locator('.position-wp-table tr').nth(1).locator('td')).to_have_text('42.0%')
 
     def test_zero_and_missing_opening_never_invent_a_measurement(self):
         self.open_summary()
@@ -72,8 +73,8 @@ class InitialDrawBrowserTest(unittest.TestCase):
         marker = self.page.locator('.win-history-opening')
         expect(marker).to_have_attribute('data-estimate', 'missing')
         marker.focus()
-        expect(self.page.locator('.win-history-inspector')).to_contain_text('Opening rack is missing.')
-        expect(self.page.locator('[data-move="after-opening"] strong')).to_have_text('—')
+        expect(self.page.locator('.win-history-inspector .position-wp-table td')).to_have_text(['—', '—'])
+        expect(self.page.locator('.position-wp-table tr').nth(1).locator('td')).to_have_text('—')
 
     def test_early_and_retryable_states(self):
         self.open_summary()
@@ -82,13 +83,13 @@ class InitialDrawBrowserTest(unittest.TestCase):
         marker = self.page.locator('.win-history-opening')
         expect(marker).to_have_attribute('data-estimate', 'early')
         marker.focus()
-        expect(self.page.locator('.win-history-inspector')).to_contain_text('Early estimate')
+        expect(self.page.locator('.position-wp-table tr').nth(1).locator('td')).to_have_text('58.0% · Early')
         expect(self.page.locator('.overview-status')).to_contain_text('3 early draw estimates')
         self.set_opening(retryable=True, reason='Opening estimate needs a retry.')
         expect(marker).to_have_attribute('data-estimate', 'missing')
         marker.focus()
-        expect(self.page.locator('[data-move="after-opening"] strong')).to_have_text('—')
-        expect(self.page.locator('.win-history-inspector')).to_contain_text('needs a retry')
+        expect(self.page.locator('.position-wp-table tr').nth(1).locator('td')).to_have_text('—')
+        expect(self.page.locator('.win-history-inspector .position-wp-table td')).to_have_text(['—', '—'])
 
     def test_opening_keyboard_selection_and_refresh_keep_details_and_focus(self):
         self.open_summary()
