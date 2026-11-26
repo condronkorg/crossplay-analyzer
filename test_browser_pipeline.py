@@ -490,7 +490,7 @@ class BrowserPipelineTest(unittest.TestCase):
                 self.assertEqual(page_errors, [])
                 page.close()
 
-    def test_standalone_8_to_21_bag_one_worker_profile_uses_80_samples(self):
+    def test_standalone_8_to_21_bag_uses_the_device_full_profile(self):
         grid=[list(row) for row in endgame.EndgameSimulationTests.GRID]
         removed=0
         for row in grid:
@@ -512,15 +512,16 @@ class BrowserPipelineTest(unittest.TestCase):
                   if(entry==='manual.html')buildJSON=()=>data;
                   else{lastParsed=data;renderResult(data);}
                 }""",{'entry':entry,'grid':grid})
+                expected=page.evaluate('CrossplayBagEmptying.fullIterations(21)')
                 page.locator('#kibitzBtn').click()
                 expect(page.locator('#engineStatus')).to_have_text(re.compile(r'^Found '),timeout=120_000)
                 samples=page.locator('#movesContainer td[data-samples]').evaluate_all('cells=>cells.map(c=>c.dataset.samples)')
                 self.assertTrue(samples)
-                self.assertTrue(all(n=='80' for n in samples))
+                self.assertTrue(all(n==str(expected) for n in samples))
                 expect(page.locator('#movesContainer')).to_contain_text('more sampling uncertainty')
                 requests=page.evaluate('workerTrace.requests')
                 plan=next(r for r in requests if r['type']=='planReviewSimulation')
-                self.assertEqual(plan['payload']['iterations'],80)
+                self.assertEqual(plan['payload']['iterations'],expected)
                 page.close()
 
     def test_standalone_terminal_analysis_reports_selected_coverage(self):

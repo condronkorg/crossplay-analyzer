@@ -668,8 +668,8 @@ class BackgroundAnalysisTest(unittest.TestCase):
             self.assertEqual(caught.exception.status, 400)
 
     def test_device_profiles_accept_only_supported_full_sample_counts(self):
-        for bag, allowed in ((0,(277,)),(5,(192,277)),(21,(80,128)),(22,(277,))):
-            for samples in (64,80,128,192,277):
+        for bag, allowed in ((0,(277,)),(5,(192,277)),(21,(96,192)),(22,(277,))):
+            for samples in (64,80,96,128,192,277):
                 key,result=review_analysis_entry()
                 identity=json.loads(key)
                 identity[6]=result['bagCount']=bag
@@ -689,21 +689,21 @@ class BackgroundAnalysisTest(unittest.TestCase):
                     with self.subTest(bag=bag,samples=samples),self.assertRaises(CrossplayError):
                         Handler.validate_review_result(identity,result)
 
-    def test_full_late_move_and_draw_require_128_samples(self):
+    def test_full_late_move_and_draw_require_supported_96_sample_profile(self):
         for factory, sample_index, validate in ((review_analysis_entry,9,Handler.validate_review_result),
                                                 (draw_analysis_entry,8,Handler.validate_draw_result)):
             key, result = factory()
             identity=json.loads(key)
             identity[6]=result['bagCount']=21
-            identity[sample_index]=128
+            identity[sample_index]=96
             identity.append('crossplay-endgame-v2')
-            result.update(iterationsRequested=128,iterationsCompleted=128,
+            result.update(iterationsRequested=96,iterationsCompleted=96,
                           endgamePolicy='crossplay-endgame-v2',playToEnd=True,
                           simulationMode='play-to-end',plies=-1,winModel='terminal')
             if 'moves' in result:
-                result['totalPlayaheads']=128*len(result['moves'])
+                result['totalPlayaheads']=96*len(result['moves'])
                 for move in result['moves']:
-                    move.update(samples=128,terminalSamples=128)
+                    move.update(samples=96,terminalSamples=96)
             if factory is draw_analysis_entry:
                 available=Counter(TILE_COUNTS)
                 available.subtract(identity[3])
@@ -713,7 +713,7 @@ class BackgroundAnalysisTest(unittest.TestCase):
                 identity[13]=result['rackAfter']=identity[3]
                 result.update(drawCount=0,afterWin=result['beforeWin'],selected={'action':'pass','position':'','tiles':''})
             validate(identity,result)
-            for changes in ({'iterationsCompleted':127},{'iterationsRequested':277}):
+            for changes in ({'iterationsCompleted':95},{'iterationsRequested':277}):
                 with self.subTest(factory=factory.__name__,changes=changes), self.assertRaises(CrossplayError):
                     validate(identity,{**result,**changes})
             identity[sample_index]=277
@@ -730,17 +730,17 @@ class BackgroundAnalysisTest(unittest.TestCase):
                     'analysis_version': ANALYSIS_VERSION, 'turn_analyses': {invalid: result}})
         parts = json.loads(key)
         parts[6] = 21
-        parts[9] = 128
+        parts[9] = 192
         parts.append('crossplay-endgame-v2')
         key = json.dumps(parts)
         result.update(bagCount=21, playToEnd=True, simulationMode='play-to-end', plies=-1, winModel='terminal',
-                      endgamePolicy='crossplay-endgame-v2', iterationsRequested=128, iterationsCompleted=128, totalPlayaheads=256)
+                      endgamePolicy='crossplay-endgame-v2', iterationsRequested=192, iterationsCompleted=192, totalPlayaheads=384)
         for move in result['moves']:
-            move['samples'] = 128
+            move['samples'] = 192
         with self.assertRaises(CrossplayError):
             self.handler.validate_game_analysis({'analysis_version': ANALYSIS_VERSION, 'turn_analyses': {key: result}})
         for move in result['moves']:
-            move['terminalSamples'] = 128
+            move['terminalSamples'] = 192
         self.handler.validate_game_analysis({'analysis_version': ANALYSIS_VERSION, 'turn_analyses': {key: result}})
 
     def test_recorded_move_must_match_selected_physical_tiles_including_blanks(self):

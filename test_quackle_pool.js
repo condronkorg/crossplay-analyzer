@@ -754,3 +754,23 @@ test('128sample terminal draws reuse the matching128sample move baseline', async
     assert.equal(result.beforeWin,.75);
   }finally{pool.stop();await job.catch(()=>{});}
 });
+
+
+test('96sample terminal draws reuse the matching full move baseline', async () => {
+ const {pool,log}=makePool(1);
+ const job=pool.run('simulateDraw',{...drawPayload,iterations:96,beforeWin:{win:.75,samples:96,seed:33}});
+ try{
+   await settle();
+   for(let offset=0;offset<96;offset+=16){
+     assert.equal(log.requests.length,1);
+     assert.equal(log.requests[0].payload.offset,offset);
+     assert.equal(log.requests[0].payload.knownBeforeWin,.75);
+     reply(log,log.requests[0],drawBatch(log.requests[0]));
+     await settle();
+   }
+   const result=await job;
+   assert.equal(result.iterationsCompleted,96);
+   assert.equal(result.iterationsRequested,96);
+   assert.equal(result.beforeWin,.75);
+ }finally{pool.stop();await job.catch(()=>{});}
+});

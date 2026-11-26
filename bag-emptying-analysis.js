@@ -11,10 +11,10 @@
   function fullIterations(bag, configured = 277, workers = browserWorkerBudget()) {
     if (configured !== 277 || !Number.isInteger(bag) || bag < 1 || bag > 21) return configured;
     if (bag <= 7) return workers <= 2 ? 192 : 277;
-    return workers <= 1 ? 80 : 128;
+    return workers <= 1 ? 96 : 192;
   }
   function precisionNote(result) {
-    return [80, 128, 192].includes(result?.iterationsCompleted) && result.bagCount >= 1 && result.bagCount <= 21
+    return [96, 192].includes(result?.iterationsCompleted) && result.bagCount >= 1 && result.bagCount <= 21
       ? 'Late-game estimates use ' + result.iterationsCompleted + ' samples per move. Small differences have more sampling uncertainty.' : '';
   }
   function create(plan) {

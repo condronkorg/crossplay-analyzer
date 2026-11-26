@@ -234,11 +234,11 @@ test('v2 terminal policy rejects v1 cached results without changing paired world
 });
 
 
-test('full late-game profiles use128 paired samples without changing legacy seeds', () => {
+test('full late-game profiles select paired sample counts without changing legacy seeds', () => {
   const Bag=require('./bag-emptying-analysis.js');
   for(const bag of [0,7,8,21,22,86]){
     const t={...turn,bag_count:bag,final_turns_remaining:bag===0?2:0};
-    const c=new AnalysisCache(), n=bag>=8&&bag<=21?128:277;
+    const c=new AnalysisCache(), n=bag>=8&&bag<=21?192:277;
     assert.equal(Bag.fullIterations(bag),n);
     assert.equal(JSON.parse(c.key(t,'review'))[9],n);
     assert.equal(JSON.parse(c.key(t,'draw'))[8],n);
@@ -264,7 +264,7 @@ test('device worker budgets select matching full profiles and preserve paired wo
     assert.equal(vm.runInContext('QuackleWorkerPool.browserSize()',context),workers);
     for(const bag of [0,1,7,8,21,22]){
       context.t={...turn,bag_count:bag,final_turns_remaining:bag===0?2:0};
-      const n=bag>=1&&bag<=7?(workers<=2?192:277):bag>=8&&bag<=21?(workers===1?80:128):277;
+      const n=bag>=1&&bag<=7?(workers<=2?192:277):bag>=8&&bag<=21?(workers===1?96:192):277;
       const identity=JSON.parse(vm.runInContext('new AnalysisCache().key(t,"review")',context));
       assert.equal(identity[9],n,workers+':'+bag);
       assert.equal(JSON.parse(vm.runInContext('new AnalysisCache().key(t,"draw")',context))[8],n);

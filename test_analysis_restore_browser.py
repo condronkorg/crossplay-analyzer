@@ -81,10 +81,17 @@ class AnalysisRestoreBrowserTest(unittest.TestCase):
             for (const tile of turn.rack + refill.drawn) available.splice(available.indexOf(tile),1);
             const boardTiles=available.slice(0,boardCount).map(tile=>tile==='?'?'a':tile).join('');
             turn.grid=turn.grid.map((row,i)=>i<5?boardTiles.slice(i*15,(i+1)*15).padEnd(15,'.'):row);
+            const samples=CrossplayBagEmptying.fullIterations(21);
+            move.iterationsRequested=move.iterationsCompleted=samples;
+            move.totalPlayaheads=samples*move.moves.length;
+            if(draw)draw.iterationsRequested=draw.iterationsCompleted=samples;
+            const point=review.stored_analysis.move_quality.points.find(value=>value.turnIndex===index);
+            point.samples=samples;
+            if(point.draw)point.draw.samples=samples;
             const seed = cache.seed(turn);
             const terminal = {seed, bagCount:21, plies:-1, playToEnd:true,
               winModel:'terminal', simulationMode:'play-to-end', endgamePolicy:'crossplay-endgame-v2'};
-            for (const candidate of [...move.moves, move.selected, move.best]) candidate.terminalSamples = 277;
+            for (const candidate of [...move.moves, move.selected, move.best]) candidate.samples=candidate.terminalSamples=samples;
             review.stored_analysis.turn_analyses[cache.key(turn, 'review')] = Object.assign(move, terminal);
             if (draw) review.stored_analysis.turn_analyses[cache.key(turn, 'draw')] = Object.assign(draw, terminal);
             review.stored_analysis.move_quality.points.find(point => point.turnIndex===index).endgamePolicy = terminal.endgamePolicy;
@@ -357,7 +364,8 @@ class AnalysisRestoreBrowserTest(unittest.TestCase):
         retry.click()
         expect(status).not_to_contain_text('Synthetic saved terminal draw timeout')
         expect(retry).to_be_hidden()
-        self.assertEqual(self.page.evaluate('restoreCalls'), [{'type': 'simulateDraw', 'iterations': 277}])
+        self.assertEqual(self.page.evaluate('restoreCalls'), [{'type': 'simulateDraw',
+                         'iterations': self.page.evaluate('CrossplayBagEmptying.fullIterations(21)')}])
         self.page.wait_for_function("contextFor(currentReview).states.every(state=>state==='done')")
 
     def test_terminal_draw_retry_uses_only_matching_valid_move_baseline(self):
@@ -397,7 +405,7 @@ class AnalysisRestoreBrowserTest(unittest.TestCase):
         self.assertEqual(result['failure'].get('executionPolicy'), 'bounded-terminal-v1')
         self.assertTrue(result['preserved'])
         self.assertEqual(len(result['payloads']), 4)
-        for payload, samples in zip(result['payloads'], [277, 277, None, 64]):
+        for payload, samples in zip(result['payloads'], [result['move']['iterationsCompleted'], result['move']['iterationsCompleted'], None, 64]):
             if samples is None:
                 self.assertNotIn('beforeWin', payload)
             else:

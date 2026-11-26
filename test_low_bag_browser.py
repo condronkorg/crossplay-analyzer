@@ -27,24 +27,27 @@ class LowBagBrowserTest(unittest.TestCase):
         }""")
         self.assertIn('Compared 25 selected moves, including 10 of 352 legal bag-emptying placements.', text)
 
-    def test_128_sample_full_profile_is_final_and_discloses_precision(self):
+    def test_late_full_profile_is_final_and_discloses_precision(self):
         self.open_game()
         result=self.page.evaluate("""() => {
-          Object.defineProperty(navigator,'hardwareConcurrency',{value:4,configurable:true});
+          Object.defineProperty(navigator,'hardwareConcurrency',{value:2,configurable:true});
           const turn={...currentReview.turns[0],bag_count:21};
           const move={action:'pass',position:'',tiles:'',score:0,leave:turn.rack,
             equity:0,staticEquity:0,win:.5};
+          const samples=CrossplayBagEmptying.fullIterations(21);
           const raw={selected:move,best:move,bestStaticEquity:0,moves:[move],
-            iterationsCompleted:128,bagCount:21};
+            iterationsCompleted:samples,bagCount:21};
           const point=qualityPointFromResult(0,turn,raw);
           const draw=drawPoint({...raw,beforeWin:.5,afterWin:.5,drawCount:0,rackAfter:turn.rack});
-          return{point,draw,text:makeTurnCoach(turn,point).textContent};
+          return{point,draw,samples,text:makeTurnCoach(turn,point).textContent};
         }""")
         self.assertFalse(result['point']['provisional'])
         self.assertFalse(result['draw']['provisional'])
-        self.assertEqual(result['point']['samples'],128)
+        self.assertEqual(result['point']['samples'],result['samples'])
+        self.assertGreater(result['samples'],64)
+        self.assertLess(result['samples'],277)
         self.assertIn('Full estimate',result['text'])
-        self.assertIn('128 samples per move',result['text'])
+        self.assertIn(f"{result['samples']} samples per move",result['text'])
         self.assertIn('more sampling uncertainty',result['text'])
 
     def test_device_profile_restore_rebuilds_equal_win_summary_with_actual_samples(self):

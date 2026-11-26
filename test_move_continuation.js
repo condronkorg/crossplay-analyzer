@@ -191,12 +191,12 @@ test('low-bag continuation swaps preserve all tiles and reject overdraws', () =>
 });
 
 
-test('continuation chooses the128 full profile only for8to21 bag tiles', async () => {
+test('continuation chooses the192 full profile only for8to21 bag tiles', async () => {
   const position=play(start(turn,'AEINRST',123),move);
   position.bag=position.bag.slice(0,21);
   const result=await analyze(position,async(type,payload)=>{
-    assert.equal(payload.iterations,128);
+    assert.equal(payload.iterations,192);
     return simulated(payload);
   });
-  assert.equal(result.iterationsCompleted,128);
+  assert.equal(result.iterationsCompleted,192);
 });

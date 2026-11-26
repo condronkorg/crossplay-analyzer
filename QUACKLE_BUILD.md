@@ -234,7 +234,7 @@ The final, preempty, and maximum-score caches use bounded LRU eviction with the 
 Full analysis selects a fixed paired-sample profile from the starting bag and
 existing browser worker budget. With1–7 bag tiles, three-worker devices use277
 samples and one- or two-worker devices use192. With8–21 bag tiles, one-worker
-devices use80 and two- or three-worker devices use128. Empty bags and bags above21
+devices use96 and two- or three-worker devices use192. Empty bags and bags above21
 retain277. Previews retain64 on all devices. Every chosen move and its draw
 comparison uses the actual profile count and must reach the official terminal
 state in every terminal trial. A smaller full result is complete for its

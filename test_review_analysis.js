@@ -578,7 +578,7 @@ test('opening work respects pause and cancelled work cannot complete a review', 
 });
 
 
-test('late full result defaults to128 while explicit diagnostic277 remains supported', () => {
+test('late full result defaults to192 while explicit diagnostic277 remains supported', () => {
   const {validResult}=require('./review-analysis.js');
   const turn={grid:Array(15).fill('.'.repeat(15)),rack:'AEIRST?',action:'PASS 0',bag_count:21,final_turns_remaining:0};
   const resultFor=n=>{const move={action:'pass',position:'',tiles:'',score:0,equity:0,staticEquity:0,
@@ -586,9 +586,9 @@ test('late full result defaults to128 while explicit diagnostic277 remains suppo
     winModel:'terminal',endgamePolicy:'crossplay-endgame-v2',bagCount:21,finalTurnsRemaining:0,
     samplingVersion:'paired-review-v1',seed:42,iterationsRequested:n,iterationsCompleted:n,
     candidateCount:1,totalPlayaheads:n,selected:move,best:move,moves:[move],staticMoves:[move],bestStaticEquity:0};};
-  assert.equal(validResult(resultFor(128),turn,42),true);
+  assert.equal(validResult(resultFor(192),turn,42),true);
   assert.equal(validResult(resultFor(277),turn,42),false);
   assert.equal(validResult(resultFor(277),turn,42,277),true);
-  const incomplete=resultFor(128);incomplete.moves[0].terminalSamples=127;
+  const incomplete=resultFor(192);incomplete.moves[0].terminalSamples=191;
   assert.equal(validResult(incomplete,turn,42),false);
 });
