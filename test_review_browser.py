@@ -897,6 +897,7 @@ class ReviewBrowserTest(unittest.TestCase):
         self.open_statistics()
         self.page.get_by_role('button', name='Analyze move quality', exact=True).click()
         expect(self.page.locator('.quality-panel .trend-status')).to_contain_text('Your review is ready')
+        self.page.evaluate('flushAnalysisSave()')
         completed = [snapshot for snapshot in saved if 'move_quality' in snapshot]
         self.assertTrue(completed)
         points = completed[-1]['move_quality']['points']

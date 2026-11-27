@@ -549,8 +549,22 @@ class GameOverviewTest(unittest.TestCase):
         self.assertGreater(inspector.bounding_box()['y'], visual.bounding_box()['y'] + visual.bounding_box()['height'])
         heading = inspector.locator('.win-history-inspector-head').bounding_box()
         comparison = inspector.locator('.win-history-comparison').bounding_box()
-        self.assertGreater(comparison['x'], heading['x'] + heading['width'])
-        self.assertAlmostEqual(comparison['y'], heading['y'], delta=1)
+        self.assertAlmostEqual(comparison['x'], heading['x'], delta=1)
+        self.assertGreaterEqual(comparison['y'], heading['y'] + heading['height'])
+        table_layout = inspector.evaluate('''node => {
+          const style = getComputedStyle(node), comparison = node.querySelector('.position-wp-comparison');
+          const table = comparison.querySelector('.position-wp-table');
+          return {contentWidth: node.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight),
+            comparisonWidth: comparison.getBoundingClientRect().width, tableWidth: table.getBoundingClientRect().width,
+            values: [...table.querySelectorAll('td')].filter(cell => /[0-9]/.test(cell.textContent)).map(cell => {
+              const range = document.createRange(); range.selectNodeContents(cell);
+              return {lines: range.getClientRects().length, fits: cell.scrollWidth <= cell.clientWidth + 1};
+            })};
+        }''')
+        self.assertAlmostEqual(table_layout['comparisonWidth'], table_layout['contentWidth'], delta=1)
+        self.assertAlmostEqual(table_layout['tableWidth'], table_layout['comparisonWidth'], delta=1)
+        self.assertTrue(table_layout['values'])
+        self.assertTrue(all(value['lines'] == 1 and value['fits'] for value in table_layout['values']))
         self.assertTrue(self.page.evaluate('document.documentElement.scrollWidth <= innerWidth'))
 
     def test_background_updates_keep_view_and_keyboard_focus(self):

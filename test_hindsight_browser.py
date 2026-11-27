@@ -67,12 +67,15 @@ class HindsightBrowserTest(unittest.TestCase):
         self.assertEqual(self.page.evaluate('knownStateCalls.length'),calls)
         for width in (1366,390):
             self.page.set_viewport_size({'width':width,'height':900})
+            self.page.wait_for_function("Math.abs(document.querySelector('.win-history svg').viewBox.baseVal.width-document.querySelector('.win-history-scroll').clientWidth)<=1")
             self.page.locator('[data-chart-control="turn"]').select_option('0')
             expect(self.page.locator('.win-history-inspector')).to_contain_text('Position WP · Both racks')
             expect(self.page.locator('.win-history-inspector')).to_contain_text('30.0 pp')
             expect(self.page.locator('.position-wp-table')).to_contain_text('100.0%')
             self.assertTrue(self.page.evaluate('document.documentElement.scrollWidth<=innerWidth'))
+        self.page.mouse.move(0,0)
         self.page.evaluate("boardView='after';reviewChartPins.delete(currentReview);renderReview()")
+        self.page.wait_for_function("Math.abs(document.querySelector('.win-history svg').viewBox.baseVal.width-document.querySelector('.win-history-scroll').clientWidth)<=1")
         self.page.get_by_role('button',name='Show before move',exact=True).click()
         expect(self.page.locator('.win-bar')).to_have_attribute('aria-label', __import__('re').compile('Position WP.*100.0%'))
 
