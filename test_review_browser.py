@@ -16,6 +16,8 @@ from urllib.parse import urlsplit
 
 from playwright.sync_api import Error, expect, sync_playwright
 
+from test_hindsight_helpers import install_hindsight_fixtures
+
 from tools.mock_nyt import EMPTY_COOKIE, EXPIRED_COOKIE, MOCK_COOKIE, OUTAGE_COOKIE
 from tools.test_support import mock_server, trace_quackle_workers
 
@@ -59,6 +61,7 @@ class ReviewBrowserTest(unittest.TestCase):
         self.page.on('pageerror', lambda error: self.page_errors.append(str(error)))
         self.page.goto(self.base_url, wait_until='domcontentloaded')
         expect(self.page.locator('#connectionState')).to_contain_text('Not connected')
+        install_hindsight_fixtures(self.page)
         # Display/custom-move tests control computation explicitly. Automation
         # tests below restore the production entry point.
         self.page.evaluate('window.automaticAnalysis = startBackgroundAnalysis; startBackgroundAnalysis = () => {};'
@@ -531,7 +534,7 @@ class ReviewBrowserTest(unittest.TestCase):
         }''')
         expect(rows.first.locator('button')).to_be_focused()
         expect(self.page.locator('.win-you strong')).to_have_text('70.0%')
-        expect(self.page.locator('.win-estimate-state')).to_have_text('Full estimate')
+        expect(self.page.locator('.win-estimate-state')).to_have_text('Move analysis')
         # Native buttons also support keyboard activation for passes/exchanges.
         for index, label in [(2, 'Pass'), (3, 'Exchange E')]:
             rows.nth(index).locator('button').focus()
@@ -658,6 +661,17 @@ class ReviewBrowserTest(unittest.TestCase):
         worker = r"""
           self.onmessage = ({data: {id, type, payload: p}}) => {
             if (type === 'init') return self.postMessage({id, result: {}});
+            if (type === 'evaluateKnownStateBatch') {
+              const s=p.state, pending=s.pendingDraw;
+              const settled=s.bagCount-(pending?.count||0)+(pending?.returnedTiles.length||0), end=settled<=21;
+              const result={informationModel:'hindsight-state-v1',policyVersion:'hindsight-state-v1/crossplay-endgame-v3',
+                simulated:true,error:'',seed:p.seed,iterationsRequested:p.iterations,iterationsCompleted:p.count,
+                offset:p.offset,samples:p.count,completed:p.count,winSum:p.count*.5,win:.5,
+                terminalSamples:end?p.count:0,bagCount:s.bagCount,settledBagCount:settled,
+                finalTurnsRemaining:s.finalTurnsRemaining,plies:end?-1:2,playToEnd:end,
+                simulationMode:end?'play-to-end':'2-ply'};
+              return setTimeout(()=>self.postMessage({id,result}),DELAY);
+            }
             if (type === 'simulateOpening') {
               const result = {simulated: true, samplingVersion: 'initial-deal-v1', policy: 'static-best-v1',
                 firstRack: p.firstRack, secondRack: p.secondRack, seed: p.seed,
@@ -713,7 +727,7 @@ class ReviewBrowserTest(unittest.TestCase):
         self.page.route('**/quackle-worker.js', lambda route: route.fulfill(
             content_type='application/javascript', body=worker))
 
-    def test_preview_updates_visible_estimate_then_full_result_replaces_it(self):
+    def test_grade_preview_and_full_result_do_not_supply_position_wp(self):
         self.install_review_worker()
         self.open_game()
         result = self.page.evaluate("""async () => {
@@ -737,7 +751,7 @@ class ReviewBrowserTest(unittest.TestCase):
         }""")
         self.assertTrue(result['early']['provisional'])
         self.assertEqual(result['early']['samples'], 64)
-        self.assertEqual(result['earlyLabel'], 'Early estimate')
+        self.assertEqual(result['earlyLabel'], 'Waiting for estimate')
         self.assertFalse(result['full']['provisional'])
         self.assertEqual(result['full']['samples'], 277)
         self.assertEqual([(call['iterations'], call['count']) for call in result['calls']
@@ -752,7 +766,7 @@ class ReviewBrowserTest(unittest.TestCase):
         self.assertTrue(result['complete']['complete'])
         self.assertTrue(result['resumed'])
         self.assertCountEqual(result['keys'], ['preview', 'review', 'draw-preview', 'draw'])
-        expect(self.page.locator('.win-estimate-state')).to_have_text('Full estimate')
+        expect(self.page.locator('.win-estimate-state')).to_have_text('Waiting for estimate')
 
     def test_late_preview_cannot_replace_a_full_result(self):
         self.install_review_worker(delay='p.iterations === 64 ? 250 : 0')
@@ -765,7 +779,7 @@ class ReviewBrowserTest(unittest.TestCase):
         self.assertEqual(len(result['points']), 1)
         self.assertEqual(result['points'][0]['samples'], 277)
         self.assertFalse(result['points'][0]['provisional'])
-        self.assertFalse(result['trend'][0]['provisional'])
+        self.assertIsNone(result['trend'][0]['mine'])
 
     def test_saved_previews_resume_full_analysis_without_repeating_the_early_pass(self):
         self.install_review_worker()
@@ -785,7 +799,7 @@ class ReviewBrowserTest(unittest.TestCase):
         self.page.get_by_role('button', name='Review game against Demo Cedar').click()
         self.start_review()
         expect(self.page.locator('.quality-panel .trend-status')).to_contain_text('Your review is ready')
-        self.assertEqual(self.page.evaluate("resumeCalls.filter(call => call.type !== 'simulateOpening').map(call => call.iterations)"), [277] * 10)
+        self.assertEqual(self.page.evaluate("resumeCalls.filter(call => !['simulateOpening','evaluateKnownState'].includes(call.type)).map(call => call.iterations)"), [277] * 10)
         self.assertEqual(self.page.evaluate("resumeCalls.filter(call => call.type === 'simulateOpening').map(call => call.iterations)"), [64, 277])
         self.assertTrue(self.page.evaluate('moveQualityResults.points.every(point => !point.provisional && point.samples === 277)'))
 
@@ -807,15 +821,17 @@ class ReviewBrowserTest(unittest.TestCase):
           release(); await pending;
           await analyzeReviewTurn(context, 0, 'preview');
           return {quality: context.quality.state, trend: context.trend.state,
-            final: context.trend.points.at(-1).actual, sameMessage: context.quality.message === message};
+            final: Boolean(document.querySelector('.win-history-point[data-estimate="final"]')), sameMessage: context.quality.message === message};
         }""")
-        self.assertEqual(result, {'quality': 'done', 'trend': 'done', 'final': True, 'sameMessage': True})
+        self.assertEqual(result, {'quality': 'done', 'trend': 'running', 'final': True, 'sameMessage': True})
 
     def test_visible_turn_preview_updates_grade_without_waiting_for_background(self):
         self.install_review_worker()
         self.open_game()
         self.page.evaluate("prepareViewedTurn = window.automaticViewedTurn; currentTurnIndex = 0; boardView = 'before'; renderReview()")
-        expect(self.page.locator('.win-estimate-state')).to_have_text('Early estimate')
+        expect(self.page.locator('.turn-meta .quality-chip')).to_be_visible()
+        self.page.wait_for_function('moveQualityResults.points[0]?.samples === 64')
+        expect(self.page.locator('.win-estimate-state')).to_contain_text('Position WP · Both racks')
         self.assertEqual(self.page.evaluate('moveQualityResults.points[0].samples'), 64)
         self.assertEqual(self.page.evaluate('reviewQueue.running'), 0)
 
@@ -840,7 +856,7 @@ class ReviewBrowserTest(unittest.TestCase):
             point: context.quality.points[0], retry};
         }""")
         self.assertEqual(result['quality'], 'error')
-        self.assertEqual(result['trend'], 'error')
+        self.assertEqual(result['trend'], 'running')
         self.assertEqual(result['point']['category'], 'unrated')
         self.assertTrue(result['point']['retryable'])
         self.assertFalse(result['point']['provisional'])
@@ -881,6 +897,7 @@ class ReviewBrowserTest(unittest.TestCase):
         self.open_statistics()
         self.page.get_by_role('button', name='Analyze move quality', exact=True).click()
         expect(self.page.locator('.quality-panel .trend-status')).to_contain_text('Your review is ready')
+        self.page.evaluate('flushAnalysisSave()')
         completed = [snapshot for snapshot in saved if 'move_quality' in snapshot]
         self.assertTrue(completed)
         points = completed[-1]['move_quality']['points']
@@ -985,19 +1002,25 @@ class ReviewBrowserTest(unittest.TestCase):
             'action': 'exchange', 'position': '', 'tiles': 'AE?'}} for call in result['calls']))
         turn_point = next(point for point in result['trend'] if not point.get('actual'))
         self.assertEqual(turn_point['x'], 0)
-        self.assertEqual(turn_point['mine'], result['point']['playedWin'] * 100)
+        # No opponent rack was recorded in this one-turn fixture. The fair
+        # grade must recover without inventing a position probability.
+        self.assertIsNone(turn_point['mine'])
         self.page.get_by_role('button', name='Show before move', exact=True).click()
-        expect(self.page.locator('.win-estimate-state')).to_have_text('Full estimate')
-        expect(self.page.locator('.win-you strong')).to_have_text('50.0%')
+        expect(self.page.locator('.win-estimate-state')).to_have_text('Estimate unavailable')
+        expect(self.page.locator('.win-you strong')).to_have_text('—')
+        self.page.evaluate('runHindsightTimeline(contextFor(currentReview))')
         self.page.evaluate('flushAnalysisSave()')
+        position_summary = [snapshot['win_trend'] for snapshot in saved if 'win_trend' in snapshot][-1]
         completed = [snapshot for snapshot in saved if 'move_quality' in snapshot]
         self.assertTrue(completed, 'The repaired grade must be saved')
         self.assertEqual(completed[-1]['move_quality']['points'][0], result['point'])
         stored = {'version': completed[-1]['analysis_version'],
                   'move_quality': completed[-1]['move_quality'],
-                  'win_trend': completed[-1]['win_trend'],
+                  'win_trend': position_summary,
                   'turn_analyses': {key: value for snapshot in saved
                                     for key, value in snapshot['turn_analyses'].items()}}
+        self.page.wait_for_function("reviewQueue.contexts.size === 2 && reviewQueue.running === 0 && Array.from(reviewQueue.contexts.values()).every(c => c.states.every(s => ['done','error'].includes(s)) && !c.hindsightRunning && c.cache.pending.size === 0)", timeout=120_000)
+        self.page.evaluate('Promise.all(Array.from(reviewQueue.contexts.values(), c => flushAnalysisSave(c.review, c.cache)))')
         self.page.unroute('**/api/crossplay/games/mockgame01/review')
         self.use_saved_analysis(stored, **review_changes)
         self.page.evaluate('Promise.all(Array.from(reviewQueue.contexts.values(), context => flushAnalysisSave(context.review, context.cache)))')
@@ -1009,7 +1032,7 @@ class ReviewBrowserTest(unittest.TestCase):
         self.assertEqual(self.page.evaluate('moveQualityResults.points[0]'), result['point'])
         self.start_review()
         self.page.get_by_role('button', name='Show before move', exact=True).click()
-        expect(self.page.locator('.win-estimate-state')).to_have_text('Full estimate')
+        expect(self.page.locator('.win-estimate-state')).to_have_text('Estimate unavailable')
 
     def test_swap_placeholder_retries_saves_and_reuses_win_probability(self):
         self.install_review_worker()
@@ -1061,22 +1084,27 @@ class ReviewBrowserTest(unittest.TestCase):
             {'type': 'simulateReview', 'played': {'action': 'exchange', 'position': '', 'tiles': 'AE?'},
              'iterations': count} for count in (64, 64, 277)])
         self.page.get_by_role('button', name='Show before move', exact=True).click()
-        expect(self.page.locator('.win-estimate-state')).to_have_text('Full estimate')
-        expect(self.page.locator('.win-you strong')).to_have_text('50.0%')
+        expect(self.page.locator('.win-estimate-state')).to_have_text('Estimate unavailable')
+        expect(self.page.locator('.win-you strong')).to_have_text('—')
         expect(self.page.get_by_role('button', name='Retry this turn', exact=True)).to_be_hidden()
+        self.page.evaluate('runHindsightTimeline(contextFor(currentReview))')
         self.page.evaluate('flushAnalysisSave()')
+        position_summary = [snapshot['win_trend'] for snapshot in saved if 'win_trend' in snapshot][-1]
         completed = [snapshot for snapshot in saved if 'move_quality' in snapshot]
         self.assertTrue(completed)
         self.assertEqual(completed[-1]['move_quality']['points'][0]['playedMove']['tiles'], 'AE?')
         self.assertEqual(completed[-1]['move_quality']['points'][0]['playedWin'], 0.5)
-        self.assertEqual(completed[-1]['win_trend']['points'][0]['mine'], 50)
+        self.assertEqual(position_summary['informationModel'], 'hindsight-state-v1')
+        self.assertIsNone(position_summary['points'][0]['mine'])
         stored = {'version': completed[-1]['analysis_version'],
-                  'move_quality': completed[-1]['move_quality'], 'win_trend': completed[-1]['win_trend'],
+                  'move_quality': completed[-1]['move_quality'], 'win_trend': position_summary,
                   'turn_analyses': {key: value for snapshot in saved for key, value in snapshot['turn_analyses'].items()}}
         # Complete the other synthetic game so a full reload needs no engine calls.
         self.page.evaluate('window.automaticAnalysis()')
         self.page.wait_for_function('reviewQueue.running === 0')
         self.page.evaluate('Promise.all(Array.from(reviewQueue.contexts.values(), context => flushAnalysisSave(context.review, context.cache)))')
+        self.page.wait_for_function("reviewQueue.contexts.size === 2 && reviewQueue.running === 0 && Array.from(reviewQueue.contexts.values()).every(c => c.states.every(s => ['done','error'].includes(s)) && !c.hindsightRunning && c.cache.pending.size === 0)", timeout=120_000)
+        self.page.evaluate('Promise.all(Array.from(reviewQueue.contexts.values(), c => flushAnalysisSave(c.review, c.cache)))')
         self.page.unroute('**/api/crossplay/games/mockgame01/review')
         self.use_saved_analysis(stored, **review_changes)
         self.context.add_init_script("window.engineCalls=[]; const post=Worker.prototype.postMessage; Worker.prototype.postMessage=function(data,...rest){engineCalls.push(data.type); return post.call(this,data,...rest);};")
@@ -1086,7 +1114,7 @@ class ReviewBrowserTest(unittest.TestCase):
         self.assertEqual(self.page.evaluate('moveQualityResults.points[0]'), result['point'])
         self.start_review()
         self.page.get_by_role('button', name='Show before move', exact=True).click()
-        expect(self.page.locator('.win-you strong')).to_have_text('50.0%')
+        expect(self.page.locator('.win-you strong')).to_have_text('—')
 
     def test_loaded_unrated_exchange_recovers_when_tile_details_arrive(self):
         self.install_review_worker()
@@ -1172,7 +1200,7 @@ class ReviewBrowserTest(unittest.TestCase):
         self.assertEqual(result['point']['category'], 'unrated')
         self.assertNotIn('playedWin', result['point'])
         self.assertFalse(result['point']['retryable'])
-        self.assertEqual(result['recordedTrend'], [])
+        self.assertEqual(result['recordedTrend'], [{'x':0,'phase':'before-draw','mine':None,'unavailable':True}])
         self.assertFalse(any(call['type'] == 'simulateReview' for call in result['calls']))
         self.page.get_by_role('button', name='Show before move', exact=True).click()
         expect(self.page.locator('.win-estimate-state')).to_have_text('Estimate unavailable')
@@ -1286,6 +1314,8 @@ class ReviewBrowserTest(unittest.TestCase):
         self.page.get_by_role('button', name='Review game against Demo River').click()
         self.start_review()
         expect(self.page.locator('#engineStatus')).to_contain_text('277 simulations per move')
+        self.page.wait_for_function("reviewQueue.running === 0 && Array.from(reviewQueue.contexts.values()).every(c => !c.hindsightRunning && c.cache.pending.size === 0)", timeout=120_000)
+        self.page.evaluate('Promise.all(Array.from(reviewQueue.contexts.values(), c => flushAnalysisSave(c.review, c.cache)))')
         self.context.add_init_script("window.engineCalls=[]; const post=Worker.prototype.postMessage; Worker.prototype.postMessage=function(data,...rest){engineCalls.push(data.type); return post.call(this,data,...rest);};")
         self.page.goto(self.base_url)
         expect(self.page.locator('#backgroundStatus')).to_contain_text('2/2 games', timeout=15_000)
@@ -1367,7 +1397,7 @@ class ReviewBrowserTest(unittest.TestCase):
                          [{'index': index, 'iterations': 277, 'numMoves': 15} for index in range(4)])
         self.assertEqual(result['summary'], 'done')
 
-    def test_retry_turn_updates_the_grade_trend_and_saved_summary(self):
+    def test_retry_turn_saves_grade_without_completing_position_wp(self):
         self.install_review_worker()
         saved = []
         self.page.route('**/api/crossplay/games/mockgame01/analysis',
@@ -1397,7 +1427,9 @@ class ReviewBrowserTest(unittest.TestCase):
         self.assertEqual(self.page.evaluate('retryCalls'), 4)
         completed = [value for value in saved if 'move_quality' in value]
         self.assertEqual(completed[-1]['move_quality']['points'][0]['category'], 'blunder')
-        self.assertEqual(len(completed[-1]['win_trend']['points']), 11)
+        self.assertEqual(self.page.evaluate('trendResults.informationModel'), 'hindsight-state-v1')
+        self.assertEqual(self.page.evaluate('trendResults.state'), 'running')
+        self.assertFalse(any('win_trend' in value for value in saved))
 
     def test_navigation_during_turn_retry_saves_each_game_to_its_own_id(self):
         self.install_review_worker()
@@ -1452,8 +1484,10 @@ class ReviewBrowserTest(unittest.TestCase):
         self.page.get_by_role('button', name='Review game against Demo Cedar').click()
         self.start_review()
         expect(self.page.locator('.quality-panel .trend-status')).to_contain_text('Your review is ready')
-        self.assertEqual(self.page.evaluate("resumeCalls.filter(call => call.key.includes(':mockgame01:')).map(call => call.type)"), ['simulateReview'])
-        self.assertEqual(self.page.evaluate('Object.keys(positionCache.results).length'), 22)
+        self.assertEqual(self.page.evaluate("resumeCalls.filter(call => call.key.includes(':mockgame01:') && call.type !== 'evaluateKnownState').map(call => call.type)"), ['simulateReview'])
+        self.assertEqual(self.page.evaluate("Object.keys(positionCache.results).filter(key => JSON.parse(key)[0] !== 'hindsight-state-v1').length"), 22)
+        self.page.wait_for_function("!contextFor(currentReview).hindsightRunning")
+        self.assertGreater(self.page.evaluate("resumeCalls.filter(call => call.type === 'evaluateKnownState').length"), 0)
 
     def test_auth_failure_keeps_unsaved_results_and_account_reset_discards_old_work(self):
         self.install_review_worker(delay=100)
@@ -1507,7 +1541,14 @@ class ReviewBrowserTest(unittest.TestCase):
         self.assertEqual(self.page.evaluate('reviewQueue ? reviewQueue.contexts.size : 0'), 0)
         expect(self.page.locator('.turn-row')).to_have_count(0)
 
+    def test_automatic_analysis_with_test_worker_saves_each_summary_once(self):
+        self.install_review_worker()
+        self.assert_automatic_analysis_is_saved_and_reused()
+
     def test_automatic_analysis_with_bundled_quackle_is_saved_and_reused(self):
+        self.assert_automatic_analysis_is_saved_and_reused()
+
+    def assert_automatic_analysis_is_saved_and_reused(self):
         self.page.evaluate('startBackgroundAnalysis = window.automaticAnalysis; prepareViewedTurn = window.automaticViewedTurn; undefined')
         saved = []
 
@@ -1518,8 +1559,8 @@ class ReviewBrowserTest(unittest.TestCase):
         self.page.route('**/api/crossplay/games/mockgame01/analysis', save)
         self.open_game()
         expect(self.page.locator('.quality-panel .trend-status')).to_contain_text('Your review is ready', timeout=120_000)
-        expect(self.page.locator('#trendStatus')).to_contain_text('Win trend complete', timeout=120_000)
-        # Every recorded move has a full simulation, reused by details and trend.
+        expect(self.page.locator('#trendStatus')).to_contain_text('Position WP complete', timeout=120_000)
+        # Fair move grades and known-rack position estimates finish separately.
         expect(self.page.locator('#engineStatus')).to_contain_text('277 simulations per move', timeout=120_000)
         self.page.get_by_role('combobox', name='Select game turn').select_option('0')
         expect(self.page.locator('#engineStatus')).to_contain_text('277 simulations per move', timeout=120_000)
@@ -1527,7 +1568,19 @@ class ReviewBrowserTest(unittest.TestCase):
         expect(self.page.get_by_role('button', name='Retry this turn', exact=True)).to_be_hidden()
         identities = self.page.evaluate('Object.keys(positionCache.results).map(key => JSON.parse(key))')
         profiles = [(identity[0], identity[3] if identity[0] == 'quackle-opening-draw-v1' else identity[1])
-                    for identity in identities]
+                    for identity in identities if identity[0] != 'hindsight-state-v1']
+        expected_position_keys = self.page.evaluate('''() => {
+          const H=CrossplayHindsight, states=new Map();
+          for(let i=0;i<currentReview.turns.length;i++){
+            const turn=H.turnStates(currentReview,i);
+            for(const state of [turn.before,turn.move,turn.draw])
+              if(state && !(state.bagCount===0 && state.finalTurnsRemaining===0)) states.set(H.stateId(state),state);
+          }
+          return [...states.values()].flatMap(state=>[H.key(state,64),H.key(state,H.fullIterations(state))]);
+        }''')
+        self.assertTrue(expected_position_keys)
+        self.assertEqual(sorted(json.dumps(identity, separators=(',', ':')) for identity in identities
+                                if identity[0] == 'hindsight-state-v1'), sorted(set(expected_position_keys)))
         self.assertEqual({profile: profiles.count(profile) for profile in set(profiles)}, {
             ('quackle-review-v1', 'preview'): 6, ('quackle-review-v1', 'review'): 6,
             ('quackle-rack-draw-v1', 'draw-preview'): 4, ('quackle-rack-draw-v1', 'draw'): 4,

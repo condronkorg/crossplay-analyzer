@@ -207,6 +207,7 @@ def game_timeline(game, me):
         if bag < 0:
             raise ValueError('Tile counts do not add up')
         rack_after = rack_at(pid, index + 1)
+        opponent_rack = rack_at(other, index)
         turns.append({
             'index': index,
             'mine': pid == me,
@@ -214,6 +215,7 @@ def game_timeline(game, me):
             'swapped_tiles': play.get('swapped_tiles'),
             'score': play_score(play['action']),
             'rack': rack,
+            'opponent_rack': normalize_rack(opponent_rack) if isinstance(opponent_rack, str) else None,
             'rack_after': normalize_rack(rack_after) if isinstance(rack_after, str) else None,
             'grid': [''.join(row) for row in board],
             'mover_score': scores[pid],
@@ -245,6 +247,24 @@ def backfill_review_racks(review):
         # Do not skip an unknown next rack and substitute a later draw.
         rack = turn.get('rack')
         next_racks[mine] = normalize_rack(rack) if isinstance(rack, str) else None
+    # A hand stays fixed between that player's own refill and next move.
+    # Inspect the nearest record only: a later rack can include a later draw.
+    for index, turn in enumerate(turns):
+        mine = turn.get('mine')
+        if type(mine) is not bool:
+            continue
+        previous = next((item for item in reversed(review['turns'][:index])
+                         if type(item.get('mine')) is bool and item['mine'] != mine), None)
+        following = next((item for item in review['turns'][index + 1:]
+                          if type(item.get('mine')) is bool and item['mine'] != mine), None)
+        candidates = [turn.get('opponent_rack')]
+        if previous:
+            candidates.append(previous.get('rack_after'))
+        if following:
+            candidates.append(following.get('rack'))
+        known = [normalize_rack(value) for value in candidates if isinstance(value, str)]
+        turn['opponent_rack'] = (known[0] if known and
+                                 all(sorted(value) == sorted(known[0]) for value in known) else None)
     review['turns'] = turns
     return review
 
@@ -757,7 +777,16 @@ class Handler(SimpleHTTPRequestHandler):
                 raise CrossplayError('A failed analysis must include a retryable failure.', 400)
         quality_failed = bool(quality and quality.get('state') == 'error')
         trend_failed = bool(trend and trend.get('state') == 'error')
-        if quality_failed != trend_failed:
+        hindsight_trend = bool(trend and trend.get('informationModel') == 'hindsight-state-v1')
+        if trend and ('informationModel' in trend
+                      or trend.get('evaluation') == 'hindsight-state-v1/crossplay-endgame-v3'):
+            if (not hindsight_trend
+                    or trend.get('evaluation') != 'hindsight-state-v1/crossplay-endgame-v3'):
+                raise CrossplayError('Unsupported position timeline model.', 400)
+        # Legacy trend summaries share move-quality completion. Hindsight has
+        # its own work and retry state; either summary may also save alone.
+        if (quality is not None and trend is not None and not hindsight_trend
+                and quality_failed != trend_failed):
             raise CrossplayError('Failed move quality and win trend must be saved together.', 400)
         if trend_failed and any(not isinstance(point, dict) or point.get('actual') is True for point in trend['points']):
             raise CrossplayError('A failed win trend cannot contain a completion marker.', 400)
@@ -766,7 +795,7 @@ class Handler(SimpleHTTPRequestHandler):
         if quality and 'opening' in quality:
             Handler.validate_opening_quality(quality['opening'])
         entries = body.get('turn_analyses', {})
-        if not isinstance(entries, dict) or len(entries) > 512:
+        if not isinstance(entries, dict) or len(entries) > 1024:
             raise CrossplayError('Invalid turn analysis cache.', 400)
         for key, result in entries.items():
             if not isinstance(key, str) or len(key) > 2048 or not isinstance(result, dict) or result.get('error'):
@@ -775,6 +804,10 @@ class Handler(SimpleHTTPRequestHandler):
                 identity = json.loads(key)
             except ValueError:
                 identity = None
+            is_hindsight = isinstance(identity, list) and bool(identity) and identity[0] == 'hindsight-state-v1'
+            if is_hindsight or result.get('informationModel') == 'hindsight-state-v1':
+                Handler.validate_hindsight_result(identity, result)
+                continue
             is_opening = isinstance(identity, list) and bool(identity) and identity[0] == 'quackle-opening-draw-v1'
             if is_opening or result.get('samplingVersion') == 'initial-deal-v1':
                 Handler.validate_opening_result(identity, result)
@@ -795,6 +828,95 @@ class Handler(SimpleHTTPRequestHandler):
                         or result.get('bagCount') != identity[6]):
                     raise CrossplayError('Invalid sampled position endgame policy.', 400)
         return {field: body[field] for field in ('win_trend', 'move_quality', 'turn_analyses') if field in body}
+
+    @staticmethod
+    def validate_hindsight_result(identity, result):
+        def invalid():
+            raise CrossplayError('Invalid hindsight position result.', 400)
+
+        policy = 'hindsight-state-v1/crossplay-endgame-v3'
+        if (not isinstance(identity, list) or len(identity) != 4
+                or identity[0] != 'hindsight-state-v1' or identity[3] != policy
+                or type(identity[2]) is not int or not isinstance(identity[1], dict)):
+            invalid()
+        state, iterations = identity[1:3]
+        fields = ['grid', 'racks', 'scores', 'toMove', 'bagCount', 'finalTurnsRemaining']
+        if list(state) not in (fields, fields + ['pendingDraw']):
+            invalid()
+        grid, racks, scores = state['grid'], state['racks'], state['scores']
+        if (not isinstance(grid, list) or len(grid) != 15
+                or not all(isinstance(row, str) and re.fullmatch(r'[A-Za-z.]{15}', row) for row in grid)
+                or not isinstance(racks, list) or len(racks) != 2
+                or not all(isinstance(rack, str) and re.fullmatch(r'[A-Z?]{0,7}', rack)
+                           and rack == ''.join(sorted(rack)) for rack in racks)
+                or not isinstance(scores, list) or len(scores) != 2
+                or not all(type(value) is int and 0 <= value <= 100000 for value in scores)
+                or type(state['toMove']) is not int or state['toMove'] not in (0, 1)
+                or type(state['bagCount']) is not int or not 0 <= state['bagCount'] <= 100
+                or type(state['finalTurnsRemaining']) is not int):
+            invalid()
+        bag, final = state['bagCount'], state['finalTurnsRemaining']
+        if (bag > 0 and final != 0) or (bag == 0 and final not in (1, 2)):
+            invalid()
+        pending = state.get('pendingDraw')
+        returned, count = '', 0
+        if 'pendingDraw' in state:
+            if (not isinstance(pending, dict) or list(pending) != ['player', 'count', 'returnedTiles']
+                    or type(pending['player']) is not int or pending['player'] not in (0, 1)
+                    or pending['player'] == state['toMove'] or type(pending['count']) is not int
+                    or not 1 <= pending['count'] <= bag
+                    or not isinstance(pending['returnedTiles'], str)
+                    or not re.fullmatch(r'[A-Z?]{0,7}', pending['returnedTiles'])
+                    or pending['returnedTiles'] != ''.join(sorted(pending['returnedTiles']))):
+                invalid()
+            count, returned = pending['count'], pending['returnedTiles']
+            held = len(racks[pending['player']])
+            if (held + count > 7 or len(racks[1 - pending['player']]) != 7
+                    or (returned and len(returned) != count)
+                    or (not returned and count != min(7 - held, bag))):
+                invalid()
+        settled = bag - count + len(returned)
+        lengths = [len(rack) for rack in racks]
+        if pending:
+            lengths[pending['player']] += count
+        if settled > 0 and lengths != [7, 7]:
+            invalid()
+        remaining = Counter(TILE_COUNTS)
+        for row in grid:
+            remaining.subtract('?' if letter.islower() else letter for letter in row if letter != '.')
+        remaining.subtract(''.join(racks) + returned)
+        if any(value < 0 for value in remaining.values()) or sum(remaining.values()) != bag:
+            invalid()
+        allowed = (64, 277) if settled == 0 or settled > 21 else (64, 192) if settled <= 7 else (64, 128, 192)
+        if iterations not in allowed:
+            invalid()
+        seed = 2166136261
+        for char in json.dumps([identity[0], state, policy], separators=(',', ':')):
+            seed = ((seed ^ ord(char)) * 16777619) & 0xffffffff
+        terminal = settled <= 21
+        if (not isinstance(result, dict) or result.get('error') != ''
+                or result.get('simulated') is not True
+                or type(result.get('finalTurnsRemaining')) is not int
+                or result.get('finalTurnsRemaining') != state['finalTurnsRemaining']
+                or result.get('informationModel') != identity[0] or result.get('policyVersion') != policy
+                or result.get('seed') != seed or type(result.get('seed')) is not int
+                or result.get('plies') != (-1 if terminal else 2)
+                or type(result.get('plies')) is not int
+                or result.get('playToEnd') is not terminal
+                or result.get('simulationMode') != ('play-to-end' if terminal else '2-ply')
+                or result.get('bagCount') != bag or type(result.get('bagCount')) is not int
+                or result.get('settledBagCount') != settled or type(result.get('settledBagCount')) is not int
+                or any(type(result.get(field)) is not int or result[field] != iterations
+                       for field in ('samples', 'completed', 'iterationsRequested', 'iterationsCompleted'))
+                or type(result.get('offset')) is not int or result['offset'] != 0
+                or type(result.get('terminalSamples')) is not int
+                or not 0 <= result['terminalSamples'] <= iterations
+                or (terminal and result['terminalSamples'] != iterations)
+                or not Handler.finite_number(result.get('winSum'))
+                or not 0 <= result['winSum'] <= iterations
+                or not Handler.finite_number(result.get('win'))
+                or result['win'] != result['winSum'] / iterations):
+            invalid()
 
     @staticmethod
     def finite_number(value):

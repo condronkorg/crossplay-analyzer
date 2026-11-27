@@ -21,7 +21,7 @@ class WinBarBrowserTest(unittest.TestCase):
     def set_points(self, points):
         self.page.evaluate('''points => {
           moveQualityResults = {state: 'running', points};
-          trendResults = deriveWinTrend({review: currentReview, quality: moveQualityResults});
+          trendResults = syntheticPositionTrend(currentReview, moveQualityResults);
           renderReview();
         }''', points)
 
@@ -72,7 +72,7 @@ class WinBarBrowserTest(unittest.TestCase):
         statistics.locator('> summary').click()
         self.page.locator('.luck-breakdown > summary').click()
         settings.locator('> summary').click()
-        expect(settings.get_by_role('button', name='Start analysis', exact=True)).to_be_visible()
+        expect(settings.locator('.analysis-button')).to_be_visible()
         self.page.get_by_role('combobox', name='Select game turn').select_option('0')
         for disclosure in [statistics, settings, self.page.locator('.luck-breakdown')]:
             expect(disclosure).to_have_attribute('open', '')
@@ -133,7 +133,7 @@ class WinBarBrowserTest(unittest.TestCase):
         }''')
         self.assertAlmostEqual(proportions, 0.2, places=2)
         expect(panel.get_by_role('img')).to_have_attribute('aria-label',
-            'Full estimate. Turn 2 of 6 · Recorded move. You: 20.0%. Demo Cedar: 80.0%.')
+            'Position WP · Both racks. Turn 2 of 6 · Recorded move. You: 20.0%. Demo Cedar: 80.0%.')
 
     def test_missing_turn_has_no_fabricated_probability(self):
         self.open_game()
@@ -149,6 +149,7 @@ class WinBarBrowserTest(unittest.TestCase):
         self.page.get_by_role('button', name='Show before move').click()
         expect(panel.locator('.win-estimate-state')).to_have_text('Waiting for estimate')
         self.set_points([{'turnIndex': 5, 'category': 'unrated', 'reason': 'Missing rack'}])
+        self.page.evaluate("trendResults.turns[5].before = {mine:null,unavailable:true,reason:'Missing rack'}; refreshTrendPanel()")
         expect(panel.locator('.win-estimate-state')).to_have_text('Estimate unavailable')
         expect(panel.locator('.win-bar-white')).to_have_count(0)
 
@@ -157,17 +158,17 @@ class WinBarBrowserTest(unittest.TestCase):
         self.page.get_by_role('combobox', name='Select game turn').select_option('0')
         self.set_points([self.point(0, 0.625, provisional=True)])
         panel = self.page.locator('.trend-panel')
-        expect(panel.locator('.win-estimate-state')).to_have_text('Early estimate')
+        expect(panel.locator('.win-estimate-state')).to_have_text('Position WP · Both racks · Early')
         expect(panel.locator('.win-you strong')).to_have_text('62.5%')
         expect(self.page.locator('.turn-coach')).to_contain_text('64 samples')
         expect(self.page.locator('.quality-panel .estimate-level')).to_contain_text('Includes early estimates')
         self.page.evaluate('''() => {
           moveQualityResults.points[0] = {...moveQualityResults.points[0], playedWin: 0.7, provisional: false, samples: 277};
-          trendResults = deriveWinTrend({review: currentReview, quality: moveQualityResults});
+          trendResults = syntheticPositionTrend(currentReview, moveQualityResults);
           refreshTrendPanel();
           refreshMoveQualityPanel();
         }''')
-        expect(panel.locator('.win-estimate-state')).to_have_text('Full estimate')
+        expect(panel.locator('.win-estimate-state')).to_have_text('Position WP · Both racks')
         expect(panel.locator('.win-you strong')).to_have_text('70.0%')
         expect(self.page.locator('.turn-coach')).to_contain_text('277 samples')
         expect(self.page.locator('.quality-panel .estimate-level')).to_have_count(0)
@@ -194,7 +195,7 @@ class WinBarBrowserTest(unittest.TestCase):
                 expect(panel.locator('.win-opponent strong')).to_have_text(opponent)
                 expect(panel.locator('.win-turn-label')).to_contain_text('Best move preview')
                 expect(panel.get_by_role('img')).to_have_attribute('aria-label',
-                    f'Full estimate. Turn {int(index) + 1} of 6 · Best move preview. '
+                    f'Move analysis. Turn {int(index) + 1} of 6 · Best move preview. '
                     f'You: {best}. Demo Cedar: {opponent}.')
                 expect(self.page.locator(f'.win-history-point[data-turn-index="{index}"]')).to_have_attribute(
                     'aria-label', f'Turn {int(index) + 1}. {"You" if index == "0" else "Demo Cedar"} moved. You: {recorded}. Full estimate. Select to review.')
@@ -217,7 +218,7 @@ class WinBarBrowserTest(unittest.TestCase):
         self.page.get_by_role('combobox', name='Select game turn').select_option('0')
         self.page.get_by_role('button', name='Preview best move', exact=True).click()
         panel = self.page.locator('.trend-panel')
-        expect(panel.locator('.win-estimate-state')).to_have_text('Early estimate')
+        expect(panel.locator('.win-estimate-state')).to_have_text('Move analysis · Early')
         expect(panel.locator('.win-you strong')).to_have_text('80.0%')
         self.page.evaluate('''() => {
           Object.assign(moveQualityResults.points[0], {
@@ -227,7 +228,7 @@ class WinBarBrowserTest(unittest.TestCase):
           refreshMoveQualityPanel();
           refreshTrendPanel();
         }''')
-        expect(panel.locator('.win-estimate-state')).to_have_text('Full estimate')
+        expect(panel.locator('.win-estimate-state')).to_have_text('Move analysis')
         expect(panel.locator('.win-you strong')).to_have_text('90.0%')
         expect(self.page.locator('.board-preview-note')).to_contain_text('AT at 8G')
         expect(self.page.locator('.board .tile')).to_have_count(2)
@@ -263,7 +264,7 @@ class WinBarBrowserTest(unittest.TestCase):
                 expect(panel.locator('.win-you strong')).to_have_text(final_chance)
                 self.page.get_by_role('button', name='Preview best move', exact=True).click()
                 expect(self.page.locator('.board-preview-note')).to_be_visible()
-                expect(panel.locator('.win-estimate-state')).to_have_text('Full estimate')
+                expect(panel.locator('.win-estimate-state')).to_have_text('Move analysis')
                 expect(panel.locator('.win-you strong')).to_have_text('10.0%')
                 expect(panel.locator('.win-opponent strong')).to_have_text('90.0%')
                 expect(self.page.locator('.win-history-point[data-turn-index="5"]')).to_have_attribute('aria-pressed', 'true')
@@ -333,13 +334,13 @@ class WinBarBrowserTest(unittest.TestCase):
         expect(chart.locator('.win-history-grade')).to_have_text(['?', '??', '?'])
         expect(chart.locator('.win-history-grades')).to_contain_text('? Mistake')
         expect(chart.locator('.win-history-grades')).to_contain_text('?? Blunder')
-        first = chart.locator('[data-turn-index="0"]')
+        first = chart.locator('[data-turn-index="0"][data-phase="before-draw"]')
         expect(first).to_have_attribute('data-quality', 'mistake')
         expect(first).to_have_attribute('data-sweep', 'played')
         expect(first.locator('.win-history-sweep')).to_have_count(1)
         expect(first).to_have_accessible_name(
             'Turn 1. You moved. Sweep (bingo). Mistake: 7.0 percentage points lost. You: 70.0%. Full estimate. Select to review.')
-        early = chart.locator('[data-turn-index="1"]')
+        early = chart.locator('[data-turn-index="1"][data-phase="before-draw"]')
         expect(early).to_have_accessible_name(
             'Turn 2. Demo Cedar moved. Blunder: 12.0 percentage points lost (early grade). You: 20.0%. Early estimate. Select to review.')
         expect(early.locator('.win-history-grade')).to_have_attribute('data-provisional', 'true')
@@ -349,7 +350,7 @@ class WinBarBrowserTest(unittest.TestCase):
         expect(chart.locator('.win-history-inspector-early')).to_have_text('Early estimate')
         for index in [2, 3, 5, 6]:
             expect(chart.locator(f'[data-turn-index="{index}"] .win-history-grade')).to_have_count(0)
-        expect(chart.locator('[data-turn-index="4"]')).to_have_attribute('data-estimate', 'missing')
+        expect(chart.locator('[data-turn-index="4"][data-phase="before-draw"]')).to_have_attribute('data-estimate', 'missing')
         badge_bounds = chart.locator('[data-turn-index="4"] .win-history-grade').bounding_box()
         tick_bounds = chart.locator('svg > text').filter(has_text='5').last.bounding_box()
         self.assertLess(badge_bounds['y'] + badge_bounds['height'], tick_bounds['y'])
@@ -384,7 +385,7 @@ class WinBarBrowserTest(unittest.TestCase):
         expect(point).to_be_focused()
         self.assertAlmostEqual(viewport.evaluate('node => node.scrollLeft'), scroll_before, delta=1)
 
-    def test_timeline_inspector_uses_mover_odds_without_changing_board_on_hover(self):
+    def test_timeline_inspector_separates_position_wp_and_move_grade_without_changing_board_on_hover(self):
         self.open_game()
         points = [self.point(0, .70), self.point(1, .80, provisional=True)]
         points[0].update(bestWin=.77, loss=7, category='mistake')
@@ -394,15 +395,15 @@ class WinBarBrowserTest(unittest.TestCase):
         turns.select_option('0')
         inspector = self.page.locator('.win-history-inspector')
         expect(inspector).to_have_attribute('data-inspected-turn', '0')
-        expect(inspector.locator('.win-history-inspector-player')).to_have_text('You moved')
-        expect(inspector.locator('[data-move="played"] strong')).to_have_text('70.0%')
-        expect(inspector.locator('[data-move="best"] strong')).to_have_text('77.0%')
+        expect(inspector.locator('.win-history-inspector-loss-block')).to_contain_text('Move analysis · You')
+        expect(inspector.locator('.position-wp-table tr').nth(1).locator('td')).to_have_text(['—', '70.0%', '70.0%'])
+        expect(inspector.locator('.win-history-inspector-loss')).to_have_text('7.0 pp')
         board = self.page.locator('.turn-panel table.board').inner_text()
         self.page.locator('.win-history-point[data-turn-index="1"] .win-history-marker').hover()
         expect(inspector).to_have_attribute('data-inspected-turn', '1')
-        expect(inspector.locator('.win-history-inspector-player')).to_have_text('Demo Cedar moved')
-        expect(inspector.locator('[data-move="played"] strong')).to_have_text('80.0%')
-        expect(inspector.locator('[data-move="best"] strong')).to_have_text('92.0%')
+        expect(inspector.locator('.win-history-inspector-loss-block')).to_contain_text('Move analysis · Demo Cedar')
+        expect(inspector.locator('.position-wp-table tr').nth(1).locator('td')).to_have_text(['—', '20.0% · Early', '20.0% · Early'])
+        expect(inspector.locator('.position-wp-table tr').nth(2).locator('td')).to_have_text(['—', '80.0% · Early', '80.0% · Early'])
         expect(inspector.locator('.win-history-inspector-loss')).to_have_text('12.0 pp')
         expect(inspector.locator('.win-history-inspector-early')).to_have_text('Early estimate')
         expect(turns).to_have_value('0')
@@ -416,7 +417,7 @@ class WinBarBrowserTest(unittest.TestCase):
         expect(inspector).to_have_attribute('data-inspected-turn', '1')
         self.page.evaluate('viewingSharedGame = true; refreshTrendPanel()')
         self.page.locator('.win-history-point[data-turn-index="0"]').focus()
-        expect(inspector.locator('.win-history-inspector-player')).to_have_text('Demo Player moved')
+        expect(inspector.locator('.position-wp-table tr').nth(1).locator('th')).to_have_text('Demo Player')
 
     def test_timeline_inspector_keeps_missing_values_and_final_result_distinct(self):
         self.open_game()
@@ -425,15 +426,16 @@ class WinBarBrowserTest(unittest.TestCase):
         self.page.locator('.win-history-point[data-turn-index="0"]').focus()
         expect(inspector.locator('.win-history-inspector-grade')).to_have_text('Unrated')
         expect(inspector.locator('.win-history-inspector-loss')).to_have_text('—')
-        expect(inspector.locator('[data-move="played"] strong')).to_have_text('—')
-        expect(inspector.locator('[data-move="best"] strong')).to_have_text('—')
+        expect(inspector.locator('.position-wp-table td')).to_have_text(['—'] * 6)
         expect(inspector.locator('.win-history-meter i')).to_have_count(0)
-        expect(inspector).to_contain_text('Missing rack')
+        expect(self.page.locator('.turn-coach')).to_contain_text('Missing rack')
         self.page.locator('.win-history-point[data-turn-index="1"]').focus()
-        expect(inspector.locator('.win-history-inspector-grade')).to_have_text('Waiting for analysis')
+        expect(inspector.locator('.win-history-inspector-grade')).to_have_count(0)
+        expect(inspector.locator('.position-wp-table td')).to_have_text(['—'] * 6)
         self.page.locator('.win-history-point[data-estimate="final"]').focus()
         expect(inspector).to_have_attribute('data-final', 'true')
-        expect(inspector).to_contain_text('Final result')
+        expect(inspector).to_contain_text('Position WP · Both racks')
+        expect(inspector).to_contain_text('You won')
         expect(inspector.locator('.win-history-inspector-grade')).to_have_count(0)
         expect(inspector.locator('.win-history-inspector-loss')).to_have_count(0)
         expect(inspector.locator('.win-history-meter')).to_have_count(0)
@@ -478,9 +480,9 @@ class WinBarBrowserTest(unittest.TestCase):
         self.page.get_by_role('button', name='Preview best move', exact=True).click()
         expect(self.page.locator('.win-you strong')).to_have_text('80.0%')
         inspector = self.page.locator('.win-history-inspector')
-        expect(inspector.locator('[data-move="played"] strong')).to_have_text('60.0%')
-        expect(inspector.locator('[data-move="best"] strong')).to_have_text('80.0%')
-        expect(inspector).to_contain_text('Recorded move')
+        expect(inspector.locator('.position-wp-table tr').nth(1).locator('td')).to_have_text(['—', '60.0%', '60.0%'])
+        expect(inspector.locator('.win-history-inspector-loss')).to_have_text('20.0 pp')
+        expect(inspector).to_contain_text('Loss vs best analyzed')
 
     def test_history_identifies_players_and_sweep_events_without_estimates(self):
         self.open_game()
@@ -496,8 +498,8 @@ class WinBarBrowserTest(unittest.TestCase):
           renderReview();
         }""")
         chart = self.page.locator('.win-history')
-        played = chart.locator('[data-turn-index="0"]')
-        missed = chart.locator('[data-turn-index="1"]')
+        played = chart.locator('[data-turn-index="0"][data-phase="before-draw"]')
+        missed = chart.locator('[data-turn-index="1"][data-phase="before-draw"]')
         expect(played).to_have_attribute('data-player', 'mine')
         expect(missed).to_have_attribute('data-player', 'opponent')
         expect(played.locator('circle.win-history-marker')).to_have_count(1)
@@ -505,8 +507,8 @@ class WinBarBrowserTest(unittest.TestCase):
         expect(played).to_have_attribute('data-sweep', 'played')
         expect(missed).to_have_attribute('data-sweep', 'missed')
         expect(played).to_have_attribute('data-estimate', 'missing')
-        expect(played).to_have_accessible_name('Turn 1. You moved. Sweep (bingo). Waiting for estimate. Select to review.')
-        expect(missed).to_have_accessible_name('Turn 2. Demo Cedar moved. Missed sweep (bingo). Waiting for estimate. Select to review.')
+        expect(played).to_have_accessible_name('Turn 1. You moved. Before rack draw. Sweep (bingo). Waiting for estimate. Select to review.')
+        expect(missed).to_have_accessible_name('Turn 2. Demo Cedar moved. Before rack draw. Missed sweep (bingo). Waiting for estimate. Select to review.')
         expect(chart.locator('[data-estimate="final"]')).to_have_attribute('data-player', '')
         expect(chart.locator('[data-estimate="final"]')).to_have_attribute('data-sweep', '')
         self.assertNotEqual(played.locator('.win-history-marker').get_attribute('stroke'),
@@ -521,8 +523,8 @@ class WinBarBrowserTest(unittest.TestCase):
         expect(missed).to_be_focused()
         expect(chart.locator('.win-history-detail')).to_contain_text('Missed sweep')
         self.page.get_by_role('button', name='Game summary', exact=True).click()
-        expect(self.page.locator('.overview-chart [data-turn-index="0"]')).to_have_attribute('data-sweep', 'played')
-        expect(self.page.locator('.overview-chart [data-turn-index="1"]')).to_have_attribute('data-sweep', 'missed')
+        expect(self.page.locator('.overview-chart [data-turn-index="0"][data-phase="before-draw"]')).to_have_attribute('data-sweep', 'played')
+        expect(self.page.locator('.overview-chart [data-turn-index="1"][data-phase="before-draw"]')).to_have_attribute('data-sweep', 'missed')
         expect(self.page.locator('.overview-chart .win-history-players')).to_contain_text('Demo Cedar')
 
     def test_sweep_markers_update_from_analysis_and_saved_best_move(self):
@@ -546,7 +548,7 @@ class WinBarBrowserTest(unittest.TestCase):
         self.open_game()
         self.set_points([self.point(4, 0.4), self.point(3, 0.65), self.point(5, 0.1)])
         chart = self.page.locator('.win-history')
-        chart.locator('[data-turn-index="4"]').click()
+        chart.locator('[data-turn-index="4"][data-phase="before-draw"]').click()
         expect(self.page.locator('.turn-subtitle')).to_contain_text('PASS')
         expect(self.page.locator('.turn-action')).to_contain_text('+0')
         board_before = self.page.locator('.turn-panel table.board').inner_text()
@@ -555,14 +557,14 @@ class WinBarBrowserTest(unittest.TestCase):
         expect(self.page.locator('.turn-panel table.board')).to_have_text(board_before, use_inner_text=True)
         expect(self.page.locator('.turn-subtitle')).to_have_text(score_before)
         expect(self.page.locator('.win-you strong')).to_have_text('40.0%')
-        expect(chart.locator('[data-turn-index="4"]')).to_have_attribute('aria-pressed', 'true')
-        chart.locator('[data-turn-index="3"]').focus()
+        expect(chart.locator('[data-turn-index="4"][data-phase="before-draw"]')).to_have_attribute('aria-pressed', 'true')
+        chart.locator('[data-turn-index="3"][data-phase="before-draw"]').focus()
         self.page.keyboard.press('Enter')
         expect(self.page.locator('.turn-subtitle')).to_contain_text('SWAP')
         expect(self.page.locator('.win-you strong')).to_have_text('35.0%')
-        expect(chart.locator('[data-turn-index="3"]')).to_be_focused()
-        chart.locator('[data-turn-index="5"]').click()
-        expect(self.page.locator('.win-estimate-state')).to_have_text('Full estimate')
+        expect(chart.locator('[data-turn-index="3"][data-phase="before-draw"]')).to_be_focused()
+        chart.locator('[data-turn-index="5"][data-phase="before-draw"]').click()
+        expect(self.page.locator('.win-estimate-state')).to_have_text('Position WP · Both racks')
         expect(self.page.locator('.win-you strong')).to_have_text('90.0%')
         chart.locator('[data-turn-index="6"]').focus()
         self.page.keyboard.press('Space')
@@ -574,17 +576,17 @@ class WinBarBrowserTest(unittest.TestCase):
         self.open_game()
         self.set_points([self.point(0, 0.625, provisional=True), self.point(1, 0.5)])
         chart = self.page.locator('.win-history')
-        expect(chart.locator('[data-turn-index="0"]')).to_have_attribute('data-estimate', 'early')
-        expect(chart.locator('[data-turn-index="0"]')).to_have_attribute('aria-label',
+        expect(chart.locator('[data-turn-index="0"][data-phase="before-draw"]')).to_have_attribute('data-estimate', 'early')
+        expect(chart.locator('[data-turn-index="0"][data-phase="before-draw"]')).to_have_attribute('aria-label',
             'Turn 1. You moved. You: 62.5%. Early estimate. Select to review.')
         expect(chart.locator('.win-history-segment')).to_have_attribute('stroke-dasharray', '5 4')
-        chart.locator('[data-turn-index="0"]').focus()
+        chart.locator('[data-turn-index="0"][data-phase="before-draw"]').focus()
         self.page.evaluate('refreshTrendPanel()')
-        expect(chart.locator('[data-turn-index="0"]')).to_be_focused()
+        expect(chart.locator('[data-turn-index="0"][data-phase="before-draw"]')).to_be_focused()
         self.page.evaluate('viewingSharedGame = true')
         self.set_points([self.point(0, 0.7), self.point(1, 0.5)])
-        expect(chart.locator('[data-turn-index="0"]')).to_have_attribute('data-estimate', 'full')
-        expect(chart.locator('[data-turn-index="0"]')).to_have_attribute('aria-label',
+        expect(chart.locator('[data-turn-index="0"][data-phase="before-draw"]')).to_have_attribute('data-estimate', 'full')
+        expect(chart.locator('[data-turn-index="0"][data-phase="before-draw"]')).to_have_attribute('aria-label',
             'Turn 1. Demo Player moved. Demo Player: 70.0%. Full estimate. Select to review.')
         expect(chart.locator('.win-history-segment')).to_have_attribute('stroke-dasharray', 'none')
 
@@ -602,7 +604,8 @@ class WinBarBrowserTest(unittest.TestCase):
                 'Final result. You: ' + expected + '. Select to review.')
         self.page.evaluate('currentReview.my_score = null; renderReview()')
         expect(chart.locator('[data-estimate="final"]')).to_have_count(0)
-        expect(chart.locator('.win-history-point')).to_have_count(6)
+        expect(chart.locator('.win-history-point[data-phase="before-draw"]')).to_have_count(6)
+        expect(chart.locator('.win-history-point[data-phase="after-draw"]')).to_have_count(4)
 
     def test_long_history_fits_phone_and_desktop(self):
         self.open_game()
@@ -710,26 +713,26 @@ class WinBarBrowserTest(unittest.TestCase):
             'beforeWin': .58, 'afterWin': .53, 'drawCount': 1, 'provisional': True})
         self.set_points(points)
         rows = self.page.locator('.turn-row')
-        expect(rows.nth(0).locator('.turn-wp-played')).to_have_text('WP 50.0%')
+        expect(rows.nth(0).locator('.turn-wp-played')).to_have_text('Analysis WP 50.0%')
         expect(rows.nth(0).locator('.turn-wp-change')).to_have_text('Change —')
         expect(rows.nth(0).locator('.turn-wp-loss')).to_have_text('Loss vs best 6.0 pp')
         # Previous owner after-draw .62 is .38 for the opponent; .58-.38=.20.
         expect(rows.nth(1).locator('.turn-wp-change')).to_have_text('Change +20.0 pp · Early')
         expect(rows.nth(1).locator('.turn-wp-loss')).to_have_text('Loss vs best 0.0 pp')
-        expect(rows.nth(1).locator('.turn-wp-draw')).to_have_text('Draw −5.0 pp · Early')
+        expect(rows.nth(1).locator('.turn-wp-draw')).to_have_text('Draw analysis −5.0 pp · Early')
         # Previous opponent after-draw .53 is .47 for the owner; .55-.47=.08.
         expect(rows.nth(2).locator('.turn-wp-change')).to_have_text('Change +8.0 pp · Early')
         rows.nth(1).click()
         selected = self.page.locator('.turn-meta .turn-wp-metrics')
-        expect(selected.locator('.turn-wp-draw')).to_have_text('Draw −5.0 pp · Early')
-        expect(selected.locator('.turn-wp-played')).to_have_text('WP 60.0%')
+        expect(selected.locator('.turn-wp-draw')).to_have_text('Draw analysis −5.0 pp · Early')
+        expect(selected.locator('.turn-wp-played')).to_have_text('Analysis WP 60.0%')
         # Async draw updates must update the list and selected move without reselection.
         self.page.evaluate("""() => {
           Object.assign(moveQualityResults.points[1].draw, {afterWin: .65, provisional: false});
           refreshMoveQualityPanel();
         }""")
-        expect(selected.locator('.turn-wp-draw')).to_have_text('Draw +7.0 pp')
-        expect(rows.nth(1).locator('.turn-wp-draw')).to_have_text('Draw +7.0 pp')
+        expect(selected.locator('.turn-wp-draw')).to_have_text('Draw analysis +7.0 pp')
+        expect(rows.nth(1).locator('.turn-wp-draw')).to_have_text('Draw analysis +7.0 pp')
         expect(self.page.locator('.turn-row.selected')).to_have_attribute('data-turn-index', '1')
 
     def test_turn_wp_change_does_not_bridge_missing_draws_or_moves(self):
@@ -744,15 +747,18 @@ class WinBarBrowserTest(unittest.TestCase):
           delete moveQualityResults.points[1].playedWin;
           moveQualityResults.points[1].category = 'unrated';
           delete moveQualityResults.points[1].loss;
+          trendResults = syntheticPositionTrend(currentReview, moveQualityResults);
           refreshMoveQualityPanel();
         }""")
         expect(rows.nth(2).locator('.turn-wp-change')).to_have_text('Change —')
-        expect(rows.nth(1).locator('.turn-wp-played')).to_have_text('WP —')
+        expect(rows.nth(1).locator('.turn-wp-played')).to_have_text('Analysis WP —')
         expect(rows.nth(1).locator('.turn-wp-loss')).to_have_text('Loss vs best —')
         # A pass has no refill and provides its move estimate as the next baseline.
         self.page.evaluate("""() => {
           currentReview.turns[1].action = 'PASS 0';
+          currentReview.turns[1].rack_after = currentReview.turns[1].rack;
           Object.assign(moveQualityResults.points[1], {playedWin: .60, loss: 1, category: 'best'});
+          trendResults = syntheticPositionTrend(currentReview, moveQualityResults);
           refreshMoveQualityPanel();
         }""")
         expect(rows.nth(1).locator('.turn-wp-draw')).to_have_text('Draw: no tiles')

@@ -54,24 +54,21 @@ class TerminalAnalysisPersistenceTests(unittest.TestCase):
             with self.subTest(field=field), self.assertRaises(CrossplayError):
                 Handler.validate_game_analysis(body)
 
-    def test_error_trend_requires_its_failed_quality_summary(self):
+    def test_error_trend_can_save_alone_but_rejects_conflicting_legacy_quality(self):
         body = self.body()
         del body['move_quality']
-        with self.assertRaises(CrossplayError):
-            Handler.validate_game_analysis(body)
+        self.assertEqual(Handler.validate_game_analysis(body)['win_trend'], body['win_trend'])
         body['move_quality'] = {'state': 'done', 'points': []}
         with self.assertRaises(CrossplayError):
             Handler.validate_game_analysis(body)
 
-    def test_error_quality_requires_its_failed_trend_summary(self):
-        for trend in (None, {'state': 'done', 'points': []}):
-            body = self.body()
-            if trend is None:
-                del body['win_trend']
-            else:
-                body['win_trend'] = trend
-            with self.subTest(trend=trend), self.assertRaises(CrossplayError):
-                Handler.validate_game_analysis(body)
+    def test_error_quality_can_save_alone_but_rejects_conflicting_legacy_trend(self):
+        body = self.body()
+        del body['win_trend']
+        self.assertEqual(Handler.validate_game_analysis(body)['move_quality'], body['move_quality'])
+        body['win_trend'] = {'state': 'done', 'points': []}
+        with self.assertRaises(CrossplayError):
+            Handler.validate_game_analysis(body)
 
     def test_failed_work_cannot_be_saved_as_complete(self):
         body = self.body()

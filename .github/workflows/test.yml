@@ -10,7 +10,8 @@ jobs:
   test:
     # Playwright 1.57 supports Ubuntu 24.04; ubuntu-latest is moving to 26.04.
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    # Full browser and real-WASM regression coverage exceeds 15 minutes on CI.
+    timeout-minutes: 20
     env:
       DD_API_KEY: ${{ secrets.DD_API_KEY }}
       DD_SITE: us5.datadoghq.com

@@ -25,6 +25,45 @@ class FakeWorker {
 
 const settle = () => new Promise(resolve => setTimeout(resolve, 0));
 
+function knownStateFixture() {
+  return {grid:Array(15).fill('.'.repeat(15)),racks:['?ACERST','DEFINOU'],scores:[0,0],
+    toMove:0,bagCount:86,finalTurnsRemaining:0};
+}
+function knownReply(payload) {
+  const H=require('./hindsight-timeline.js'), n=payload.count;
+  return {error:'',informationModel:H.MODEL,policyVersion:H.POLICY,seed:payload.seed,
+    iterationsRequested:payload.iterations,offset:payload.offset,samples:n,completed:n,
+    terminalSamples:0,winSum:n/2,win:.5,bagCount:86,settledBagCount:86,
+    finalTurnsRemaining:0,plies:2,playToEnd:false,simulationMode:'2-ply',simulated:true};
+}
+
+test('known-state batches resume exact offsets and reuse a completed checkpoint',async()=>{
+  const {pool,log}=makePool(1),payload={state:knownStateFixture(),iterations:32};
+  try {
+    const first=pool.run('evaluateKnownState',payload);await settle();
+    assert.equal(log.requests[0].payload.offset,0);reply(log,log.requests[0],knownReply(log.requests[0].payload));
+    await settle();const failed=log.requests.shift();assert.equal(failed.payload.offset,16);
+    failed.worker.emit({id:failed.id,error:'temporary'});await assert.rejects(first,/temporary/);
+    const retry=pool.run('evaluateKnownState',payload);await settle();
+    assert.equal(log.requests[0].payload.offset,16);reply(log,log.requests[0],knownReply(log.requests[0].payload));
+    const result=await retry;assert.equal(result.samples,32);assert.equal(result.win,.5);
+    assert.equal(result.last,undefined);
+    assert.deepEqual(await pool.run('evaluateKnownState',payload),result);assert.equal(log.requests.length,0);
+  }finally{pool.stop();}
+});
+
+test('known-state cancellation rejects a late result without adding its samples',async()=>{
+  const {pool,log}=makePool(1),controller=new AbortController(),payload={state:knownStateFixture(),iterations:32};
+  try {
+    const first=pool.run('evaluateKnownState',payload,{signal:controller.signal});await settle();
+    const rejected=assert.rejects(first,{name:'AbortError'});controller.abort();
+    reply(log,log.requests[0],knownReply(log.requests[0].payload));await rejected;
+    const retry=pool.run('evaluateKnownState',payload);await settle();
+    assert.equal(log.requests[0].payload.offset,0);reply(log,log.requests[0],knownReply(log.requests[0].payload));
+    await settle();reply(log,log.requests[0],knownReply(log.requests[0].payload));await retry;
+  }finally{pool.stop();}
+});
+
 function makePool(size, options = {}) {
   const log = { workers: [], requests: [] };
   const pool = new QuackleWorkerPool({ size, createWorker: () => new FakeWorker(log, options) });

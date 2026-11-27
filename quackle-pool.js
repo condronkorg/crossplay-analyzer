@@ -40,11 +40,53 @@
     // Higher priorities run first; equal priorities run in request order.
     // Aborting a signal only cancels work that has not reached a worker yet.
     run(type, payload = {}, options = {}) {
+      if (type === 'evaluateKnownState') return this.runKnownState(payload, options);
       const terminal = Number.isInteger(payload.bagCount) &&
         payload.bagCount >= 0 && payload.bagCount <= 21;
       if (terminal && ['simulateReview', 'simulateKibitz', 'simulateMove', 'simulateDraw'].includes(type))
         return this.runBatched(type, payload, options);
       return this.runSingle(type, payload, options);
+    }
+
+    runKnownState(payload, options = {}) {
+      const H = typeof module !== 'undefined' && module.exports ? require('./hindsight-timeline.js') : root.CrossplayHindsight;
+      const state = H.canonical(payload.state), key = 'known:' + H.key(state, payload.iterations);
+      if (options.signal?.aborted) return Promise.reject(abortError());
+      const generation = this.generation;
+      if (this.batchJobs.has(key)) return this.batchJobs.get(key).promise.catch(error => {
+        if (error.name === 'AbortError' && !options.signal?.aborted && generation === this.generation)
+          return this.runKnownState(payload, options);
+        throw error;
+      });
+      if (options.taskKey) this.batchOptions.set(options.taskKey, options);
+      const compute = async () => {
+        const previous = this.partial.get(key);
+        let sums = previous ? {samples:previous.samples, winSum:previous.winSum, terminalSamples:previous.terminalSamples}
+          : {samples: 0, winSum: 0, terminalSamples: 0};
+        let last = previous?.last;
+        while (sums.samples < payload.iterations) {
+          if (options.signal?.aborted || generation !== this.generation) throw abortError();
+          const offset = sums.samples, count = Math.min(16, payload.iterations - offset);
+          const result = await this.runSingle('evaluateKnownStateBatch',
+            {...payload, state, seed:H.seed(state), offset, count}, options);
+          if (options.signal?.aborted || generation !== this.generation) throw abortError();
+          if (!H.validResult(result, state, payload.iterations, offset, count))
+            throw new Error(result?.error || 'Incomplete position WP batch.');
+          sums = {samples:sums.samples+count, winSum:sums.winSum+result.winSum,
+            terminalSamples:sums.terminalSamples+result.terminalSamples};
+          last = result; this.saveCheckpoint(key, {...sums, last});
+        }
+        const result = {...last, ...sums, completed:sums.samples, iterationsCompleted:sums.samples,
+          offset:0, win:sums.winSum/sums.samples};
+        if (!H.validResult(result, state, payload.iterations)) throw new Error('Incomplete position WP.');
+        return result;
+      };
+      const promise = compute().finally(() => {
+        if (this.batchOptions.get(options.taskKey) === options) this.batchOptions.delete(options.taskKey);
+        if (this.batchJobs.get(key)?.promise === promise) this.batchJobs.delete(key);
+      });
+      this.batchJobs.set(key, {promise, options});
+      return promise;
     }
 
     runBatched(type, payload, options) {

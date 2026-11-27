@@ -236,6 +236,9 @@
   .win-history-meter { height: 7px; margin: 6px 0 10px; border-radius: 4px; background: #e0e8dc; overflow: hidden; }
   .win-history-meter i { display: block; height: 100%; background: #27694d; }
   .win-history-meter.played i { background: #91aa88; }
+  .position-wp-table { width: 100%; border-collapse: collapse; font-size: 11px; }
+  .position-wp-table th, .position-wp-table td { padding: 5px 3px; text-align: right; }
+  .position-wp-table th:first-child { text-align: left; overflow-wrap: anywhere; }
   @container (min-width: 800px) { .win-history-body { grid-template-columns: minmax(0, 1fr) 250px; } }
   @container (max-width: 799px) {
     .win-history-inspector[data-final="false"] { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); column-gap: 18px; padding: 14px; }
@@ -243,6 +246,14 @@
     .win-history-comparison { grid-column: 2; grid-row: 1 / 3; margin: 0; padding: 0; border: 0; }
     .win-history-comparison-row { font-size: 11px; gap: 6px; }
     .win-history-inspector h4 { font-size: 20px; }
+  }
+  @media (max-width: 599px) {
+    .win-history-inspector[data-final="false"] .position-wp-comparison,
+    .overview-chart .win-history-inspector[data-inspected-phase="after-draw"] .position-wp-comparison {
+      grid-column: 1 / -1; grid-row: auto; margin-top: 10px; padding-top: 8px; border-top: 1px solid var(--line);
+    }
+    .position-wp-table th, .position-wp-table td { overflow-wrap: normal; word-break: normal; }
+    .position-wp-table th:first-child { min-width: 64px; }
   }
   .win-history-legend { display: flex; flex-wrap: wrap; gap: 3px 12px; margin: 2px 0 4px; color: var(--muted); font-size: 11px; }
   .win-history-scroll { width: 100%; overflow-x: auto; overscroll-behavior-x: contain; }
@@ -259,7 +270,7 @@
   .win-history-annotation { pointer-events: all; }
   .win-history-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-bottom: 6px; }
   .win-history-controls button, .win-history-controls select { min-width: 44px; min-height: 44px; margin: 0; padding: 6px 9px; font-size: 12px; }
-  .win-history-controls select { flex: 1 1 76px; width: 76px; max-width: 100%; border: 1px solid var(--line); border-radius: 8px; background: #fff; }
+  .win-history-controls select { flex: 1 0 96px; width: 96px; min-width: 96px; max-width: 100%; border: 1px solid var(--line); border-radius: 8px; background: #fff; }
   .win-history-phases { display: flex; gap: 4px; }
   .win-history-phase-button[aria-pressed="true"] { background: #e0ede5; border-color: #256b4a; color: #174c38; }
   .win-history-controls button:disabled { cursor: default; opacity: .55; }
@@ -562,6 +573,7 @@
 <script src="quackle-pool.js?v=bounded-terminal-v1"></script>
 <script src="review-analysis.js?v=bounded-terminal-v1"></script>
 <script src="opening-draw.js"></script>
+<script src="hindsight-timeline.js"></script>
 <script>
 const PREMIUM_COORDS = {
   '3L': 'A1 O1 G2 I2 F5 J5 E6 K6 B7 N7 B9 N9 E10 K10 F11 J11 G14 I14 A15 O15',
@@ -1152,6 +1164,7 @@ function makeReviewContext(review, owner, shared = false) {
   }
   cache.owner = owner;
   cache.shared = shared;
+  cache.savedHindsightSignature = hindsightSummarySignature(stored.win_trend);
   const savedQuality = stored.move_quality;
   let quality = savedQuality?.evaluation === MOVE_QUALITY_EVALUATION && ['done', 'running', 'stopped', 'error'].includes(savedQuality.state) && Array.isArray(savedQuality.points) &&
     savedQuality.points.every(point => !point.provisional && Number.isInteger(point.turnIndex) && review.turns[point.turnIndex] &&
@@ -1230,7 +1243,14 @@ function makeReviewContext(review, owner, shared = false) {
     quality.state = pending ? 'running' : failed ? 'error' : 'done';
     if (quality.state === 'error') quality.message = REVIEW_RETRY_MESSAGE;
   }
-  const trend = quality ? deriveWinTrend({review, quality}, quality.state === 'done') : null;
+  for (const [key, result] of Object.entries(stored.turn_analyses || {})) {
+    try {
+      const identity = JSON.parse(key);
+      if (identity[0] === CrossplayHindsight.MODEL && key === CrossplayHindsight.key(identity[1], identity[2]) &&
+          CrossplayHindsight.validResult(result, identity[1], identity[2])) cache.results[key] = result;
+    } catch (_) { /* Old or malformed state entries are never chart values. */ }
+  }
+  const trend = deriveWinTrend({review, cache});
   const context = {review, cache, owner, shared, quality, trend, openingInput, openingState, states,
     openingError: openingState === 'error' ? opening.reason : null};
   // Raw results may have reached the database before the derived summary.
@@ -1285,6 +1305,7 @@ function suspendAnalysisForRefresh({ abortRequests = true } = {}) {
         return ['running', 'running-preview', 'error'].includes(state) ? 'pending-preview' : state;
       };
       snapshot.contexts.set(id, {...context, cancelled: false,
+        hindsightRunning:false,hindsightController:null,hindsightRestart:false,hindsightResume:Boolean(context.hindsightRunning),
         quality: estimate(context.quality), trend: estimate(context.trend),
         openingState: ['running', 'running-preview', 'error'].includes(context.openingState)
           ? 'pending-preview' : context.openingState,
@@ -1319,6 +1340,8 @@ function resumeAnalysisAfterRefresh(snapshot) {
   void loadAnalysisCatalog(queue);
   if (!currentReview && activeGameId) void openGame(activeGameId);
   for (const context of snapshot.contexts.values()) {
+    if (!context.paused && (context.hindsightResume || context.review === currentReview)) void runHindsightTimeline(context);
+    delete context.hindsightResume;
     if (Object.keys(context.cache.unsaved || {}).length || Object.keys(context.cache.completed || {}).length) {
       flushAnalysisSave(context.review, context.cache);
     }
@@ -1503,8 +1526,21 @@ function recordEngineResult(review, cache, key, result) {
     void flushAnalysisSave(review, cache);
   } else if (!cache.saveTimer) cache.saveTimer = setTimeout(() => flushAnalysisSave(review, cache), ANALYSIS_SAVE_DELAY);
 }
+function hindsightSummarySignature(value) {
+  if (value?.informationModel !== CrossplayHindsight.MODEL || value.evaluation !== CrossplayHindsight.POLICY ||
+      !['done', 'error'].includes(value.state)) return null;
+  const stable = input => Array.isArray(input) ? input.map(stable) : input && typeof input === 'object'
+    ? Object.fromEntries(Object.keys(input).sort().map(key => [key, stable(input[key])])) : input;
+  return JSON.stringify(stable(value));
+}
 function markAnalysisComplete(field, value, cache = positionCache) {
-  if (cache.shared || cache.discarded || cache.owner !== analysisOwner()) return;
+  if (cache.shared || cache.discarded || cache.owner !== analysisOwner() ||
+      !['done', 'error'].includes(value?.state)) return;
+  if (field === 'win_trend') {
+    const signature = hindsightSummarySignature(value);
+    if (signature && [cache.savedHindsightSignature, cache.savingHindsightSignature,
+        hindsightSummarySignature(cache.completed?.win_trend)].includes(signature)) return;
+  }
   cache.completed = { ...cache.completed, [field]: structuredClone(value) };
 }
 function flushAnalysisSave(review = currentReview, cache = positionCache, { keepalive = false } = {}) {
@@ -1518,6 +1554,8 @@ function flushAnalysisSave(review = currentReview, cache = positionCache, { keep
     if (!review || (!Object.keys(entries).length && !Object.keys(completed).length)) return null;
     cache.unsaved = {};
     cache.completed = {};
+    const hindsightSignature = hindsightSummarySignature(completed.win_trend);
+    if (hindsightSignature) cache.savingHindsightSignature = hindsightSignature;
     const body = JSON.stringify({ analysis_version: ANALYSIS_VERSION, turn_analyses: entries, ...completed });
     try {
       await api('games/' + encodeURIComponent(review.id) + '/analysis', {
@@ -1525,6 +1563,7 @@ function flushAnalysisSave(review = currentReview, cache = positionCache, { keep
         method: 'PUT', headers: { 'Content-Type': 'application/json' }, body,
         keepalive: keepalive && body.length < 60000
       });
+      if (hindsightSignature) cache.savedHindsightSignature = hindsightSignature;
       cache.saveError = null;
       return null;
     } catch (error) {
@@ -1533,7 +1572,10 @@ function flushAnalysisSave(review = currentReview, cache = positionCache, { keep
       cache.completed = { ...completed, ...cache.completed };
       cache.saveError = error.message;
       return error.message;
-    } finally { updateBackgroundStatus(); }
+    } finally {
+      if (cache.savingHindsightSignature === hindsightSignature) delete cache.savingHindsightSignature;
+      updateBackgroundStatus();
+    }
   });
   analysisSaveQueue = save;
   return save;
@@ -1644,7 +1686,7 @@ function makeAnalysisResetControls(review) {
 
 function startBackgroundAnalysis(review = null) {
   const queue = getReviewQueue();
-  if (review) queue.select(review.id);
+  if (review) { queue.select(review.id); void runHindsightTimeline(contextFor(review)); }
   else if (!viewingSharedGame) { queue.add(games); return loadAnalysisCatalog(queue); }
   return Promise.resolve();
 }
@@ -2261,24 +2303,18 @@ function makeTurnWinMetrics(review, index) {
     metrics.append(field);
   };
   const early = point?.provisional ? ' · Early' : '';
-  append('played', 'WP ' + (probability(point?.playedWin) ? (point.playedWin * 100).toFixed(1) + '%' + early : '—'),
+  append('played', 'Analysis WP ' + (probability(point?.playedWin) ? (point.playedWin * 100).toFixed(1) + '%' + early : '—'),
     'Recorded move win %');
-  // Compare adjacent chart states only. A missing refill must not look like a
-  // move change, and the first turn has no measured pre-move baseline.
-  const previous = index > 0 ? qualityPointForTurn(index - 1) : null;
-  let baseline = measuredDraw(previous) ? previous.draw.afterWin
-    : previous && noDraw(review.turns[index - 1], previous) && probability(previous.playedWin) ? previous.playedWin : null;
-  if (baseline !== null && Boolean(review.turns[index - 1].mine) !== Boolean(turn.mine)) baseline = 1 - baseline;
-  const current = measuredDraw(point) ? point.draw.beforeWin : point?.playedWin;
-  const knownChange = baseline !== null && probability(current);
-  const changeEarly = (measuredDraw(point) ? point.draw.provisional : point?.provisional) ||
-    (measuredDraw(previous) ? previous.draw.provisional : previous?.provisional);
-  append('change', 'Change ' + (knownChange ? signed((current - baseline) * 100) + ' pp' + (changeEarly ? ' · Early' : '') : '—'),
-    'Win chance change (pp)');
+  const position = trendResults?.turns?.[index];
+  const before=position?.before, after=position?.move;
+  const knownChange=Number.isFinite(before?.mine)&&Number.isFinite(after?.mine);
+  const change=knownChange?(after.mine-before.mine)*(turn.mine?1:-1):null;
+  append('change','Change '+(knownChange?signed(change)+' pp'+(before.provisional||after.provisional?' · Early':''):'—'),
+    'Position WP change (pp)');
   append('loss', 'Loss vs best ' + (Number.isFinite(point?.loss) ? Math.max(0, point.loss).toFixed(1) + ' pp' + early : '—'),
     'Loss vs best analyzed (pp)');
   const knownDraw = measuredDraw(point);
-  append('draw', knownDraw ? 'Draw ' + signed((point.draw.afterWin - point.draw.beforeWin) * 100) + ' pp' + (point.draw.provisional ? ' · Early' : '')
+  append('draw', knownDraw ? 'Draw analysis ' + signed((point.draw.afterWin - point.draw.beforeWin) * 100) + ' pp' + (point.draw.provisional ? ' · Early' : '')
     : noDraw(turn, point) ? 'Draw: no tiles' : 'Draw —',
     knownDraw ? 'Draw change (pp)'
       : point?.draw?.reason || 'Draw estimate unavailable');
@@ -2836,11 +2872,13 @@ function refreshTrendPanel() {
 
 function makeTrendPanel(review) {
   const panel = makeElement('section', 'panel trend-panel');
-  panel.append(makeElement('h3', '', 'Win chance through the game'));
+  panel.append(makeElement('h3', '', 'Position WP · Both racks'));
   const turn = review.turns[currentTurnIndex];
   const qualityPoint = qualityPointForTurn(currentTurnIndex);
   const preview = currentMovePreview(turn, qualityPoint);
-  let point = trendResults?.points?.find(item => !item.actual && item.x === currentTurnIndex);
+  const inspectedPhase=reviewChartPins.get(review)?.phase;
+  let point = trendResults?.points?.find(item => !item.actual && item.x === currentTurnIndex && item.phase===(inspectedPhase==='after-draw'?'after-draw':'before-draw'));
+  if(boardView==='before' && !reviewChartPins.get(review))point=trendResults?.turns?.[currentTurnIndex]?.before;
   if (preview) {
     const known = Number.isFinite(preview.win);
     point = {
@@ -2914,131 +2952,56 @@ function makeRackDrawTiles(turn) {
   return section;
 }
 
-function makeOpeningDrawInspector(opening, review) {
-  const inspector = makeElement('aside', 'win-history-inspector win-history-detail opening-draw-inspector');
-  inspector.setAttribute('aria-label', 'Initial rack draw details');
-  inspector.dataset.inspectedTurn = 'opening';
-  inspector.dataset.inspectedPhase = 'opening';
-  const known = openingDrawKnown(opening);
-  const you = viewingSharedGame ? review.my_name || 'Player' : 'You';
-  const firstMine = opening.firstMine ?? Boolean(review.turns[0]?.mine);
-  const names = firstMine ? [you, review.opponent || 'Opponent'] : [review.opponent || 'Opponent', you];
-  const state = known ? opening.provisional ? 'Early estimate' : 'Full estimate'
-    : opening.unavailable ? 'Estimate unavailable' : opening.retryable ? 'Estimate needs a retry' : 'Waiting for estimate';
-  inspector.append(makeElement('p', 'eyebrow', 'Initial rack draw · Before Turn 1'),
-    makeElement('h4', '', 'Both initial racks'),
-    makeElement('p', known && opening.provisional ? 'win-history-inspector-early' : 'win-history-inspector-note',
-      state + (known ? ' · ' + opening.samples + ' samples' : '')));
-  for (const [index, rack] of [opening.firstRack, opening.secondRack].entries()) {
-    const row = makeElement('div', 'opening-rack');
-    row.append(makeElement('p', 'draw-letters-label', names[index] + (index === 0 ? ' · Moves first' : '')),
-      makeElement('p', 'opening-rack-letters', rack || 'Rack unavailable'));
-    const wpa = index === 0 ? opening.firstWpa : opening.secondWpa;
-    row.append(makeElement('p', 'opening-rack-wpa', 'Opening Rack Draws WPA: ' +
-      (known && Number.isFinite(wpa) ? signedWpa(wpa) + ' pp' : '—')));
-    inspector.append(row);
-  }
-  const comparison = makeElement('div', 'win-history-comparison');
-  comparison.append(makeElement('p', 'eyebrow', 'Win chance for ' + you));
-  if (known && Number.isFinite(opening.beforeWin)) {
-    const before = makeElement('div', 'win-history-comparison-row');
-    before.dataset.move = 'before-opening';
-    before.append(makeElement('span', '', 'Before initial draw'), makeElement('strong', '',
-      ((firstMine ? opening.beforeWin : 1 - opening.beforeWin) * 100).toFixed(1) + '%'));
-    comparison.append(before);
-  }
-  const row = makeElement('div', 'win-history-comparison-row');
-  row.dataset.move = 'after-opening';
-  row.append(makeElement('span', '', 'After initial draw'), makeElement('strong', '', known
-    ? ((firstMine ? opening.afterWin : 1 - opening.afterWin) * 100).toFixed(1) + '%' : '—'));
-  comparison.append(row);
-  if (opening.reason) comparison.append(makeElement('p', 'win-history-inspector-note', opening.reason));
-  inspector.append(comparison);
-  return inspector;
-}
-
 function makeWinHistoryInspector(point, review, sweep) {
-  if (point.opening) return makeOpeningDrawInspector(point.draw, review);
-  const inspector = makeElement('aside', 'win-history-inspector win-history-detail');
-  inspector.setAttribute('aria-label', 'Move details');
-  inspector.dataset.inspectedTurn = String(point.x);
-  inspector.dataset.final = String(Boolean(point.actual));
-  inspector.dataset.inspectedPhase = point.actual ? 'final' : point.phase || 'before-draw';
-  const you = viewingSharedGame ? review.my_name || 'Player' : 'You';
-  if (point.actual) {
-    const result = gameResult(review);
-    inspector.append(makeElement('p', 'eyebrow', 'Final result'),
-      makeElement('h4', '', result.kind === 'draw' ? 'Draw' : (result.kind === 'win' ? you : review.opponent || 'Opponent') + ' won'),
-      makeElement('p', 'win-history-inspector-player', review.my_score + '–' + review.opponent_score),
-      makeElement('strong', '', you + ': ' + point.mine.toFixed(1) + '%'));
+  const inspector=makeElement('aside','win-history-inspector win-history-detail');
+  inspector.setAttribute('aria-label','Position WP details');
+  inspector.dataset.inspectedTurn=String(point.x);
+  inspector.dataset.final=String(Boolean(point.actual));
+  inspector.dataset.inspectedPhase=point.actual?'final':point.phase||'before-draw';
+  const you=viewingSharedGame?review.my_name||'Player':'You', opponent=review.opponent||'Opponent';
+  const heading=makeElement('div','win-history-inspector-head');
+  heading.append(makeElement('p','eyebrow','Position WP · Both racks'));
+  if(point.actual){
+    const result=gameResult(review);
+    heading.append(makeElement('h4','',result.kind==='draw'?'Draw':(result.kind==='win'?you:opponent)+' won'));
+    inspector.append(heading,makeElement('strong','',you+': '+point.mine.toFixed(1)+'%'));
     return inspector;
   }
-  const turn = review.turns[point.x];
-  const player = turn.mine ? you : review.opponent || 'Opponent';
-  const quality = qualityPointForTurn(point.x);
-  if (point.phase === 'after-draw') {
-    const draw = point.draw || quality?.draw;
-    const known = Number.isFinite(draw?.beforeWin) && Number.isFinite(draw?.afterWin);
-    const delta = known ? (draw.afterWin - draw.beforeWin) * 100 : null;
-    const signed = known ? Math.abs(delta) < .05 ? '0.0' : (delta > 0 ? '+' : '−') + Math.abs(delta).toFixed(1) : '—';
-    const heading = makeElement('div', 'win-history-inspector-head');
-    heading.append(makeElement('p', 'eyebrow', 'Turn ' + (point.x + 1) + ' · After rack draw'),
-      makeElement('p', 'win-history-inspector-player', player + ' drew' + (draw?.drawCount ? ' ' + draw.drawCount + (draw.drawCount === 1 ? ' tile' : ' tiles') : '')));
-    heading.append(makeRackDrawTiles(turn));
-    if (draw?.provisional || point.provisional) heading.append(makeElement('span', 'win-history-inspector-early', 'Early estimate'));
-    const lossBlock = makeElement('div', 'win-history-inspector-loss-block');
-    const luck = makeElement('p', 'win-history-inspector-loss', signed);
-    if (known) luck.append(makeElement('small', '', ' pp'));
-    lossBlock.append(luck, makeElement('p', 'win-history-inspector-label', 'Rack Draws WPA for ' + player));
-    const comparison = makeElement('div', 'win-history-comparison');
-    comparison.append(makeElement('p', 'eyebrow', 'Win chance for ' + player));
-    for (const [kind, label, value] of [['before-draw', 'Before draw', draw?.beforeWin], ['after-draw', 'After draw', draw?.afterWin]]) {
-      const row = makeElement('div', 'win-history-comparison-row');
-      row.dataset.move = kind;
-      row.append(makeElement('span', '', label), makeElement('strong', '', Number.isFinite(value) ? (value * 100).toFixed(1) + '%' : '—'));
-      comparison.append(row);
+  const values=point.opening?{before:trendResults?.opening}:trendResults?.turns?.[point.x]||{};
+  const turn=review.turns[point.x], quality=point.opening?null:qualityPointForTurn(point.x);
+  heading.append(makeElement('h4','',point.opening?'Opening position':'Turn '+(point.x+1)+' · '+(turn.action||'Pass')));
+  if(point.opening){
+    const first=review.turns[0], other=CrossplayHindsight.opponentRack(review,0);
+    heading.append(makeElement('p','',first?.rack || '—'),makeElement('p','',other ?? '—'));
+  } else if(point.phase==='after-draw')heading.append(makeRackDrawTiles(turn));
+  inspector.append(heading);
+  const comparison=makeElement('div','win-history-comparison position-wp-comparison');
+  const table=makeElement('table','position-wp-table');
+  const labels=point.opening?[['before','Opening']]:[['before','Before'],['move','After move'],['draw','After draw']];
+  const head=document.createElement('tr');head.append(makeElement('th','',''));
+  labels.forEach(([,label])=>head.append(makeElement('th','',label)));table.append(head);
+  for(const [name,invert] of [[you,false],[opponent,true]]){
+    const row=document.createElement('tr');row.append(makeElement('th','',name));
+    for(const [kind] of labels){
+      const value=values[kind], mine=value?.mine;
+      row.append(makeElement('td','',Number.isFinite(mine)?(invert?100-mine:mine).toFixed(1)+'%'+(value.provisional?' · Early':''):'—'));
     }
-    inspector.append(heading, lossBlock, comparison);
-    return inspector;
+    table.append(row);
   }
-
-  const knownLoss = Number.isFinite(quality?.loss);
-  const grade = knownLoss && ['best', 'inaccuracy', 'mistake', 'blunder'].includes(quality?.category) ? quality.category : 'unrated';
-  const probability = value => Number.isFinite(value) && value >= 0 && value <= 1 ? value : null;
-  const played = probability(quality?.playedWin) ?? (Number.isFinite(point.mine)
-    ? probability((turn.mine ? point.mine : 100 - point.mine) / 100) : null);
-  const best = probability(quality?.bestWin);
-  const heading = makeElement('div', 'win-history-inspector-head');
-  heading.append(makeElement('p', 'eyebrow', 'Turn ' + (point.x + 1) + ' · Recorded move' + (quality?.draw?.drawCount > 0 ? ' · Before rack draw' : '')),
-    makeElement('h4', '', turn.action || 'Pass'),
-    makeElement('p', 'win-history-inspector-player', player + ' moved'),
-    makeElement('span', 'quality-chip quality-' + grade + ' win-history-inspector-grade', quality ? qualityLabel(grade) : 'Waiting for analysis'));
-  const early = Boolean(quality?.provisional || point.provisional);
-  if (early && (knownLoss || played !== null || best !== null)) heading.append(makeElement('span', 'win-history-inspector-early', 'Early estimate'));
-  const lossBlock = makeElement('div', 'win-history-inspector-loss-block');
-  const loss = makeElement('p', 'win-history-inspector-loss', knownLoss ? quality.loss.toFixed(1) : '—');
-  if (knownLoss) loss.append(makeElement('small', '', ' pp'));
-  lossBlock.append(loss, makeElement('p', 'win-history-inspector-label', knownLoss ? 'Win chance lost by ' + player : 'Decision loss unavailable'));
-  inspector.append(heading, lossBlock);
-  const comparison = makeElement('div', 'win-history-comparison');
-  comparison.append(makeElement('p', 'eyebrow', 'Win chance for ' + player));
-  for (const [kind, label, value] of [['played', 'Played move', played], ['best', 'Best analyzed', best]]) {
-    const row = makeElement('div', 'win-history-comparison-row');
-    row.dataset.move = kind;
-    row.append(makeElement('span', '', label), makeElement('strong', '', value === null ? '—' : (value * 100).toFixed(1) + '%'));
-    const meter = makeElement('div', 'win-history-meter ' + kind);
-    meter.setAttribute('aria-hidden', 'true');
-    if (value !== null) {
-      const fill = document.createElement('i');
-      fill.style.width = value * 100 + '%';
-      meter.append(fill);
-    }
-    comparison.append(row, meter);
+  comparison.append(table);inspector.append(comparison);
+  if(quality){
+    const section=makeElement('div','win-history-inspector-loss-block');
+    const actor=turn.mine?you:opponent;
+    section.append(makeElement('p','eyebrow','Move analysis · '+actor));
+    const known=Number.isFinite(quality.loss), grade=known?quality.category:'unrated';
+    section.append(makeElement('span','quality-chip win-history-inspector-grade quality-'+grade,qualityLabel(grade)),
+      makeElement('p','win-history-inspector-loss',known?quality.loss.toFixed(1)+' pp':'—'),
+      makeElement('p','win-history-inspector-label','Loss vs best analyzed'));
+    if(quality.provisional)section.append(makeElement('span','win-history-inspector-early','Early estimate'));
+    inspector.append(section);
   }
-  if (grade === 'unrated' && quality?.reason) comparison.append(makeElement('p', 'win-history-inspector-note', quality.reason));
-  inspector.append(comparison);
-  if (sweep === 'played' || sweep === 'missed') inspector.append(makeElement('strong', '',
-    sweep === 'played' ? '★ Sweep (bingo)' : '☆ Missed sweep (bingo)'));
+  if(values.error)inspector.append(makeElement('p','win-history-inspector-note',values.error));
+  if(sweep==='played'||sweep==='missed')inspector.append(makeElement('strong','',sweep==='played'?'★ Sweep (bingo)':'☆ Missed sweep (bingo)'));
   return inspector;
 }
 
@@ -3046,7 +3009,7 @@ function drawWinHistory(estimates, review, preview = false, overview = false) {
   const totalTurns = review.turns.length;
   const you = viewingSharedGame ? review.my_name || 'Player' : 'You';
   const usable = estimates.filter(point => !point.actual && Number.isInteger(point.x) &&
-    point.x >= 0 && point.x < totalTurns && Number.isFinite(point.mine));
+    point.x >= 0 && point.x < totalTurns);
   const known = new Map(usable.filter(point => point.phase !== 'after-draw').map(point => [point.x, point]));
   const draws = new Map(usable.filter(point => point.phase === 'after-draw').map(point => [point.x, point]));
   const points = review.turns.flatMap((turn, index) => [
@@ -3054,11 +3017,12 @@ function drawWinHistory(estimates, review, preview = false, overview = false) {
     ...(draws.has(index) ? [{ ...draws.get(index), x: index, phase: 'after-draw' }] : [])
   ]);
   const opening = openingDrawForReview(review);
-  const openingKnown = openingDrawKnown(opening);
+  const openingPosition = trendResults?.informationModel === CrossplayHindsight.MODEL ? trendResults.opening : null;
+  const openingKnown = Number.isFinite(openingPosition?.mine);
   const firstMine = opening.firstMine ?? Boolean(review.turns[0]?.mine);
   points.unshift({opening: true, x: 'opening', phase: 'opening', draw: opening,
-    mine: openingKnown ? (firstMine ? opening.afterWin : 1 - opening.afterWin) * 100 : null,
-    provisional: opening.provisional});
+    mine: openingKnown ? openingPosition.mine : null,
+    provisional: openingPosition?.provisional});
   const pointKey = point => point.x + ':' + (point.actual ? 'final' : point.phase);
   const plotIndex = point => point.opening ? 'opening' : point.x + (point.phase === 'after-draw' ? .45 : 0);
   const result = gameResult(review);
@@ -3251,22 +3215,22 @@ function drawWinHistory(estimates, review, preview = false, overview = false) {
   for (const point of points) {
     if (point.opening) {
       const centerX = x('opening'), centerY = openingKnown ? y(point.mine) : y(0) + 6;
-      const state = openingKnown ? opening.provisional ? 'Early estimate' : 'Full estimate'
+      const state = openingKnown ? point.provisional ? 'Early estimate' : 'Full estimate'
         : opening.unavailable || opening.retryable ? 'Estimate unavailable' : 'Waiting for estimate';
       const label = 'Initial rack draw. ' + (openingKnown ? you + ': ' + point.mine.toFixed(1) + '%. ' : '') + state + '. Select to inspect.';
       const group = svgElement('g', {class: 'win-history-opening', 'data-phase': 'opening',
-        'data-estimate': openingKnown ? opening.provisional ? 'early' : 'full' : 'missing',
+        'data-estimate': openingKnown ? point.provisional ? 'early' : 'full' : 'missing',
         tabindex: 0, role: 'button', 'aria-label': label, 'aria-pressed': String(selected === 'opening')});
       const title = svgElement('title');
       title.textContent = label;
       group.append(title, svgElement('path', {class: 'win-history-marker',
         d: `M ${centerX} ${centerY - 9} L ${centerX + 8} ${centerY + 7} L ${centerX - 8} ${centerY + 7} Z`,
-        fill: openingKnown && !opening.provisional ? '#777' : '#fff', stroke: '#777', 'stroke-width': 2,
+        fill: openingKnown && !point.provisional ? '#777' : '#fff', stroke: '#777', 'stroke-width': 2,
         'stroke-dasharray': !openingKnown ? '2 2' : 'none'}));
       const showDetail = () => {
         if (displayedPoint === pointKey(point)) { updateControls(point, group, centerX, centerY); return; }
         displayedPoint = pointKey(point);
-        const next = makeOpeningDrawInspector(opening, review);
+        const next = makeWinHistoryInspector(point, review, null);
         inspector.replaceWith(next);
         inspector = next;
         selection.setAttribute('x', centerX - selectionWidth / 2);
@@ -3427,6 +3391,9 @@ function drawWinHistory(estimates, review, preview = false, overview = false) {
     if (type === 'pointermove' && reviewChartPins.has(review)) return;
     if (type === 'pointerdown') pressedMarker = null;
     const target = event.target.closest('.win-history-point');
+    // Focus inspection can change the page height before pointerup. Inspect
+    // and focus on click so that a badge remains under the pointer.
+    if (type === 'pointerdown' && target) event.preventDefault();
     if (!target || event.target.closest('.win-history-annotation')) return;
     const location = svg.createSVGPoint();
     location.x = event.clientX;
@@ -3476,7 +3443,7 @@ function drawWinHistory(estimates, review, preview = false, overview = false) {
   viewport.append(svg);
   visual.append(controls, viewport, playerLegend, eventLegend, gradeLegend);
   body.append(visual, inspector);
-  chart.append(body);
+  chart.append(makeElement('p','win-history-heading','Position WP · Both racks'),body);
   return chart;
 }
 
@@ -3485,7 +3452,7 @@ function drawTrendChart(point, review) {
   const mine = known ? Math.max(0, Math.min(100, point.mine)) : null;
   const you = viewingSharedGame ? review.my_name || 'Player' : 'You';
   const opponent = review.opponent || 'Opponent';
-  const state = point?.actual ? 'Final result' : known ? (point.provisional ? 'Early estimate' : 'Full estimate')
+  const state = point?.actual ? 'Final result' : known ? (point.preview ? 'Move analysis' : 'Position WP · Both racks') + (point.provisional ? ' · Early' : '')
     : point?.unavailable ? 'Estimate unavailable' : 'Waiting for estimate';
   const turnLabel = 'Turn ' + (currentTurnIndex + 1) + ' of ' + review.turns.length +
     (point?.actual ? '' : point?.preview ? (point.selectedPreview ? ' · Selected move preview' : ' · Best move preview') : ' · Recorded move');
@@ -3540,13 +3507,23 @@ function pauseReviewAnalysis(review) {
   const context = contextFor(review);
   if (!context) return;
   context.paused = true;
+  context.hindsightController?.abort();
   for (const result of [context.quality, context.trend]) if (result) {
     result.state = 'stopped';
     result.message = 'Analysis paused. A running move can finish and save.';
   }
   syncVisibleContext(context);
 }
-function startWinTrend(review) { return startMoveQuality(review); }
+function startWinTrend(review) {
+  const context=contextFor(review);
+  if(!context)return Promise.resolve();
+  context.paused=false;
+  if(context.quality?.state==='stopped')context.quality.state='running';
+  reviewQueue?.pump();
+  if(context.hindsightRunning && context.hindsightController?.signal.aborted)context.hindsightRestart=true;
+  for(const key of context.cache.errors.keys())if(key.startsWith('["hindsight-state-v1"'))context.cache.errors.delete(key);
+  return runHindsightTimeline(context);
+}
 
 function startMoveQuality(review) {
   const queue = getReviewQueue();
@@ -3673,29 +3650,84 @@ async function analyzeReviewTurn(context, index, phase = 'review', options = {})
   if (phase === 'review' && retryableTurn(point)) return {complete: false, failed: true};
   return { complete: fullTurnComplete(point) };
 }
-function deriveWinTrend(context, done = false) {
-  const points = (context.quality?.points || []).filter(point => Number.isFinite(point.playedWin)).flatMap(point => {
-    const mine = context.review.turns[point.turnIndex].mine ? point.playedWin * 100 : (1 - point.playedWin) * 100;
-    const before = { x: point.turnIndex, phase: 'before-draw', turn: point.turnIndex + 1, mine, theirs: 100 - mine, actual: false,
-      provisional: Boolean(point.provisional), samples: point.samples };
-    const draw = point.draw;
-    if (!draw || !draw.drawCount || !Number.isFinite(draw.beforeWin) || !Number.isFinite(draw.afterWin)) return [before];
-    before.mine = (context.review.turns[point.turnIndex].mine ? draw.beforeWin : 1 - draw.beforeWin) * 100;
-    before.theirs = 100 - before.mine;
-    before.provisional = Boolean(draw.provisional);
-    before.samples = draw.samples;
-    const after = (context.review.turns[point.turnIndex].mine ? draw.afterWin : 1 - draw.afterWin) * 100;
-    return [before, {...before, phase: 'after-draw', mine: after, theirs: 100 - after, draw}];
+function hindsightTimeline(context) {
+  const H = CrossplayHindsight;
+  const pointFor = state => {
+    if (!state) return {mine:null, unavailable:true};
+    if (state.bagCount === 0 && state.finalTurnsRemaining === 0) {
+      const mine=state.scores[0]===state.scores[1]?50:state.scores[0]>state.scores[1]?100:0;
+      return {mine,theirs:100-mine,terminal:true,informationModel:H.MODEL};
+    }
+    const iterations=H.fullIterations(state), result=context.cache?.results[H.key(state,iterations)] || context.cache?.results[H.key(state,64)];
+    if (!result || !H.validResult(result,state,result.iterationsRequested)) {
+      const reason=context.cache?.errors.get(H.key(state,iterations)) || context.cache?.errors.get(H.key(state,64));
+      return {mine:null,stateId:H.stateId(state),retryable:Boolean(reason),reason};
+    }
+    const reason=result.samples<iterations?context.cache?.errors.get(H.key(state,iterations)):null;
+    return {mine:result.win*100,theirs:(1-result.win)*100,provisional:result.samples<iterations,
+      retryable:Boolean(reason),reason,
+      samples:result.samples,stateId:H.stateId(state),informationModel:H.MODEL};
+  };
+  const turns=context.review.turns.map((_,index)=>{
+    const states=H.turnStates(context.review,index);
+    return {before:pointFor(states.before),move:pointFor(states.move),draw:pointFor(states.draw),hasDraw:Boolean(states.move?.pendingDraw),error:states.error};
   });
-  if (done) {
-    const mine = Number(context.review.my_score) === Number(context.review.opponent_score) ? 50 : Number(context.review.my_score) > Number(context.review.opponent_score) ? 100 : 0;
-    points.push({ x: context.review.turns.length, mine, theirs: 100 - mine, actual: true });
-  }
-  const state = done ? 'done' : context.quality?.state === 'error' ? 'error' : 'running';
-  return { state, evaluation: MOVE_QUALITY_EVALUATION, points,
-    message: done ? 'Win trend complete. Estimates separate moves and recorded rack draws.'
-      : state === 'error' ? REVIEW_RETRY_MESSAGE : 'Win trend adds rack draws as their estimates finish.' };
+  const points=turns.flatMap((t,x)=>[{...t.move,x,phase:'before-draw'},...(t.hasDraw?[{...t.draw,x,phase:'after-draw'}]:[])]);
+  return {informationModel:H.MODEL,points,turns,opening:turns[0]?.before || {mine:null},
+    state:turns.flatMap(t=>[t.before,t.move,t.draw]).some(p=>p.retryable)?'error':turns.flatMap(t=>[t.before,t.move,t.draw]).every(p=>(Number.isFinite(p.mine)&&!p.provisional)||p.unavailable)?'done':'running'};
 }
+function deriveWinTrend(context, done = false) {
+  const timeline=context.timeline?.informationModel===CrossplayHindsight.MODEL ? context.timeline : hindsightTimeline(context);
+  return {...timeline,state:context.paused?'stopped':timeline.state,evaluation:CrossplayHindsight.POLICY,message:context.paused?'Analysis paused.':timeline.state==='done'?'Position WP complete.':timeline.state==='error'?'Position WP failed. Retry analysis.':'Calculating position WP…'};
+}
+async function runHindsightTimeline(context) {
+  if (!context || context.cancelled || context.paused || context.hindsightRunning || context.owner !== analysisOwner()) return;
+  context.hindsightRunning=true;
+  const controller=new AbortController();context.hindsightController=controller;
+  const ownerSignal=reviewQueue?.controller.signal, abort=()=>controller.abort();
+  if(ownerSignal?.aborted)controller.abort();else ownerSignal?.addEventListener('abort',abort,{once:true});
+  try {
+    const states=new Map();
+    const add=state=>{if(state && !(state.bagCount===0 && state.finalTurnsRemaining===0)) states.set(CrossplayHindsight.stateId(state),state);};
+    const indices=[currentReview===context.review?currentTurnIndex:0,...context.review.turns.map((_,i)=>i)];
+    for(const i of indices){const turn=CrossplayHindsight.turnStates(context.review,i);[turn.before,turn.move,turn.draw].forEach(add);}
+    const active=()=>!controller.signal.aborted&&!context.cancelled&&!context.paused&&context.owner===analysisOwner();
+    for(const preview of [true,false]) {
+      const remaining=new Map(states);
+      const lane=async()=>{while(active()&&remaining.size){
+        let id;
+        if(currentReview===context.review){
+          const visible=CrossplayHindsight.turnStates(context.review,currentTurnIndex);
+          id=[visible.before,visible.move,visible.draw].filter(Boolean).map(CrossplayHindsight.stateId).find(key=>remaining.has(key));
+        }
+        if(!id)id=remaining.keys().next().value;
+        const state=remaining.get(id);remaining.delete(id);
+        const full=CrossplayHindsight.fullIterations(state), iterations=preview?64:full;
+        if(context.cache.results[CrossplayHindsight.key(state,full)]) continue;
+        const key=CrossplayHindsight.key(state,iterations), taskKey=context.owner+':'+context.review.id+':'+key;
+        if(context.cache.errors.has(key)) continue;
+        try {
+          await context.cache.requestKey(key,async onStart=>{
+            const result=await workerRequest('evaluateKnownState',{state,iterations,seed:CrossplayHindsight.seed(state)},
+              {priority:-5,signal:controller.signal,taskKey,onStart});
+            if(!active())throw accountChanged();
+            if(!CrossplayHindsight.validResult(result,state,iterations))throw Error('Position WP is incomplete.');
+            recordEngineResult(context.review,context.cache,key,result);return result;
+          },controller.signal);
+        } catch(error){if(error.name==='AbortError')return;}
+        context.trend=deriveWinTrend(context);syncVisibleContext(context);
+      }};
+      await Promise.all(Array.from({length:QuackleWorkerPool.browserSize()},lane));
+    }
+    context.trend=deriveWinTrend(context);
+    if(active()){markAnalysisComplete('win_trend',context.trend,context.cache);syncVisibleContext(context);void flushAnalysisSave(context.review,context.cache);}
+  } finally {
+    ownerSignal?.removeEventListener('abort',abort);
+    context.hindsightRunning=false;
+    if(context.hindsightRestart){context.hindsightRestart=false;queueMicrotask(()=>void runHindsightTimeline(context));}
+  }
+}
+
 async function finishReviewAnalysis(context) {
   if (context.cancelled || context.owner !== analysisOwner()) return;
   if (reviewQueue?.openingPending(context) || context.quality?.opening?.provisional ||
@@ -3710,7 +3742,6 @@ async function finishReviewAnalysis(context) {
     context.trend = deriveWinTrend(context);
     if (retryable) {
       markAnalysisComplete('move_quality', quality, context.cache);
-      markAnalysisComplete('win_trend', context.trend, context.cache);
     }
     syncVisibleContext(context);
     const saveError = await flushAnalysisSave(context.review, context.cache);
@@ -3742,7 +3773,6 @@ async function finishReviewAnalysis(context) {
   context.quality.message = 'Move-quality analysis complete · ' + context.quality.points.filter(point => Number.isFinite(point.loss)).length + ' of ' + context.review.turns.length + ' moves rated.';
   context.trend = deriveWinTrend(context, true);
   markAnalysisComplete('move_quality', context.quality, context.cache);
-  markAnalysisComplete('win_trend', context.trend, context.cache);
   syncVisibleContext(context);
   const saveError = await flushAnalysisSave(context.review, context.cache);
   if (context.cancelled || context.owner !== analysisOwner() || context.quality !== quality || quality.state !== 'done') return;
@@ -3916,6 +3946,12 @@ function prepareViewedTurn() {
   const index = currentTurnIndex;
   const turn = review?.turns[index];
   const context = review && contextFor(review);
+  if (context && !context.paused) {
+    const viewed=CrossplayHindsight.turnStates(review,index);
+    for(const state of [viewed.before,viewed.move,viewed.draw].filter(Boolean))for(const n of [64,CrossplayHindsight.fullIterations(state)])
+      quacklePool?.promote(context.owner+':'+review.id+':'+CrossplayHindsight.key(state,n),2);
+    void runHindsightTimeline(context);
+  }
   const key = turn && validAnalysisTurn(turn) ? positionCache.key(turn, 'preview') : null;
   if (viewedTurnRequest?.key === key && viewedTurnRequest.review === review) return;
   viewedTurnRequest = null;

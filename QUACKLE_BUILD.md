@@ -16,8 +16,8 @@ repository (SHA-256
 Artifact SHA-256 values:
 
 ```text
-quackle.js   865a555e856374c545e95f2899a81e2588bd41548dd97bb239427566607815e0
-quackle.wasm 8ed435458c1a293e5004356a0b5a3530d34e421d2a53dc462ac1ff295de695c5
+quackle.js   ee8077ff20ab6b37ca22918ab74db8b39d69267d5c81825aff21c16cbbc9d9bd
+quackle.wasm ebe1e2e52d825ddc8f06d06da04478e96092e1d9b4098a28fedbc9d3a3f9b132
 quackle.data 0f7b4e8cdcf4cb743c5423d6befe23ea77691c588f7c7dfb603bf475c1fbf8f3
 ```
 
@@ -267,3 +267,38 @@ public full profiles for bags1–21 back to277 to preserve the prior sample-worl
 prefix. Explicit configured sample overrides and native diagnostic requests
 remain available. Saved full results must use one of the supported counts for
 their bag range. The server does not infer the user's device budget.
+
+## Hindsight position values
+
+`evaluateKnownStateBatch(stateJson, iterations, seed, offset, count)` evaluates
+one canonical position under the existing continuation policy. Its
+`informationModel` is `hindsight-state-v1`; its `policyVersion` is
+`hindsight-state-v1/crossplay-endgame-v3`. It is separate from player-information
+move grades and draw-luck estimates.
+
+The JSON state contains `grid`, two owner-oriented `racks` and `scores`,
+`toMove` (0 for owner or 1 for opponent), `bagCount`, and `finalTurnsRemaining`.
+An optional `pendingDraw` has `player`, `count`, and physical `returnedTiles`.
+The move is already applied: the pending refill consumes no new turn or score.
+Exchange returns stay outside the bag until the draw completes. All physical
+tiles, including board blanks and short final racks, must conserve the known
+Crossplay distribution. Missing hands are errors, not sampled substitutes.
+
+Each seeded trial keeps both current racks fixed and samples only future bag
+order. The root uses the same actor-visible policy as future turns, without a
+forced recorded move or a fake pass. Pending draws resolve before the horizon
+starts. Settled bags of21 or fewer play to the official finish; larger bags use
+the existing three-action horizon (policy root plus two future actions) and
+Bogowin estimate. Reaching a final empty bag by refill sets two final turns.
+Known-state advancement bypasses legacy history-based unknown-rack repairs;
+those repairs must never redistribute these complete physical hands.
+
+The result returns owner-oriented `winSum`, `win`, actual `samples`/`completed`,
+`terminalSamples`, sample `offset`, `seed`, `iterationsRequested`, input
+`bagCount`, resolved `settledBagCount`, and horizon/model metadata. Batches
+contain1–16 samples, with offsets bounded by the requested1–277 sample total.
+The existing private-information review/draw APIs retain their behavior.
+
+Run `python3 -m pytest -q test_hindsight_simulation.py` for root-policy,
+owner-orientation, empty/short-rack, pending-refill, exchange, split-offset,
+physical-inventory, malformed-JSON and same-module private-analysis checks.
